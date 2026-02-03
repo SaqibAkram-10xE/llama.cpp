@@ -96,6 +96,19 @@ static inline void atomic_store_f32(volatile float* addr, float value) {
     );
 }
 
+// Atomic add for F32 values to global memory
+// Uses ET hardware's custom amoaddg.w instruction for global atomic add
+// This ensures correct accumulation when multiple threads contribute to the same output
+static inline void atomic_add_f32(volatile float* addr, float value) {
+    uint32_t value_bits = *(uint32_t*)&value;
+    __asm__ volatile(
+        "amoaddg.w zero, %1, (%0)"
+        :
+        : "r"(addr), "r"(value_bits)
+        : "memory"
+    );
+}
+
 // Atomic store for F16 values to global memory
 // Uses ET hardware's custom shg instruction (store halfword global)
 // This ensures cache coherency when multiple threads write to nearby addresses
