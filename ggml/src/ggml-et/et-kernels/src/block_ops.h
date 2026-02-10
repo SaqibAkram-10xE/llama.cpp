@@ -70,6 +70,8 @@ static inline float compute_block_dot_product_q8_0(const block_q8_0* a_block, co
 
     const float scale = fp16_to_fp32(a_block->d);
     return final_sum * scale;
+
+    
 }
 
 
