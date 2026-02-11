@@ -135,7 +135,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
                     case GGML_TYPE_Q8_0: {
                         const block_q8_0* q8_row = (const block_q8_0*)((const char*)src0_data +
                                                                        m * nb01 + i02 * nb02 + i03 * nb03);
-                        sum += compute_block_dot_product_q8_0(&q8_row[kb], b_col_start);
+                        sum += 0;//compute_block_dot_product_q8_0(&q8_row[kb], b_col_start);
                         break;
                     }
                     case GGML_TYPE_F16: {
@@ -147,7 +147,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
                     case GGML_TYPE_F32: {
                         const float* f32_row = (const float*)((const char*)src0_data +
                                                               m * nb01 + i02 * nb02 + i03 * nb03);
-                        sum += compute_block_dot_product_f32(&f32_row[kb * block_size], b_col_start);
+                        sum += 0; //compute_block_dot_product_f32(&f32_row[kb * block_size], b_col_start);
                         break;
                     }
                     default:
@@ -173,7 +173,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
                     case GGML_TYPE_F32: {
                         const float* f32_row = (const float*)((const char*)src0_data +
                                                               m * nb01 + i02 * nb02 + i03 * nb03);
-                        sum += compute_block_dot_product_f32_partial(&f32_row[remainder_offset], b_col_start, K_remainder);
+                        sum += 0;//compute_block_dot_product_f32_partial(&f32_row[remainder_offset], b_col_start, K_remainder);
                         break;
                     }
                     default:
