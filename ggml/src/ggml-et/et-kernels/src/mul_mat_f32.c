@@ -1,59 +1,104 @@
-//******************************************************************************
-// MUL_MAT Kernel
-// Matrix multiplication: C[M,N] = A[M,K] * B[K,N]
-//******************************************************************************
-
 #include <stdint.h>
 #include "ggml_tensor.h"
 #include "platform.h"
-#include "math_fp.h"
-#include "quants.h"
-#include "block_ops.h"
 
-// #include "etsoc/isa.h"
+// Hardware Constants derived from your auto-gen files
+#define DESC_ACT_BASE   0x4000000000000000ULL
+#define DESC_WGT_BASE   0x210000000000000FULL
+#define FMA_CONFIG_INIT 0x187800000100003ULL 
+#define SCP_ACT_OFFSET  16392
+#define SCP_WGT_OFFSET  16588
+#define SWIZZLE_ACT     0x200000000000000ULL
+#define SWIZZLE_FMA     0x100ULL
 
-
-KERNEL_TRAMPOLINE();
-
+// Address Encoding Helper
+static inline uint64_t encode_addr(uint64_t base_desc, uint64_t phys_addr, uint32_t scp_line) {
+    uint64_t scp_high = ((uint64_t)scp_line >> 2) << 48;
+    uint64_t scp_low  = ((uint64_t)scp_line & 0x3) << 4;
+    return base_desc | (phys_addr & 0xFFFFFFFFFFFFULL) | scp_high | scp_low;
+}
 
 int entry_point(struct ggml_et_binary_params* params, void* env) {
     uint64_t hart_id = get_hart_id();
-    uint64_t global_id = ((hart_id >> 6) << 5) + ((hart_id >> 1) & 0x1F);
+    if (hart_id & 1) return 0; // Minions only
     
-    // Matrix dimensions
+    uint64_t minion_id = (hart_id >> 1) & 0x1F;
+
     const int64_t K = params->src0.ne[0];
     const int64_t M = params->src0.ne[1];
     const int64_t N = params->src1.ne[1];
-    
-    // Block size is 8: K_blocks = K / 8
-    const int64_t K_blocks = K >> 4; 
 
-    // Data pointers
-    const float* src0_data = (const float*)params->src0.data;
-    const float* src1_data = (const float*)params->src1.data;
-    float* dst_data       = (float*)params->dst.data;
+    const float* src0 = (const float*)params->src0.data;
+    const float* src1 = (const float*)params->src1.data;
+    float* dst        = (float*)params->dst.data;
 
-    // Parallelize over M (rows)
-    for (int64_t m = global_id; m < M; m += 1024) {
-        for (int64_t n = 0; n < N; n++) {
-            float sum = 0.0f;
+    __asm__ __volatile__("mov.m.x m0, zero, 0xff");
+
+    // Loop over M (rows) - distributed across minions
+    for (int64_t m = minion_id * 16; m < M; m += (32 * 16)) {
+        for (int64_t n = 0; n < N; n += 16) {
             
-            // Direct row/column pointers
-            const float* q_row = src0_data + (m * K);
-            const float* b_col = src1_data + (n * K);
+            uint64_t addr_act = encode_addr(DESC_ACT_BASE, (uint64_t)(&src0[m * K]), SCP_ACT_OFFSET);
+            uint64_t addr_wgt = encode_addr(DESC_WGT_BASE, (uint64_t)(&src1[n * K]), SCP_WGT_OFFSET);
+            uint64_t cmd_fma  = FMA_CONFIG_INIT;
 
-            // Process blocks of 16
-            for (int64_t kb = 0; kb < K_blocks; kb++) {
-                // (kb << 4) moves 16 float elements forward
-                sum += compute_block_dot_product_f32(q_row + (kb << 4), b_col + (kb << 4));
+            for (int64_t k = 0; k < K; k += 16) {
+                uint64_t cur_act_ptr = (uint64_t)(&src0[m * K + k]);
+                uint64_t cur_wgt_ptr = (uint64_t)(&src1[n * K + k]);
+
+                uint64_t load_act = (addr_act & 0xFFFF0000000000F0ULL) | (cur_act_ptr & 0xFFFFFFFFFFF0ULL);
+                uint64_t load_wgt = (addr_wgt & 0xFFFF0000000000F0ULL) | (cur_wgt_ptr & 0xFFFFFFFFFFF0ULL);
+
+                // Load Act: pass variables in, use 'mv' to satisfy the hardware requirement for x31
+                __asm__ __volatile__ (
+                    "li   x31, 0x40\n"
+                    "csrw 0x83f, %[desc]" 
+                    : : [desc] "r" (load_act) : "x31"
+                );
+
+                // Load Wgt
+                __asm__ __volatile__ (
+                    "li   x31, 0x41\n"
+                    "csrwi 0x830, 0\n" 
+                    "csrw 0x83f, %[desc]" 
+                    : : [desc] "r" (load_wgt) : "x31"
+                );
+
+                // FMA
+                uint64_t current_fma_cmd = (k == 0) ? (cmd_fma | 1) : (cmd_fma & ~1ULL);
+                __asm__ __volatile__ (
+                    "csrwi 0x830, 1\n"
+                    "csrw 0x801, %[cmd]" 
+                    : : [cmd] "r" (current_fma_cmd)
+                );
+
+                addr_act ^= SWIZZLE_ACT;
+                cmd_fma  ^= SWIZZLE_FMA;
             }
-            
-            // Atomic store to the destination
-            atomic_store_f32((volatile float*)(dst_data + (n * M) + m), sum);
+
+            // Reduction
+            __asm__ __volatile__(
+                "li x31, 0x20003\n"
+                "csrw 0x800, x31\n"
+                "addi x31, x31, 8\n"
+                "csrw 0x800, x31\n"
+                "addi x31, x31, 8\n"
+                "csrw 0x800, x31"
+                : : : "x31"
+            );
+
+            // Store Result (Generic Stride)
+            uint64_t store_desc = 0x4080000000000000ULL | (uint64_t)(&dst[n * M + m]);
+            uint64_t stride_bytes = M * sizeof(float);
+
+            __asm__ __volatile__(
+                "mv   x31, %[stride]\n"    // Compiler will map 'stride_bytes' to a register and we move it to x31
+                "csrw 0x87f, %[desc]\n"
+                "csrwi 0x830, 8"
+                : : [desc] "r" (store_desc), [stride] "r" (stride_bytes) : "x31"
+            );
         }
     }
+    __asm__ __volatile__("fence" ::: "memory");
     return 0;
 }
-
-
-
