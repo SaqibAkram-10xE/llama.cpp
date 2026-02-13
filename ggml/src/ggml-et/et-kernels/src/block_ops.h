@@ -194,11 +194,43 @@ static inline float compute_block_dot_product_f32_partial(const float* a_block, 
     return final_sum;
 }
 
+
+
+
+
+
+
 // Compute dot product between f32 block and f32 column vector
 // Vectorized: processes 8 elements at a time using ET vector instructions
 // Block size: 16 f32 values (64 bytes = 1 cache line)
 static inline float compute_block_dot_product_f32(const float* a_block, const float* b_col_start) {
     return compute_block_dot_product_f32_partial(a_block, b_col_start, QK_F32);
+    
+    // float acc_vec[8];
+    // unsigned long old_mask;
+    // __asm__ volatile(
+    //     // Save current mask
+    //     "mova.x.m %[old_mask]\n"
+    //     // Enable all 8 lanes
+    //     "mov.m.x m0, x0, 0xFF\n"
+ 
+    //     "flw.ps  f11, %[a]\n"
+    //     "flw.ps  f12, %[b]\n"
+    //     "fmadd.ps f10, f11, f12, f10\n"
+    //     "fsw.ps  f10, %[out]\n"
+    //     "mova.m.x %[old_mask]\n"
+
+    //     : [out] "=m" (*(float(*)[8])acc_vec),
+    //       [old_mask] "=r"(old_mask)
+    //     : [a] "m" (*(const float(*)[8])a_block),
+    //       [b] "m" (*(const float(*)[8])b_col_start)
+    //     : "f10", "f11", "f12"
+    // );
+
+    // // Horizontal reduction
+    // return acc_vec[0] + acc_vec[1] + acc_vec[2] + acc_vec[3] +
+    //        acc_vec[4] + acc_vec[5] + acc_vec[6] + acc_vec[7];
+
 }
 
 #endif // BLOCK_OPS_H

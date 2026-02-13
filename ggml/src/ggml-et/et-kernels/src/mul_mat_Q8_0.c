@@ -12,8 +12,6 @@
 
 KERNEL_TRAMPOLINE();
 
-
-
 // Using the block prefetch logic
 static inline void prefetch_weight_row(const void* start_ptr, int64_t num_blocks, uint32_t worker_id) {
     const uint64_t cache_line_size = 64;
@@ -80,8 +78,10 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
     for (int64_t m = hart_id; m < M; m += 2048) {
         for (int64_t n = 0; n < N; n++) {
             float sum = 0.0f;
+
             const block_q8_0* q_row = src0_data + (m * K_blocks);
             const float* b_col = src1_data + (n * K);
+            
             for (int64_t kb = 0; kb < K_blocks; kb++) {
                 sum += compute_block_dot_product_q8_0(q_row + kb, b_col + (kb << 5)); // b_col + (kb * 32) = b_col + (kb << 5)
             }

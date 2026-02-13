@@ -267,18 +267,7 @@ bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tens
         node->src[0]->type == GGML_TYPE_Q8_0 &&
         node->src[1]->type == GGML_TYPE_F32) {
 
-        if((node->src[0]->ne[2] > 1) || (node->src[0]->ne[3] > 1)) {
-            kernel_name = "mul_mat_f32";
-            printf("NE2: %lld NE3: %lld \n", 
-                (long long)node->src[0]->ne[2],
-                 (long long)node->src[0]->ne[3]);
-        }
-        else{
-
-            kernel_name = "mul_mat_Q8_0";
-        }
-        // kernel_name = "mul_mat_Q8_0"; //mul_mat_f32
-
+        kernel_name = "mul_mat_Q8_0";
         src0_type_name = "Q8_0";
 
         GGML_LOG_DEBUG("ET: MUL_MAT Q8_0xF32->F32 kernel selected for shapes src0=[%lld,%lld,%lld,%lld] src1=[%lld,%lld,%lld,%lld] dst=[%lld,%lld,%lld,%lld]\n",
@@ -290,7 +279,7 @@ bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tens
                node->src[0]->type == GGML_TYPE_F16 &&
                node->src[1]->type == GGML_TYPE_F32) {
 
-        kernel_name = "mul_mat_f32";
+        kernel_name = "mul_mat_f16";
         src0_type_name = "F16";
 
         GGML_LOG_DEBUG("ET: MUL_MAT F16xF32->F32 kernel selected for shapes src0=[%lld,%lld,%lld,%lld] src1=[%lld,%lld,%lld,%lld] dst=[%lld,%lld,%lld,%lld]\n",

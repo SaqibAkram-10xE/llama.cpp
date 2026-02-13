@@ -30,6 +30,7 @@ set(KERNELS
     el_map_f32
     glu_f32
     mul_mat_f32
+    mul_mat_f16
     mul_mat_Q8_0
     mul_mat_id_f32
     rope_f32
