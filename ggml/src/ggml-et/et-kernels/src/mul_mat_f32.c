@@ -1,6 +1,99 @@
 #include <stdint.h>
 #include "ggml_tensor.h"
 #include "platform.h"
+#include "tensor.h"
+
+
+
+
+//
+// MCACHE_CONTROL
+//
+inline void __attribute__((always_inline))
+mcache_control(uint64_t d1_split, uint64_t scp_en, uint64_t cacheop_rate, uint64_t cacheop_max)
+{
+    uint64_t csr_enc = ((cacheop_max & 0x1F) << 6) | ((cacheop_rate & 0x7) << 2) |
+                       ((scp_en & 0x1) << 1) | ((d1_split & 0x1) << 0);
+
+    __asm__ __volatile__("csrw 0x7e0, %[csr_enc]\n" : : [csr_enc] "r"(csr_enc) : "x31");
+}
+
+/*
+ * L1 SCP
+ */
+// Dcache configuration
+#define L1D_NUM_SETS      16
+#define L1D_NUM_WAYS      4
+#define L1D_LINE_SIZE     64
+
+#define NOP  __asm__ __volatile__ ("nop\n");
+#define FENCE __asm__ __volatile__ ("fence\n");
+#define WFI __asm__ __volatile__ ("wfi\n");
+#define WAIT_TENSOR_LOAD_0     __asm__ __volatile__ ( "csrwi 0x830, 0\n" : : );
+#define WAIT_TENSOR_LOAD_1     __asm__ __volatile__ ( "csrwi 0x830, 1\n" : : );
+#define WAIT_TENSOR_LOAD_L2_0  __asm__ __volatile__ ( "csrwi 0x830, 2\n" : : );
+#define WAIT_TENSOR_LOAD_L2_1  __asm__ __volatile__ ( "csrwi 0x830, 3\n" : : );
+#define WAIT_PREFETCH_0        __asm__ __volatile__ ( "csrwi 0x830, 4\n" : : );
+#define WAIT_PREFETCH_1        __asm__ __volatile__ ( "csrwi 0x830, 5\n" : : );
+#define WAIT_CACHEOPS          __asm__ __volatile__ ( "csrwi 0x830, 6\n" : : );
+#define WAIT_TENSOR_FMA        __asm__ __volatile__ ( "csrwi 0x830, 7\n" : : );
+#define WAIT_TENSOR_STORE      __asm__ __volatile__ ( "csrwi 0x830, 8\n" : : );
+#define WAIT_TENSOR_REDUCE     __asm__ __volatile__ ( "csrwi 0x830, 9\n" : : );
+#define WAIT_TENSOR_QUANT      __asm__ __volatile__ ( "csrwi 0x830, 10\n" : : );
+#define STALL                  __asm__ __volatile__ ( "csrw stall, x0\n" : : );
+#define CLEAR_TENSOR_ERROR     __asm__ __volatile__ ( "csrwi 0x808, 0" : : );
+
+#define EXCL_MODE(val) __asm__ __volatile__("csrw 0x7d3, %[csr_enc]\n" : : [csr_enc] "r"(val) : "x31"); 
+#define MCACHE_CONTROL(x1, x2, x3, x4) __asm__ __volatile__("csrw 0x7e0, %0\n" : : "r"(((x1 & 0x1F) << 6) | ((x2 & 0x7) << 2) | ((x3 & 0x1) << 1) | ((x4 & 0x1) << 0)) : "x31");
+
+
+static inline void evict_dcache(void)
+{
+    register uint64_t set asm("a7");
+    for(set = 0; set < L1D_NUM_SETS; set++)
+    {
+        // use_tmask=0, dst=1 (L2/SP_RAM), set=X, way=0, num_lines=15
+        __asm__ __volatile__(
+            // Wait for previous memory accesses to finish
+            "fence\n"
+            // Evict L1 Dcache: EvictSW for the 4 ways
+            "csrw evict_sw, %0\n"
+            "addi %0, %0, 64\n"
+            "csrw evict_sw, %0\n"
+            "addi %0, %0, 64\n"
+            "csrw evict_sw, %0\n"
+            "addi %0, %0, 64\n"
+            "csrw evict_sw, %0\n"
+            "addi %0, %0, 64\n"
+            // Wait for the evicts to complete
+            "csrwi tensor_wait, 6\n"
+            : 
+            : "r"((1ull << 58) + ((set & 0xF) << 14) + 15ull)
+            : "memory");
+    }
+	set = 0;
+}
+
+void setup_cache_scp(){
+    // PRM-8: Cache Control Extension
+    EXCL_MODE(1);
+    // Evict the whole L1$
+    evict_dcache();
+    // Shared Mode
+    MCACHE_CONTROL(0, 0, 0, 0);
+    WAIT_CACHEOPS;
+    // D1Split Mode
+    MCACHE_CONTROL(0, 0, 0, 1);
+    WAIT_CACHEOPS;
+    // Scratchpad Mode
+    MCACHE_CONTROL(0, 0, 1, 1);
+    WAIT_CACHEOPS;
+    EXCL_MODE(0);
+}
+
+	// evict_dcache();
+	// setup_cache_scp();
+
 
 // Hardware Constants derived from your auto-gen files
 #define DESC_ACT_BASE   0x4000000000000000ULL
@@ -19,6 +112,9 @@ static inline uint64_t encode_addr(uint64_t base_desc, uint64_t phys_addr, uint3
 }
 
 int entry_point(struct ggml_et_binary_params* params, void* env) {
+
+    evict_dcache();
+	setup_cache_scp();
     uint64_t hart_id = get_hart_id();
     if (hart_id & 1) return 0; // Minions only
     
