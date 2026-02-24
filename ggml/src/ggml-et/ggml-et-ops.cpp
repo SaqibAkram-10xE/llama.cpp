@@ -247,6 +247,8 @@ bool ggml_et_op_glu(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* 
     return kernel_result;
 }
 
+static int once = 0;
+    
 bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
     ET_PERF_START();
 
@@ -336,12 +338,37 @@ bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tens
 
     bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
 
+        // printf("Tensor error:");
+    // if (params.src0.data != NULL)
+    // {
+    //     printf("Ptr OK\n");
+    //     printf("node->data ptr = %p\n", node->data);
+    //     // if (once < 100){
+    //     //     // uint64_t * host_data = (uint64_t *) node->data;
+    //     //     // printf("Tensor error: %lu\n", host_data[0]);
+
+    //     //     // printf("Tensor error:");
+    //     //     once++;
+    //     // } 
+    // }
+
+
+
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
-    if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for MUL_MAT operation\n");
+    // if (cpu_comparison_active) {
+    if (0) {
+    // if (once < 1) {
+        once++;
+        printf("ET: Performing CPU computation and comparison for MUL_MAT operation\n");
         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &mul_mat_cpu_compare_config)) {
             GGML_LOG_WARN("ET: CPU comparison failed for MUL_MAT operation\n");
         }
+        // if (params.src0.data != NULL)
+        // {
+        //     printf("Ptr OK\n");
+        //     printf("node->data ptr = %p\n", node->data);
+        // }
+
         ggml_et_cpu_compare_free(&cpu_cmp_ctx);
     }
 
@@ -453,7 +480,8 @@ bool ggml_et_op_mul_mat_id(ggml_backend_et_device_context* dev_ctx, const ggml_t
     // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
     bool cpu_comparison_active = false;
-    if (mul_mat_id_cpu_compare_config.enabled) {
+    // if (mul_mat_id_cpu_compare_config.enabled) {
+    if (1) {
         GGML_LOG_DEBUG("ET: Initializing CPU comparison for MUL_MAT_ID operation\n");
         if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, GGML_OP_MUL_MAT_ID)) {
             cpu_comparison_active = true;

@@ -280,7 +280,14 @@ inline __attribute__((always_inline)) void tensor_wait(long id)
     \param id tensor load id  
     \return none
     \tensorops Implementation of tensor_load api
+    
 */
+// 1. Load Matrix A segment (1 row x 16 cols) into SCP ID 0
+                // dst_start 0 refers to the first line of L1 Scratchpad
+                // tensor_load(false, false, 0, 0, 0, 
+                //             (uint64_t)(src0_data + m * K + kb), 0, 1, 0, 0);
+
+
 inline void __attribute__((always_inline)) tensor_load(bool use_tmask, bool use_coop,
     uint64_t dst_start, uint64_t transformation, uint64_t use_tenb, uint64_t addr, uint64_t offset,
     uint64_t num_lines, uint64_t stride, uint64_t id)
@@ -289,6 +296,7 @@ inline void __attribute__((always_inline)) tensor_load(bool use_tmask, bool use_
                        ((transformation & 0x7) << 59) | ((dst_start & 0x3F) << 53) |
                        ((use_tenb & 0x1) << 52) | ((addr & 0xFFFFFFFFFFC0ULL)) |
                        ((offset & 0x3) << 4) | ((num_lines & 0xF));
+                       
     uint64_t x31_enc = (stride & 0xFFFFFFFFFFC0ULL) | (id & 0x1);
 
    __asm__ __volatile__(

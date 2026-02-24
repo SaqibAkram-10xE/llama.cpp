@@ -76,6 +76,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
     float* dst_data = (float*)params->dst.data;
 
     for (int64_t m = hart_id; m < M; m += 2048) {
+    // for (int64_t m = global_id; m < M; m += 1024) {
         for (int64_t n = 0; n < N; n++) {
             float sum = 0.0f;
 
