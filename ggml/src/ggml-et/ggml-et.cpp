@@ -439,81 +439,98 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
 
     GGML_LOG_DEBUG("ET: Computing graph with %d nodes\n", cgraph->n_nodes);
 
-    for (int i = 0; i < cgraph->n_nodes; i++) {
-        ggml_tensor * node = cgraph->nodes[i];
+    // printf("ET: Computing graph with %d nodes\n", cgraph->n_nodes);
 
-        if (node->op == GGML_OP_NONE) {
-            continue;
+    // for (int i = 0; i < cgraph->n_nodes; i++) 
+    {
+        ggml_tensor * node = cgraph->nodes[0]; // i
+
+        // if (node->op == GGML_OP_NONE) {
+        //     continue;
+        // }
+
+        // GGML_LOG_DEBUG("ET: Processing node %d: %s (%s)\n", i, node->name, ggml_op_name(node->op));
+
+        if(node->op == GGML_OP_MUL){
+            ggml_et_op_mul(dev_ctx, cgraph);
         }
 
-        GGML_LOG_DEBUG("ET: Processing node %d: %s (%s)\n", i, node->name, ggml_op_name(node->op));
+        // switch (node->op) {
+        //     case GGML_OP_MUL:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         break;
 
-        switch (node->op) {
-            case GGML_OP_MUL:
-                ggml_et_op_mul(dev_ctx, node);
-                break;
+        //     case GGML_OP_ADD:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_add(dev_ctx, node);
+        //         break;
 
-            case GGML_OP_ADD:
-                ggml_et_op_add(dev_ctx, node);
-                break;
+        //     case GGML_OP_MUL_MAT:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_mul_mat(dev_ctx, node);
 
-            case GGML_OP_MUL_MAT:
-                ggml_et_op_mul_mat(dev_ctx, node);
+        //         // if (once < 100){
+        //         //     uint64_t * host_data = (uint64_t *) node->data;
 
-                // if (once < 100){
-                //     uint64_t * host_data = (uint64_t *) node->data;
+        //         //     printf("Tensor error: %lu\n", host_data[0]);
 
-                //     // printf("Tensor error: %lu\n", host_data[0]);
+        //         //     // printf("Tensor error:");
+        //         //     once++;
+        //         // } 
+        //         break;
 
-                //     // printf("Tensor error:");
-                //     once++;
-                // } 
-                break;
+        //     case GGML_OP_MUL_MAT_ID:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_mul_mat_id(dev_ctx, node);
+        //         break;
 
-            case GGML_OP_MUL_MAT_ID:
-                ggml_et_op_mul_mat_id(dev_ctx, node);
-                break;
+        //     case GGML_OP_ROPE:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_rope(dev_ctx, node);
+        //         break;
 
-            case GGML_OP_ROPE:
-                ggml_et_op_rope(dev_ctx, node);
-                break;
+        //     case GGML_OP_RMS_NORM:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_rms_norm(dev_ctx, node);
+        //         break;
 
-            case GGML_OP_RMS_NORM:
-                ggml_et_op_rms_norm(dev_ctx, node);
-                break;
+        //     case GGML_OP_GLU:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_glu(dev_ctx, node);
+        //         break;
 
-            case GGML_OP_GLU:
-                ggml_et_op_glu(dev_ctx, node);
-                break;
+        //     case GGML_OP_SOFT_MAX:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_softmax(dev_ctx, node);
+        //         break;
 
-            case GGML_OP_SOFT_MAX:
-                ggml_et_op_softmax(dev_ctx, node);
-                break;
+        //     case GGML_OP_GET_ROWS:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_get_rows(dev_ctx, node);
+        //         break;
 
-            case GGML_OP_GET_ROWS:
-                ggml_et_op_get_rows(dev_ctx, node);
-                break;
+        //     case GGML_OP_CONT:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_cont(dev_ctx, node);
+        //         break;
 
-            case GGML_OP_CONT:
-                ggml_et_op_cont(dev_ctx, node);
-                break;
+        //     case GGML_OP_SET_ROWS:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_set_rows(dev_ctx, node);
+        //         break;
 
-            case GGML_OP_SET_ROWS:
-                ggml_et_op_set_rows(dev_ctx, node);
-                break;
+        //     case GGML_OP_RESHAPE:
+        //     case GGML_OP_VIEW:
+        //     case GGML_OP_PERMUTE:
+        //     case GGML_OP_TRANSPOSE:
+        //         // These are metadata-only operations that require no computation
+        //         GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
+        //         break;
 
-            case GGML_OP_RESHAPE:
-            case GGML_OP_VIEW:
-            case GGML_OP_PERMUTE:
-            case GGML_OP_TRANSPOSE:
-                // These are metadata-only operations that require no computation
-                GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
-                break;
-
-            default:
-                GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
-                return GGML_STATUS_FAILED;
-        }
+        //     default:
+        //         GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
+        //         return GGML_STATUS_FAILED;
+        // }
     }
 
     GGML_LOG_DEBUG("ET: Graph computation completed successfully\n");

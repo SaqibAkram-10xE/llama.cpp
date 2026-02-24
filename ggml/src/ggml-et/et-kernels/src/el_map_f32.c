@@ -93,15 +93,19 @@ static inline void block_add(float* dst_block, const float* src0_block, const fl
 
 KERNEL_TRAMPOLINE();
 
-int entry_point(struct ggml_et_binary_params* params, void* env) {
-    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
+
+// int entry_point(struct ggml_et_binary_params* params, void* env) {
+int el_map_f32(struct ggml_et_binary_params* params, void* env) {
+    
+    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
     if (!kernel_env) {
         return -1;
     }
 
-    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    int num_threads = get_num_threads(kernel_env->shire_mask);
+    // int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+    int thread_id = get_hart_id();
+    int num_threads = 2048; // get_num_threads(kernel_env->shire_mask);
 
     if (thread_id < 0) {
         return 0;
@@ -188,5 +192,20 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
         }
     }
 
+    return 0;
+}
+
+#include "mul_mat_Q8_0.c"
+
+int entry_point(struct ggml_et_binary_params* cgraph, void* env) {
+    
+    // if (params->dst.op == GGML_OP_MUL || params->dst.op == GGML_OP_ADD) {
+    //     return el_map_f32(params, env);
+    // } else if(params->dst.op == GGML_OP_MUL_MAT){
+    //     return mul_mat_f32(params, env);
+    // } else {
+    //     return -1; // Unsupported operation
+    // }
+    
     return 0;
 }

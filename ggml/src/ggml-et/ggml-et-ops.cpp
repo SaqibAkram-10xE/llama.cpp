@@ -84,80 +84,153 @@ static ggml_et_cpu_compare_config set_rows_cpu_compare_config = {
     /* .max_log_elements = */ 2048
 };
 
-bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
+// bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
+bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
     // Delegate to generic element map operation
-    return ggml_et_op_elmap(dev_ctx, node);
+    return ggml_et_op_elmap(dev_ctx, cgraph);
+    
 }
 
-bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
-    // Delegate to generic element map operation
-    return ggml_et_op_elmap(dev_ctx, node);
-}
+// bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
+//     // Delegate to generic element map operation
+//     return ggml_et_op_elmap(dev_ctx, node);
+// }
 
-bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
-    ET_PERF_START();
+bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
+    
+    
 
-    if (!dev_ctx || !node) {
-        GGML_LOG_ERROR("ET: Invalid parameters for element map operation\n");
-        return false;
-    }
+    bool kernel_result = false;
 
-    if (!node->src[0] || !node->src[1]) {
-        GGML_LOG_ERROR("ET: Element map operation missing required inputs\n");
-        return false;
-    }
+    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cgraph, sizeof(*cgraph), 0xFFFFFFFF);
 
-    if (node->type != GGML_TYPE_F32 ||
-        node->src[0]->type != GGML_TYPE_F32 ||
-        node->src[1]->type != GGML_TYPE_F32) {
-        GGML_LOG_ERROR("ET: Element map operation with unsupported types: dst=%s src0=%s src1=%s\n",
-                       ggml_type_name(node->type),
-                       ggml_type_name(node->src[0]->type),
-                       ggml_type_name(node->src[1]->type));
-        return false;
-    }
 
-    const char* op_name = ggml_op_name(node->op);
+    // switch (node->op) {
+    //     case GGML_OP_MUL:
+    //     case GGML_OP_ADD:
+    //         {
+    //             // printf("ET: Element-wise multiplication\n");
+    //             if (!dev_ctx || !node) {
+    //                 GGML_LOG_ERROR("ET: Invalid parameters for element map operation\n");
+    //                 return false;
+    //             }
 
-    ggml_et_elmap_params params;
-    params.src0 = *node->src[0];
-    params.src1 = *node->src[1];
-    params.dst = *node;           // F32 output tensor (op type stored in dst.op)
+    //             if (!node->src[0] || !node->src[1]) {
+    //                 GGML_LOG_ERROR("ET: Element map operation missing required inputs\n");
+    //                 return false;
+    //             }
+    //             if (node->type != GGML_TYPE_F32 ||
+    //                 node->src[0]->type != GGML_TYPE_F32 ||
+    //                 node->src[1]->type != GGML_TYPE_F32) {
+    //                 GGML_LOG_ERROR("ET: Element map operation with unsupported types: dst=%s src0=%s src1=%s\n",
+    //                             ggml_type_name(node->type),
+    //                             ggml_type_name(node->src[0]->type),
+    //                             ggml_type_name(node->src[1]->type));
+    //                 return false;
+    //             }
+    //             ggml_et_elmap_params params;
+    //             params.src0 = *node->src[0];
+    //             params.src1 = *node->src[1];
+    //             params.dst = *node; 
+    //             kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", &params, sizeof(params), 0xFFFFFFFF);
 
-    GGML_LOG_DEBUG("ET: Launching el_map_f32 kernel for %s (F32[%lld,%lld,%lld,%lld] %s F32[%lld,%lld,%lld,%lld] -> F32[%lld,%lld,%lld,%lld])\n",
-                   op_name,
-                   (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1],
-                   (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                   op_name,
-                   (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1],
-                   (long long)node->src[1]->ne[2], (long long)node->src[1]->ne[3],
-                   (long long)node->ne[0], (long long)node->ne[1],
-                   (long long)node->ne[2], (long long)node->ne[3]);
+    //         }
+    //         break;
 
-    // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
-    ggml_et_cpu_compare_ctx cpu_cmp_ctx;
-    bool cpu_comparison_active = false;
-    if (elmap_cpu_compare_config.enabled) {
-        GGML_LOG_DEBUG("ET: Initializing CPU comparison for %s operation\n", op_name);
-        if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, node->op)) {
-            cpu_comparison_active = true;
-        } else {
-            GGML_LOG_WARN("ET: Failed to initialize CPU comparison for %s operation\n", op_name);
-        }
-    }
+    //     // case GGML_OP_ADD:
+    //     //     // printf("ET: Element-wise addition\n");
+    //     //     // ggml_et_op_add(dev_ctx, node);
+    //     //     break;
 
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", &params, sizeof(params), 0xFFFFFFFF);
+    //     case GGML_OP_MUL_MAT:
+    //         {
+    //             if (!dev_ctx || !node) {
+    //                 GGML_LOG_ERROR("ET: Invalid parameters for MUL_MAT operation\n");
+    //                 return false;
+    //             }
 
-    // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
-    if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for %s operation\n", op_name);
-        if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &elmap_cpu_compare_config)) {
-            GGML_LOG_WARN("ET: CPU comparison failed for %s operation\n", op_name);
-        }
-        ggml_et_cpu_compare_free(&cpu_cmp_ctx);
-    }
+    //             if (!node->src[0] || !node->src[1]) {
+    //                 GGML_LOG_ERROR("ET: MUL_MAT operation missing required inputs\n");
+    //                 return false;
+    //             }
+    //             ggml_et_elmap_params params;
+    //             params.src0 = *node->src[0];
+    //             params.src1 = *node->src[1];
+    //             params.dst = *node; 
+    //             kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", &params, sizeof(params), 0xFFFFFFFF);
 
-    ET_PERF_END(op_name, "el_map_f32", node);
+    //             // printf("ET: Matrix multiplication\n");
+    //             // ggml_et_op_mul_mat(dev_ctx, node);
+
+    //             // if (once < 100){
+    //             //     uint64_t * host_data = (uint64_t *) node->data;
+
+    //             //     printf("Tensor error: %lu\n", host_data[0]);
+
+    //             //     // printf("Tensor error:");
+    //             //     once++;
+    //             // } 
+    //         }
+    //         break;
+
+    //     case GGML_OP_MUL_MAT_ID:
+    //         // printf("ET: Mixture of Experts matrix multiplication\n");
+    //         // ggml_et_op_mul_mat_id(dev_ctx, node);
+    //         break;
+
+    //     case GGML_OP_ROPE:
+    //         // printf("ET: RoPE positional embedding\n");
+    //         // ggml_et_op_rope(dev_ctx, node);
+    //         break;
+
+    //     case GGML_OP_RMS_NORM:
+    //     // printf("ET: RMS normalization\n");
+    //         // ggml_et_op_rms_norm(dev_ctx, node);
+    //         break;
+
+    //     case GGML_OP_GLU:
+    //         // printf("ET: Gated Linear Unit (GLU)\n");
+    //         // ggml_et_op_glu(dev_ctx, node);
+    //         break;
+
+    //     case GGML_OP_SOFT_MAX:
+    //         // printf("ET: Softmax activation\n");
+    //         // ggml_et_op_softmax(dev_ctx, node);
+    //         break;
+
+    //     case GGML_OP_GET_ROWS:
+    //         // printf("ET: Get rows (embedding lookup)\n");
+    //         // ggml_et_op_get_rows(dev_ctx, node);
+    //         break;
+
+    //     case GGML_OP_CONT:
+    //         // printf("ET: Contiguous copy\n");
+    //         // ggml_et_op_cont(dev_ctx, node);
+    //         break;
+
+    //     case GGML_OP_SET_ROWS:
+    //         // printf("ET: Set rows (scatter update)\n");
+    //         // ggml_et_op_set_rows(dev_ctx, node);
+    //         break;
+
+    //     case GGML_OP_RESHAPE:
+    //     case GGML_OP_VIEW:
+    //     case GGML_OP_PERMUTE:
+    //     case GGML_OP_TRANSPOSE:
+    //         // These are metadata-only operations that require no computation
+    //         GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
+    //         break;
+
+    //     default:
+    //         GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
+    //         return GGML_STATUS_FAILED;
+    // }
+
+
+
+
+
+
     return kernel_result;
 }
 
