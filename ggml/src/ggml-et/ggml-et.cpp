@@ -432,6 +432,8 @@ static bool ggml_backend_et_cpy_tensor_async(ggml_backend_t backend_src, ggml_ba
     return false;
 }
 
+// static int once = 0;
+
 static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_et_device_context * dev_ctx = (ggml_backend_et_device_context *)backend->device->context;
 
@@ -457,6 +459,15 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
 
             case GGML_OP_MUL_MAT:
                 ggml_et_op_mul_mat(dev_ctx, node);
+
+                // if (once < 100){
+                //     uint64_t * host_data = (uint64_t *) node->data;
+
+                //     // printf("Tensor error: %lu\n", host_data[0]);
+
+                //     // printf("Tensor error:");
+                //     once++;
+                // } 
                 break;
 
             case GGML_OP_MUL_MAT_ID:

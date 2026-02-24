@@ -143,6 +143,7 @@ bool ggml_et_launch_kernel(ggml_backend_et_device_context* dev_ctx, const std::s
         runtime->waitForStream(dev_ctx->default_stream);
 
         GGML_LOG_DEBUG("ET: Kernel %s completed successfully\n", kernel_name.c_str());
+        // printf("ET: Kernel %s completed successfully\n", kernel_name.c_str());
         return true;
 
     } catch (const std::exception& e) {
