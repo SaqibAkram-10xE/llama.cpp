@@ -102,9 +102,14 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
 
     bool kernel_result = false;
 
+    // ggml_et_cgraph_params graph;
+    // graph.node = cgraph->nodes;
+    // params.n_nodes = cgraph->n_nodes;
+   
+
     kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cgraph, sizeof(*cgraph), 0xFFFFFFFF);
-
-
+    
+     
     // switch (node->op) {
     //     case GGML_OP_MUL:
     //     case GGML_OP_ADD:

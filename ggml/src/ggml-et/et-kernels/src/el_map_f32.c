@@ -197,8 +197,120 @@ int el_map_f32(struct ggml_et_binary_params* params, void* env) {
 
 #include "mul_mat_Q8_0.c"
 
-int entry_point(struct ggml_et_binary_params* cgraph, void* env) {
+struct ggml_cgraph {
+    int size;    // maximum number of nodes/leafs/grads/grad_accs
+    int n_nodes; // number of nodes currently in use
+    int n_leafs; // number of leafs currently in use
+
+    struct ggml_tensor ** nodes;     // tensors with data that can change if the graph is evaluated
+    // struct ggml_tensor ** grads;     // the outputs of these tensors are the gradients of the nodes
+    // struct ggml_tensor ** grad_accs; // accumulators for node gradients
+    // struct ggml_tensor ** leafs;     // tensors with constant data
+    // int32_t             * use_counts;// number of uses of each tensor, indexed by hash table slot
+
+    // struct ggml_hash_set visited_hash_set;
+
+    // enum ggml_cgraph_eval_order order;
+};
+
+int entry_point(struct ggml_cgraph* cgraph, void* env) {
     
+    
+
+    for (int i = 0; i < cgraph->n_nodes; i++) 
+    {
+        struct ggml_tensor * node = cgraph->nodes[i];
+        if (node->op == GGML_OP_NONE) {
+            continue;
+        }
+
+        if(node->op == GGML_OP_MUL){
+            // ggml_et_op_mul(dev_ctx, cgraph);
+            // el_map_f32(params, env);
+            
+        }
+
+        // switch (node->op) {
+        //     case GGML_OP_MUL:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         break;
+
+        //     case GGML_OP_ADD:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_add(dev_ctx, node);
+        //         break;
+
+        //     case GGML_OP_MUL_MAT:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_mul_mat(dev_ctx, node);
+
+        //         // if (once < 100){
+        //         //     uint64_t * host_data = (uint64_t *) node->data;
+
+        //         //     printf("Tensor error: %lu\n", host_data[0]);
+
+        //         //     // printf("Tensor error:");
+        //         //     once++;
+        //         // } 
+        //         break;
+
+        //     case GGML_OP_MUL_MAT_ID:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_mul_mat_id(dev_ctx, node);
+        //         break;
+
+        //     case GGML_OP_ROPE:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_rope(dev_ctx, node);
+        //         break;
+
+        //     case GGML_OP_RMS_NORM:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_rms_norm(dev_ctx, node);
+        //         break;
+
+        //     case GGML_OP_GLU:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_glu(dev_ctx, node);
+        //         break;
+
+        //     case GGML_OP_SOFT_MAX:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_softmax(dev_ctx, node);
+        //         break;
+
+        //     case GGML_OP_GET_ROWS:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_get_rows(dev_ctx, node);
+        //         break;
+
+        //     case GGML_OP_CONT:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_cont(dev_ctx, node);
+        //         break;
+
+        //     case GGML_OP_SET_ROWS:
+        //         ggml_et_op_mul(dev_ctx, node);
+        //         // ggml_et_op_set_rows(dev_ctx, node);
+        //         break;
+
+        //     case GGML_OP_RESHAPE:
+        //     case GGML_OP_VIEW:
+        //     case GGML_OP_PERMUTE:
+        //     case GGML_OP_TRANSPOSE:
+        //         // These are metadata-only operations that require no computation
+        //         GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
+        //         break;
+
+        //     default:
+        //         GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
+        //         return GGML_STATUS_FAILED;
+        // }
+
+
+        
+    }
+
     // if (params->dst.op == GGML_OP_MUL || params->dst.op == GGML_OP_ADD) {
     //     return el_map_f32(params, env);
     // } else if(params->dst.op == GGML_OP_MUL_MAT){

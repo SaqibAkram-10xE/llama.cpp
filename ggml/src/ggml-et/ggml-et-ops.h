@@ -110,6 +110,13 @@ struct ggml_et_mul_mat_id_params {
     ggml_tensor dst;      // Output (F32) [M, n_expert_used, batch, 1]
 };
 
+struct ggml_et_cgraph_params {
+    ggml_tensor node;
+    int n_nodes;
+};
+
+
+
 bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, ggml_cgraph* cgraph);
 bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
 bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
