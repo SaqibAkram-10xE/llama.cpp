@@ -19,9 +19,6 @@ bool ggml_et_memset(ggml_backend_et_device_context* dev_ctx,
         return false;
     }
 
-    GGML_LOG_DEBUG("ET: memset device %d: ptr=%p, value=0x%02x, size=%zu\n",
-                  dev_ctx->devidx, dst_ptr, value, size);
-
     // Prepare kernel parameters
     memset_params params;
     params.op_type = GGML_ET_MEMOP_MEMSET;
@@ -37,6 +34,5 @@ bool ggml_et_memset(ggml_backend_et_device_context* dev_ctx,
         return false;
     }
 
-    GGML_LOG_DEBUG("ET: memset completed successfully\n");
     return true;
 }

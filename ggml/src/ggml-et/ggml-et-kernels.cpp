@@ -5,6 +5,10 @@
 #include <cstdlib>
 #include <cstring>
 
+#define ET_TRACE_DECODER_IMPL
+#include <et-trace/decoder.h>
+#include <et-trace/layout.h>
+
 // Get embedded kernel data by name
 static std::vector<std::byte> ggml_et_get_embedded_kernel(const std::string& kernel_name) {
     auto it = ggml_et_embedded_kernels.find(kernel_name);
@@ -19,7 +23,6 @@ static std::vector<std::byte> ggml_et_get_embedded_kernel(const std::string& ker
     std::vector<std::byte> buffer(size);
     std::memcpy(buffer.data(), data, size);
 
-    GGML_LOG_DEBUG("ET: Retrieved embedded kernel %s (%zu bytes)\n", kernel_name.c_str(), buffer.size());
     return buffer;
 }
 
@@ -36,7 +39,6 @@ static std::vector<std::byte> ggml_et_read_kernel_file(const std::string& kernel
     std::vector<std::byte> buffer(size);
     file.read(reinterpret_cast<char*>(buffer.data()), size);
 
-    GGML_LOG_DEBUG("ET: Read kernel file %s (%zu bytes)\n", kernel_path.c_str(), buffer.size());
     return buffer;
 }
 
@@ -76,7 +78,6 @@ bool ggml_et_load_kernel(ggml_backend_et_device_context* dev_ctx, const std::str
             GGML_LOG_ERROR("ET: Failed to get kernel data for %s\n", kernel_name.c_str());
             return false;
         }
-        GGML_LOG_INFO("ET: Loading embedded kernel %s\n", kernel_name.c_str());
     }
 
     try {
@@ -86,11 +87,6 @@ bool ggml_et_load_kernel(ggml_backend_et_device_context* dev_ctx, const std::str
 
         // Store kernel handle
         dev_ctx->loaded_kernels[kernel_name] = load_result.kernel_;
-
-        GGML_LOG_INFO("ET: Loaded kernel %s on device %d (KernelId=%d, LoadAddr=%p)\n",
-                      kernel_name.c_str(), dev_ctx->devidx,
-                      static_cast<int>(load_result.kernel_),
-                      (void*)load_result.loadAddress_);
         return true;
 
     } catch (const std::exception& e) {
@@ -100,7 +96,8 @@ bool ggml_et_load_kernel(ggml_backend_et_device_context* dev_ctx, const std::str
 }
 
 bool ggml_et_launch_kernel(ggml_backend_et_device_context* dev_ctx, const std::string& kernel_name,
-                          void* params, size_t params_size, uint64_t shire_mask) {
+                          void* params, size_t params_size, uint64_t shire_mask, bool enable_print,
+                          bool sync_error_check) {
     std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
     if (!runtime) {
         GGML_LOG_ERROR("ET: Runtime not available for kernel launch\n");
@@ -132,19 +129,65 @@ bool ggml_et_launch_kernel(ggml_backend_et_device_context* dev_ctx, const std::s
         k_opts.setShireMask(shire_mask);  // Default: all shires (0xFFFFFFFF)
         k_opts.setBarrier(true);          // Wait for completion
         k_opts.setFlushL3(false);         // No L3 flush needed
+        if(enable_print) {
+            k_opts.setUserTracing(
+                reinterpret_cast<uint64_t>(dev_ctx->trace_buffer),
+                static_cast<uint32_t>(ET_TRACE_BUFFER_SIZE),
+                0,                              // threshold
+                shire_mask,                     // shire mask
+                0xFFFFFFFFFFFFFFFFULL,          // threadMask — all threads
+                0xFFFFFFFFU,                    // eventMask — all events
+                0xFFFFFFFFU                     // filterMask — all levels
+            );
+        }
 
-        GGML_LOG_DEBUG("ET: Launching kernel %s (KernelId=%d) with %zu bytes params on device %d\n",
-                       kernel_name.c_str(), static_cast<int>(kernel_id), params_size, dev_ctx->devidx);
+        if(sync_error_check) {
+            runtime->waitForStream(dev_ctx->default_stream);
+            auto errors = runtime->retrieveStreamErrors(dev_ctx->default_stream);
+            if(!errors.empty()) {
+                GGML_LOG_ERROR("ET: Errors detected before kernel \"%s\" launch\n", kernel_name.c_str());
+                for(const auto& error : errors) {
+                    GGML_LOG_ERROR("ET: Error code: %d\n", (int)error.errorCode_);
+                }
+                abort();
+            }
+        }
 
         runtime->kernelLaunch(dev_ctx->default_stream, kernel_id,
                              reinterpret_cast<std::byte*>(params), params_size, k_opts);
 
-        // Wait for completion (synchronous execution)
-        runtime->waitForStream(dev_ctx->default_stream);
+        if(enable_print) {
+            std::vector<std::byte> hostTraceBuf(ET_TRACE_BUFFER_SIZE);
+            runtime->memcpyDeviceToHost(
+                dev_ctx->default_stream, dev_ctx->trace_buffer, hostTraceBuf.data(), ET_TRACE_BUFFER_SIZE);
+            runtime->waitForStream(dev_ctx->default_stream);
+            const auto* traceHeader = reinterpret_cast<const trace_buffer_std_header_t*>(hostTraceBuf.data());
+            const trace_entry_header_t* entry = nullptr;
+            while ((entry = Trace_Decode(traceHeader, entry))) {
+                if (entry->type != TRACE_TYPE_STRING) {
+                    continue;
+                }
+                const auto* strEntry = reinterpret_cast<const trace_string_t*>(entry);
+                printf("[hart %d] %s", entry->hart_id, strEntry->string);
+            }
+        }
 
-        GGML_LOG_DEBUG("ET: Kernel %s completed successfully\n", kernel_name.c_str());
+        if(sync_error_check) {
+            // Already triggered. No need to retrigger
+            if(!enable_print) {
+                runtime->waitForStream(dev_ctx->default_stream);
+            }
+            auto errors = runtime->retrieveStreamErrors(dev_ctx->default_stream);
+            if(!errors.empty()) {
+                GGML_LOG_ERROR("ET: Errors detected during kernel \"%s\" execution\n", kernel_name.c_str());
+                for(const auto& error : errors) {
+                    GGML_LOG_ERROR("ET: Error code: %d\n", (int)error.errorCode_);
+                }
+                abort();
+            }
+        }
+
         return true;
-
     } catch (const std::exception& e) {
         GGML_LOG_ERROR("ET: Failed to launch kernel %s: %s\n", kernel_name.c_str(), e.what());
         return false;
@@ -162,7 +205,6 @@ void ggml_et_unload_kernel(ggml_backend_et_device_context* dev_ctx, const std::s
         try {
             runtime->unloadCode(kernel_it->second);
             dev_ctx->loaded_kernels.erase(kernel_it);
-            GGML_LOG_DEBUG("ET: Unloaded kernel %s from device %d\n", kernel_name.c_str(), dev_ctx->devidx);
         } catch (const std::exception& e) {
             GGML_LOG_ERROR("ET: Failed to unload kernel %s: %s\n", kernel_name.c_str(), e.what());
         }
@@ -176,6 +218,7 @@ void ggml_et_unload_all_kernels(ggml_backend_et_device_context* dev_ctx) {
 
     // Make a copy of kernel names since ggml_et_unload_kernel modifies the map
     std::vector<std::string> kernel_names;
+    kernel_names.reserve(dev_ctx->loaded_kernels.size());
     for (const auto& kernel_pair : dev_ctx->loaded_kernels) {
         kernel_names.push_back(kernel_pair.first);
     }

@@ -17,15 +17,13 @@ bool ggml_et_cpu_compare_init_pre(ggml_et_cpu_compare_ctx* ctx, const ggml_tenso
 
     // Calculate actual buffer sizes - use backend buffer size for accurate copy
     auto get_tensor_buffer_size = [](const ggml_tensor* tensor) -> size_t {
-        if (!tensor) return 0;
+        if (!tensor) {
+            return 0;
+        }
 
         if (tensor->buffer) {
             // Get actual backend buffer size
             size_t buffer_size = ggml_backend_buffer_get_size(tensor->buffer);
-            size_t logical_size = ggml_nbytes(tensor);
-
-            GGML_LOG_DEBUG("ET: Tensor buffer size: logical=%zu, backend_buffer=%zu, contiguous=%s\n",
-                          logical_size, buffer_size, ggml_is_contiguous(tensor) ? "yes" : "no");
 
             // Use the full buffer size to avoid any truncation issues
             return buffer_size;
@@ -39,10 +37,6 @@ bool ggml_et_cpu_compare_init_pre(ggml_et_cpu_compare_ctx* ctx, const ggml_tenso
     ctx->src1_size = get_tensor_buffer_size(node->src[1]);
     ctx->src2_size = get_tensor_buffer_size(node->src[2]);
     ctx->dst_size = get_tensor_buffer_size(node);
-
-    GGML_LOG_DEBUG("ET: CPU compare init for operation %s\n", ggml_op_name(op));
-    GGML_LOG_DEBUG("ET: Tensor sizes - src0:%zu src1:%zu src2:%zu dst:%zu bytes\n",
-                   ctx->src0_size, ctx->src1_size, ctx->src2_size, ctx->dst_size);
 
     // Allocate CPU buffers for all tensors
     if (ctx->src0_size > 0) {
@@ -82,8 +76,6 @@ bool ggml_et_cpu_compare_init_pre(ggml_et_cpu_compare_ctx* ctx, const ggml_tenso
     }
 
     // Copy data from ET device buffers to CPU host buffers
-    GGML_LOG_DEBUG("ET: Copying data from ET device buffers to CPU host buffers\n");
-
     if (ctx->src0_size > 0) {
         // Copy logical tensor size - ggml_backend_tensor_get handles stride layout internally
         size_t logical_size = ggml_nbytes(node->src[0]);
@@ -126,8 +118,6 @@ bool ggml_et_cpu_compare_init_pre(ggml_et_cpu_compare_ctx* ctx, const ggml_tenso
     }
 
     // Create CPU tensors with proper context
-    GGML_LOG_DEBUG("ET: Creating CPU tensors\n");
-
     if (node->src[0]) {
         ctx->cpu_src0 = ggml_new_tensor(ctx->ggml_ctx, node->src[0]->type, GGML_MAX_DIMS, node->src[0]->ne);
         if (!ctx->cpu_src0) {
@@ -138,9 +128,7 @@ bool ggml_et_cpu_compare_init_pre(ggml_et_cpu_compare_ctx* ctx, const ggml_tenso
         // Copy stride array (nb) for correct memory layout
         memcpy(ctx->cpu_src0->nb, node->src[0]->nb, sizeof(node->src[0]->nb));
         // Copy op_params if present
-        if (node->src[0]->op_params) {
-            memcpy(ctx->cpu_src0->op_params, node->src[0]->op_params, sizeof(node->src[0]->op_params));
-        }
+        memcpy(ctx->cpu_src0->op_params, node->src[0]->op_params, sizeof(node->src[0]->op_params));
     }
 
     if (node->src[1]) {
@@ -153,9 +141,7 @@ bool ggml_et_cpu_compare_init_pre(ggml_et_cpu_compare_ctx* ctx, const ggml_tenso
         // Copy stride array (nb) for correct memory layout
         memcpy(ctx->cpu_src1->nb, node->src[1]->nb, sizeof(node->src[1]->nb));
         // Copy op_params if present
-        if (node->src[1]->op_params) {
-            memcpy(ctx->cpu_src1->op_params, node->src[1]->op_params, sizeof(node->src[1]->op_params));
-        }
+        memcpy(ctx->cpu_src1->op_params, node->src[1]->op_params, sizeof(node->src[1]->op_params));
     }
 
     if (node->src[2]) {
@@ -168,9 +154,7 @@ bool ggml_et_cpu_compare_init_pre(ggml_et_cpu_compare_ctx* ctx, const ggml_tenso
         // Copy stride array (nb) for correct memory layout
         memcpy(ctx->cpu_src2->nb, node->src[2]->nb, sizeof(node->src[2]->nb));
         // Copy op_params if present
-        if (node->src[2]->op_params) {
-            memcpy(ctx->cpu_src2->op_params, node->src[2]->op_params, sizeof(node->src[2]->op_params));
-        }
+        memcpy(ctx->cpu_src2->op_params, node->src[2]->op_params, sizeof(node->src[2]->op_params));
     }
 
     return true;
@@ -251,10 +235,8 @@ bool ggml_et_cpu_compare_compute_and_check(ggml_et_cpu_compare_ctx* ctx, const g
                 // Extract scale and max_bias from op_params
                 float scale = 1.0f;
                 float max_bias = 0.0f;
-                if (node->op_params) {
-                    memcpy(&scale, (const float*)node->op_params + 0, sizeof(float));
-                    memcpy(&max_bias, (const float*)node->op_params + 1, sizeof(float));
-                }
+                memcpy(&scale, (const float*)node->op_params + 0, sizeof(float));
+                memcpy(&max_bias, (const float*)node->op_params + 1, sizeof(float));
 
                 if (ctx->cpu_src1 || scale != 1.0f || max_bias != 0.0f) {
                     // Use extended softmax when mask or non-default parameters are present
@@ -313,7 +295,6 @@ bool ggml_et_cpu_compare_compute_and_check(ggml_et_cpu_compare_ctx* ctx, const g
     // For CONT operations, keep the contiguous strides created by ggml_cont()
 
     // Create minimal computation graph
-    GGML_LOG_DEBUG("ET: Creating CPU computation graph\n");
     ctx->cpu_graph = ggml_new_graph_custom(ctx->ggml_ctx, 1, false);
     if (!ctx->cpu_graph) {
         GGML_LOG_ERROR("ET: Failed to create CPU computation graph\n");
@@ -337,7 +318,6 @@ bool ggml_et_cpu_compare_compute_and_check(ggml_et_cpu_compare_ctx* ctx, const g
     }
 
     // Compute using CPU backend
-    GGML_LOG_DEBUG("ET: Computing reference result with CPU backend\n");
     ggml_status cpu_result = ggml_backend_graph_compute(ctx->cpu_backend, ctx->cpu_graph);
 
     if (cpu_result != GGML_STATUS_SUCCESS) {
@@ -352,16 +332,11 @@ bool ggml_et_cpu_compare_compute_and_check(ggml_et_cpu_compare_ctx* ctx, const g
                       ((float*)ctx->cpu_dst_data)[2], ((float*)ctx->cpu_dst_data)[3]);
     }
 
-    GGML_LOG_DEBUG("ET: CPU reference computation completed successfully\n");
-
     // Now copy ET device destination to host for comparison
-    GGML_LOG_DEBUG("ET: Copying ET device destination buffer for comparison\n");
     size_t dst_logical_size = ggml_nbytes(node);
     ggml_backend_tensor_get(node, ctx->et_dst_data, 0, dst_logical_size);
 
     if (config->log_differences) {
-        GGML_LOG_DEBUG("ET: Comparing ET vs CPU results\n");
-
         size_t num_elements = ggml_nelements(node);
         size_t max_log = std::min(num_elements, config->max_log_elements);
 
@@ -375,15 +350,13 @@ bool ggml_et_cpu_compare_compute_and_check(ggml_et_cpu_compare_ctx* ctx, const g
             if (type == GGML_TYPE_F16) {
                 const ggml_fp16_t* fp16_data = (const ggml_fp16_t*)data;
                 return ggml_fp16_to_fp32(fp16_data[idx]);
-            } else {
-                const float* float_data = (const float*)data;
-                return float_data[idx];
             }
+
+            const float* float_data = (const float*)data;
+            return float_data[idx];
         };
 
         // Compare all elements but log only the first max_log_elements
-        GGML_LOG_DEBUG("ET: First %zu elements comparison (checking all %zu elements, type=%s):\n",
-                      max_log, num_elements, ggml_type_name(node->type));
         bool matches = true;
         size_t total_mismatches = 0;
 
@@ -450,7 +423,9 @@ bool ggml_et_cpu_compare_compute_and_check(ggml_et_cpu_compare_ctx* ctx, const g
 
 
 void ggml_et_cpu_compare_free(ggml_et_cpu_compare_ctx* ctx) {
-    if (!ctx) return;
+    if (!ctx) {
+        return;
+    }
 
     if (ctx->cpu_src0_data) { free(ctx->cpu_src0_data); ctx->cpu_src0_data = nullptr; }
     if (ctx->cpu_src1_data) { free(ctx->cpu_src1_data); ctx->cpu_src1_data = nullptr; }
@@ -475,4 +450,3 @@ void ggml_et_cpu_compare_free(ggml_et_cpu_compare_ctx* ctx) {
     ctx->cpu_dst = nullptr;
     ctx->cpu_graph = nullptr;
 }
-

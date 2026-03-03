@@ -124,21 +124,10 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, const ggml_tensor
     params.src1 = *node->src[1];
     params.dst = *node;           // F32 output tensor (op type stored in dst.op)
 
-    GGML_LOG_DEBUG("ET: Launching el_map_f32 kernel for %s (F32[%lld,%lld,%lld,%lld] %s F32[%lld,%lld,%lld,%lld] -> F32[%lld,%lld,%lld,%lld])\n",
-                   op_name,
-                   (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1],
-                   (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                   op_name,
-                   (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1],
-                   (long long)node->src[1]->ne[2], (long long)node->src[1]->ne[3],
-                   (long long)node->ne[0], (long long)node->ne[1],
-                   (long long)node->ne[2], (long long)node->ne[3]);
-
     // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
     bool cpu_comparison_active = false;
     if (elmap_cpu_compare_config.enabled) {
-        GGML_LOG_DEBUG("ET: Initializing CPU comparison for %s operation\n", op_name);
         if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, node->op)) {
             cpu_comparison_active = true;
         } else {
@@ -150,7 +139,6 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, const ggml_tensor
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for %s operation\n", op_name);
         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &elmap_cpu_compare_config)) {
             GGML_LOG_WARN("ET: CPU comparison failed for %s operation\n", op_name);
         }
@@ -180,10 +168,6 @@ bool ggml_et_op_glu(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* 
     if (node->type != GGML_TYPE_F32 ||
         node->src[0]->type != GGML_TYPE_F32 ||
         node->src[1]->type != GGML_TYPE_F32) {
-        GGML_LOG_ERROR("ET: GLU operation with unsupported types: dst=%s src0=%s src1=%s\n",
-                       ggml_type_name(node->type),
-                       ggml_type_name(node->src[0]->type),
-                       ggml_type_name(node->src[1]->type));
         return false;
     }
 
@@ -208,22 +192,10 @@ bool ggml_et_op_glu(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* 
     params.dst = *node;                       // F32 output tensor
     params.glu_op_type = glu_op_type;         // GLU variant type
     params.swapped = swapped;                 // Swapped flag (unused in split mode)
-
-    GGML_LOG_DEBUG("ET: Launching glu_f32 kernel for %s (split mode) "
-                   "(F32[%lld,%lld,%lld,%lld] x F32[%lld,%lld,%lld,%lld] -> F32[%lld,%lld,%lld,%lld])\n",
-                   glu_op_name,
-                   (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1],
-                   (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                   (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1],
-                   (long long)node->src[1]->ne[2], (long long)node->src[1]->ne[3],
-                   (long long)node->ne[0], (long long)node->ne[1],
-                   (long long)node->ne[2], (long long)node->ne[3]);
-
     // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
     bool cpu_comparison_active = false;
     if (glu_cpu_compare_config.enabled) {
-        GGML_LOG_DEBUG("ET: Initializing CPU comparison for %s operation\n", glu_op_name);
         if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, GGML_OP_GLU)) {
             cpu_comparison_active = true;
         } else {
@@ -236,7 +208,6 @@ bool ggml_et_op_glu(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* 
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for %s operation\n", glu_op_name);
         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &glu_cpu_compare_config)) {
             GGML_LOG_WARN("ET: CPU comparison failed for %s operation\n", glu_op_name);
         }
@@ -267,25 +238,15 @@ bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tens
         node->src[0]->type == GGML_TYPE_Q8_0 &&
         node->src[1]->type == GGML_TYPE_F32) {
 
-        kernel_name = "mul_mat_f32";
+        kernel_name = "mul_mat_Q8_0";
         src0_type_name = "Q8_0";
-
-        GGML_LOG_DEBUG("ET: MUL_MAT Q8_0xF32->F32 kernel selected for shapes src0=[%lld,%lld,%lld,%lld] src1=[%lld,%lld,%lld,%lld] dst=[%lld,%lld,%lld,%lld]\n",
-                       (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1], (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                       (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1], (long long)node->src[1]->ne[2], (long long)node->src[1]->ne[3],
-                       (long long)node->ne[0], (long long)node->ne[1], (long long)node->ne[2], (long long)node->ne[3]);
 
     } else if (node->type == GGML_TYPE_F32 &&
                node->src[0]->type == GGML_TYPE_F16 &&
                node->src[1]->type == GGML_TYPE_F32) {
 
-        kernel_name = "mul_mat_f32";
+        kernel_name = "mul_mat_f16";
         src0_type_name = "F16";
-
-        GGML_LOG_DEBUG("ET: MUL_MAT F16xF32->F32 kernel selected for shapes src0=[%lld,%lld,%lld,%lld] src1=[%lld,%lld,%lld,%lld] dst=[%lld,%lld,%lld,%lld]\n",
-                       (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1], (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                       (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1], (long long)node->src[1]->ne[2], (long long)node->src[1]->ne[3],
-                       (long long)node->ne[0], (long long)node->ne[1], (long long)node->ne[2], (long long)node->ne[3]);
 
     } else if (node->type == GGML_TYPE_F32 &&
                node->src[0]->type == GGML_TYPE_F32 &&
@@ -294,10 +255,6 @@ bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tens
         kernel_name = "mul_mat_f32";
         src0_type_name = "F32";
 
-        GGML_LOG_DEBUG("ET: MUL_MAT F32xF32->F32 kernel selected for shapes src0=[%lld,%lld,%lld,%lld] src1=[%lld,%lld,%lld,%lld] dst=[%lld,%lld,%lld,%lld]\n",
-                       (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1], (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                       (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1], (long long)node->src[1]->ne[2], (long long)node->src[1]->ne[3],
-                       (long long)node->ne[0], (long long)node->ne[1], (long long)node->ne[2], (long long)node->ne[3]);
 
     } else {
         GGML_LOG_ERROR("ET: MUL_MAT operation with unsupported types: dst=%s src0=%s src1=%s\n",
@@ -307,26 +264,14 @@ bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tens
         return false;
     }
 
-    GGML_LOG_DEBUG("ET: MUL_MAT tensor strides - src0.nb=[%zu,%zu,%zu,%zu] src1.nb=[%zu,%zu,%zu,%zu] dst.nb=[%zu,%zu,%zu,%zu]\n",
-                   node->src[0]->nb[0], node->src[0]->nb[1], node->src[0]->nb[2], node->src[0]->nb[3],
-                   node->src[1]->nb[0], node->src[1]->nb[1], node->src[1]->nb[2], node->src[1]->nb[3],
-                   node->nb[0], node->nb[1], node->nb[2], node->nb[3]);
-
     ggml_et_binary_params params;
     params.src0 = *node->src[0];  // weight matrix
     params.src1 = *node->src[1];  // activation matrix
     params.dst = *node;           // output matrix
 
-    GGML_LOG_DEBUG("ET: Launching MUL_MAT kernel %s (%s[%lld,%lld] x F32[%lld,%lld] -> F32[%lld,%lld])\n",
-                   kernel_name, src0_type_name,
-                   (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1],
-                   (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1],
-                   (long long)node->ne[0], (long long)node->ne[1]);
-
     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
     bool cpu_comparison_active = false;
     if (mul_mat_cpu_compare_config.enabled) {
-        GGML_LOG_DEBUG("ET: Initializing CPU comparison for MUL_MAT operation\n");
         if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, GGML_OP_MUL_MAT)) {
             cpu_comparison_active = true;
         } else {
@@ -336,12 +281,33 @@ bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tens
 
     bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
 
+        // printf("Tensor error:");
+    // if (params.src0.data != NULL)
+    // {
+    //     printf("Ptr OK\n");
+    //     printf("node->data ptr = %p\n", node->data);
+    //     // if (once < 100){
+    //     //     // uint64_t * host_data = (uint64_t *) node->data;
+    //     //     // printf("Tensor error: %lu\n", host_data[0]);
+
+    //     //     // printf("Tensor error:");
+    //     //     once++;
+    //     // }
+    // }
+
+
+
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for MUL_MAT operation\n");
         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &mul_mat_cpu_compare_config)) {
             GGML_LOG_WARN("ET: CPU comparison failed for MUL_MAT operation\n");
         }
+        // if (params.src0.data != NULL)
+        // {
+        //     printf("Ptr OK\n");
+        //     printf("node->data ptr = %p\n", node->data);
+        // }
+
         ggml_et_cpu_compare_free(&cpu_cmp_ctx);
     }
 
@@ -392,8 +358,6 @@ bool ggml_et_op_mul_mat_id(ggml_backend_et_device_context* dev_ctx, const ggml_t
         kernel_name = "mul_mat_id_f32";
         src0_type_name = "Q8_0";
 
-        GGML_LOG_DEBUG("ET: MUL_MAT_ID Q8_0xF32->F32 kernel selected\n");
-
     } else if (node->type == GGML_TYPE_F32 &&
                node->src[0]->type == GGML_TYPE_F16 &&
                node->src[1]->type == GGML_TYPE_F32 &&
@@ -402,8 +366,6 @@ bool ggml_et_op_mul_mat_id(ggml_backend_et_device_context* dev_ctx, const ggml_t
         kernel_name = "mul_mat_id_f32";
         src0_type_name = "F16";
 
-        GGML_LOG_DEBUG("ET: MUL_MAT_ID F16xF32->F32 kernel selected\n");
-
     } else if (node->type == GGML_TYPE_F32 &&
                node->src[0]->type == GGML_TYPE_F32 &&
                node->src[1]->type == GGML_TYPE_F32 &&
@@ -411,8 +373,6 @@ bool ggml_et_op_mul_mat_id(ggml_backend_et_device_context* dev_ctx, const ggml_t
 
         kernel_name = "mul_mat_id_f32";
         src0_type_name = "F32";
-
-        GGML_LOG_DEBUG("ET: MUL_MAT_ID F32xF32->F32 kernel selected\n");
 
     } else {
         GGML_LOG_ERROR("ET: MUL_MAT_ID operation with unsupported types: dst=%s src0=%s src1=%s src2=%s\n",
@@ -423,20 +383,6 @@ bool ggml_et_op_mul_mat_id(ggml_backend_et_device_context* dev_ctx, const ggml_t
         return false;
     }
 
-    // Log tensor dimensions for debugging
-    GGML_LOG_DEBUG("ET: MUL_MAT_ID shapes - src0(experts)=[%lld,%lld,%lld,%lld] src1(acts)=[%lld,%lld,%lld,%lld] src2(ids)=[%lld,%lld,%lld,%lld] dst=[%lld,%lld,%lld,%lld]\n",
-                   (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1], (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                   (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1], (long long)node->src[1]->ne[2], (long long)node->src[1]->ne[3],
-                   (long long)node->src[2]->ne[0], (long long)node->src[2]->ne[1], (long long)node->src[2]->ne[2], (long long)node->src[2]->ne[3],
-                   (long long)node->ne[0], (long long)node->ne[1], (long long)node->ne[2], (long long)node->ne[3]);
-
-    // Log tensor strides for debugging memory layout
-    GGML_LOG_DEBUG("ET: MUL_MAT_ID tensor strides - src0.nb=[%zu,%zu,%zu,%zu] src1.nb=[%zu,%zu,%zu,%zu] src2.nb=[%zu,%zu,%zu,%zu] dst.nb=[%zu,%zu,%zu,%zu]\n",
-                   node->src[0]->nb[0], node->src[0]->nb[1], node->src[0]->nb[2], node->src[0]->nb[3],
-                   node->src[1]->nb[0], node->src[1]->nb[1], node->src[1]->nb[2], node->src[1]->nb[3],
-                   node->src[2]->nb[0], node->src[2]->nb[1], node->src[2]->nb[2], node->src[2]->nb[3],
-                   node->nb[0], node->nb[1], node->nb[2], node->nb[3]);
-
     // Pack parameters - copy full tensor structures
     ggml_et_mul_mat_id_params params;
     params.src0 = *node->src[0];  // Expert weight matrices (Q8_0/F16/F32)
@@ -444,17 +390,10 @@ bool ggml_et_op_mul_mat_id(ggml_backend_et_device_context* dev_ctx, const ggml_t
     params.src2 = *node->src[2];  // Expert indices (I32)
     params.dst = *node;           // Output matrix (F32)
 
-    GGML_LOG_DEBUG("ET: Launching MUL_MAT_ID kernel %s (%s experts, n_expert=%lld, n_expert_used=%lld, batch=%lld)\n",
-                   kernel_name, src0_type_name,
-                   (long long)node->src[0]->ne[2],  // n_expert
-                   (long long)node->src[2]->ne[0],  // n_expert_used
-                   (long long)node->src[2]->ne[1]); // batch
-
     // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
     bool cpu_comparison_active = false;
     if (mul_mat_id_cpu_compare_config.enabled) {
-        GGML_LOG_DEBUG("ET: Initializing CPU comparison for MUL_MAT_ID operation\n");
         if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, GGML_OP_MUL_MAT_ID)) {
             cpu_comparison_active = true;
         } else {
@@ -467,7 +406,6 @@ bool ggml_et_op_mul_mat_id(ggml_backend_et_device_context* dev_ctx, const ggml_t
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for MUL_MAT_ID operation\n");
         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &mul_mat_id_cpu_compare_config)) {
             GGML_LOG_WARN("ET: CPU comparison failed for MUL_MAT_ID operation\n");
         }
@@ -511,23 +449,8 @@ bool ggml_et_op_rope(ggml_backend_et_device_context* dev_ctx, const ggml_tensor*
         node->src[1]->type == GGML_TYPE_I32) {
         kernel_name = "rope_f32";
     } else {
-        GGML_LOG_ERROR("ET: ROPE operation with unsupported types: dst=%s src0=%s src1=%s\n",
-                       ggml_type_name(node->type),
-                       ggml_type_name(node->src[0]->type),
-                       ggml_type_name(node->src[1]->type));
         return false;
     }
-
-    GGML_LOG_DEBUG("ET: ROPE F32xI32->F32 kernel selected for shapes src0=[%lld,%lld,%lld,%lld] src1=[%lld,%lld,%lld,%lld] dst=[%lld,%lld,%lld,%lld] inplace=%s\n",
-                   (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1], (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                   (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1], (long long)node->src[1]->ne[2], (long long)node->src[1]->ne[3],
-                   (long long)node->ne[0], (long long)node->ne[1], (long long)node->ne[2], (long long)node->ne[3],
-                   (node->data == node->src[0]->data) ? "yes" : "no");
-
-    GGML_LOG_DEBUG("ET: ROPE tensor strides - src0.nb=[%zu,%zu,%zu,%zu] src1.nb=[%zu,%zu,%zu,%zu] dst.nb=[%zu,%zu,%zu,%zu]\n",
-                   node->src[0]->nb[0], node->src[0]->nb[1], node->src[0]->nb[2], node->src[0]->nb[3],
-                   node->src[1]->nb[0], node->src[1]->nb[1], node->src[1]->nb[2], node->src[1]->nb[3],
-                   node->nb[0], node->nb[1], node->nb[2], node->nb[3]);
 
     // Pack parameters - copy full tensor structures and op_params
     ggml_et_rope_params params;
@@ -557,23 +480,6 @@ bool ggml_et_op_rope(ggml_backend_et_device_context* dev_ctx, const ggml_tensor*
         memset(params.rope_params.sections, 0, sizeof(params.rope_params.sections));
     }
 
-    GGML_LOG_DEBUG("ET: ROPE params - n_past=%d n_dims=%d mode=0x%x n_ctx=%d n_ctx_orig=%d freq_base=%.6f freq_scale=%.6f ext_factor=%.6f attn_factor=%.6f beta_fast=%.6f beta_slow=%.6f\n",
-                  params.rope_params.n_past, params.rope_params.n_dims, params.rope_params.mode,
-                  params.rope_params.n_ctx, params.rope_params.n_ctx_orig,
-                  params.rope_params.freq_base, params.rope_params.freq_scale, params.rope_params.ext_factor,
-                  params.rope_params.attn_factor, params.rope_params.beta_fast, params.rope_params.beta_slow);
-
-    if (params.rope_params.mode & GGML_ROPE_TYPE_MROPE) {
-        GGML_LOG_DEBUG("ET: ROPE MROPE sections=[%d,%d,%d,%d]\n",
-                      params.rope_params.sections[0], params.rope_params.sections[1],
-                      params.rope_params.sections[2], params.rope_params.sections[3]);
-    }
-
-    GGML_LOG_DEBUG("ET: ROPE mode flags - NEOX=%s MROPE=%s VISION=%s\n",
-                  (params.rope_params.mode & GGML_ROPE_TYPE_NEOX) ? "yes" : "no",
-                  (params.rope_params.mode & GGML_ROPE_TYPE_MROPE) ? "yes" : "no",
-                  (params.rope_params.mode & GGML_ROPE_TYPE_VISION) ? "yes" : "no");
-
     // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
     bool cpu_comparison_active = false;
@@ -586,13 +492,10 @@ bool ggml_et_op_rope(ggml_backend_et_device_context* dev_ctx, const ggml_tensor*
         }
     }
 
-    GGML_LOG_DEBUG("ET: Launching ROPE kernel %s\n", kernel_name);
-
     bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for ROPE operation\n");
         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &rope_cpu_compare_config)) {
             GGML_LOG_WARN("ET: CPU comparison failed for ROPE operation\n");
         }
@@ -640,19 +543,10 @@ bool ggml_et_op_rms_norm(ggml_backend_et_device_context* dev_ctx, const ggml_ten
     params.dst = *node;           // F32 output tensor
     params.eps = eps;             // Epsilon parameter for numerical stability
 
-    GGML_LOG_DEBUG("ET: Launching RMS_NORM kernel %s (F32[%lld,%lld,%lld,%lld] -> F32[%lld,%lld,%lld,%lld], eps=%.6f)\n",
-                   kernel_name,
-                   (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1],
-                   (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                   (long long)node->ne[0], (long long)node->ne[1],
-                   (long long)node->ne[2], (long long)node->ne[3],
-                   eps);
-
     // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
     bool cpu_comparison_active = false;
     if (rms_norm_cpu_compare_config.enabled) {
-        GGML_LOG_DEBUG("ET: Initializing CPU comparison for RMS_NORM operation\n");
         if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, GGML_OP_RMS_NORM)) {
             cpu_comparison_active = true;
         } else {
@@ -664,7 +558,6 @@ bool ggml_et_op_rms_norm(ggml_backend_et_device_context* dev_ctx, const ggml_ten
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for RMS_NORM operation\n");
         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &rms_norm_cpu_compare_config)) {
             GGML_LOG_WARN("ET: CPU comparison failed for RMS_NORM operation\n");
         }
@@ -763,31 +656,10 @@ bool ggml_et_op_softmax(ggml_backend_et_device_context* dev_ctx, const ggml_tens
     params.scale = scale;         // Scale factor
     params.max_bias = max_bias;   // ALiBi bias
 
-    if (node->src[1]) {
-        GGML_LOG_DEBUG("ET: Launching SOFTMAX kernel %s with mask (F32[%lld,%lld,%lld,%lld] + F32[%lld,%lld,%lld,%lld] -> F32[%lld,%lld,%lld,%lld], scale=%.6f, max_bias=%.6f)\n",
-                       kernel_name,
-                       (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1],
-                       (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                       (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1],
-                       (long long)node->src[1]->ne[2], (long long)node->src[1]->ne[3],
-                       (long long)node->ne[0], (long long)node->ne[1],
-                       (long long)node->ne[2], (long long)node->ne[3],
-                       scale, max_bias);
-    } else {
-        GGML_LOG_DEBUG("ET: Launching SOFTMAX kernel %s (F32[%lld,%lld,%lld,%lld] -> F32[%lld,%lld,%lld,%lld], scale=%.6f, max_bias=%.6f)\n",
-                       kernel_name,
-                       (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1],
-                       (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                       (long long)node->ne[0], (long long)node->ne[1],
-                       (long long)node->ne[2], (long long)node->ne[3],
-                       scale, max_bias);
-    }
-
     // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
     bool cpu_comparison_active = false;
     if (softmax_cpu_compare_config.enabled) {
-        GGML_LOG_DEBUG("ET: Initializing CPU comparison for SOFTMAX operation\n");
         if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, GGML_OP_SOFT_MAX)) {
             cpu_comparison_active = true;
         } else {
@@ -799,7 +671,6 @@ bool ggml_et_op_softmax(ggml_backend_et_device_context* dev_ctx, const ggml_tens
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for SOFTMAX operation\n");
         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &softmax_cpu_compare_config)) {
             GGML_LOG_WARN("ET: CPU comparison failed for SOFTMAX operation\n");
         }
@@ -834,9 +705,9 @@ bool ggml_et_op_get_rows(ggml_backend_et_device_context* dev_ctx, const ggml_ten
 
     } else {
         GGML_LOG_ERROR("ET: GET_ROWS operation with unsupported types: dst=%s src0=%s src1=%s\n",
-                       ggml_type_name(node->type),
-                       ggml_type_name(node->src[0]->type),
-                       ggml_type_name(node->src[1]->type));
+                        ggml_type_name(node->type),
+                        ggml_type_name(node->src[0]->type),
+                        ggml_type_name(node->src[1]->type));
         return false;
     }
 
@@ -868,21 +739,10 @@ bool ggml_et_op_get_rows(ggml_backend_et_device_context* dev_ctx, const ggml_ten
     params.src1 = *node->src[1];  // Indices tensor (I32)
     params.dst = *node;           // Output tensor (F32)
 
-    GGML_LOG_DEBUG("ET: Launching GET_ROWS kernel %s (%s[%lld,%lld,%lld,%lld] x I32[%lld,%lld,%lld,%lld] -> F32[%lld,%lld,%lld,%lld])\n",
-                   kernel_name,
-                   ggml_type_name(node->src[0]->type),
-                   (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1],
-                   (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                   (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1],
-                   (long long)node->src[1]->ne[2], (long long)node->src[1]->ne[3],
-                   (long long)node->ne[0], (long long)node->ne[1],
-                   (long long)node->ne[2], (long long)node->ne[3]);
-
     // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
     bool cpu_comparison_active = false;
     if (get_rows_cpu_compare_config.enabled) {
-        GGML_LOG_DEBUG("ET: Initializing CPU comparison for GET_ROWS operation\n");
         if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, GGML_OP_GET_ROWS)) {
             cpu_comparison_active = true;
         } else {
@@ -894,7 +754,6 @@ bool ggml_et_op_get_rows(ggml_backend_et_device_context* dev_ctx, const ggml_ten
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for GET_ROWS operation\n");
         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &get_rows_cpu_compare_config)) {
             GGML_LOG_WARN("ET: CPU comparison failed for GET_ROWS operation\n");
         }
@@ -907,8 +766,6 @@ bool ggml_et_op_get_rows(ggml_backend_et_device_context* dev_ctx, const ggml_ten
 
 bool ggml_et_op_cont(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
     ET_PERF_START();
-
-    GGML_LOG_DEBUG("ET: CONT operation called\n");
 
     // Validate source tensor exists
     if (!node->src[0]) {
@@ -952,28 +809,10 @@ bool ggml_et_op_cont(ggml_backend_et_device_context* dev_ctx, const ggml_tensor*
     params.src0 = *node->src[0];  // Input tensor (potentially non-contiguous)
     params.dst = *node;           // Output tensor (contiguous)
 
-    GGML_LOG_DEBUG("ET: Launching CONT kernel %s (%s[%lld,%lld,%lld,%lld] -> %s[%lld,%lld,%lld,%lld])\n",
-                   kernel_name,
-                   ggml_type_name(node->src[0]->type),
-                   (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1],
-                   (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                   ggml_type_name(node->type),
-                   (long long)node->ne[0], (long long)node->ne[1],
-                   (long long)node->ne[2], (long long)node->ne[3]);
-
-    GGML_LOG_DEBUG("ET: CONT tensor strides:\n");
-    GGML_LOG_DEBUG("ET:   src0 nb=[%zu,%zu,%zu,%zu] (contiguous=%s)\n",
-                   node->src[0]->nb[0], node->src[0]->nb[1], node->src[0]->nb[2], node->src[0]->nb[3],
-                   ggml_is_contiguous(node->src[0]) ? "yes" : "no");
-    GGML_LOG_DEBUG("ET:   dst  nb=[%zu,%zu,%zu,%zu] (contiguous=%s)\n",
-                   node->nb[0], node->nb[1], node->nb[2], node->nb[3],
-                   ggml_is_contiguous(node) ? "yes" : "no");
-
     // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
     bool cpu_comparison_active = false;
     if (cont_cpu_compare_config.enabled) {
-        GGML_LOG_DEBUG("ET: Initializing CPU comparison for CONT operation\n");
         if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, GGML_OP_CONT)) {
             cpu_comparison_active = true;
         } else {
@@ -985,7 +824,6 @@ bool ggml_et_op_cont(ggml_backend_et_device_context* dev_ctx, const ggml_tensor*
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for CONT operation\n");
         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &cont_cpu_compare_config)) {
             GGML_LOG_WARN("ET: CPU comparison failed for CONT operation\n");
         }
@@ -1064,21 +902,10 @@ bool ggml_et_op_set_rows(ggml_backend_et_device_context* dev_ctx, const ggml_ten
     params.src1 = *node->src[1];  // I64 indices tensor
     params.dst = *node;           // F32/F16 destination tensor
 
-    GGML_LOG_DEBUG("ET: Launching SET_ROWS kernel %s (F32[%lld,%lld,%lld,%lld] x I64[%lld,%lld,%lld,%lld] -> %s[%lld,%lld,%lld,%lld])\n",
-                   kernel_name,
-                   (long long)node->src[0]->ne[0], (long long)node->src[0]->ne[1],
-                   (long long)node->src[0]->ne[2], (long long)node->src[0]->ne[3],
-                   (long long)node->src[1]->ne[0], (long long)node->src[1]->ne[1],
-                   (long long)node->src[1]->ne[2], (long long)node->src[1]->ne[3],
-                   ggml_type_name(node->type),
-                   (long long)node->ne[0], (long long)node->ne[1],
-                   (long long)node->ne[2], (long long)node->ne[3]);
-
     // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
     bool cpu_comparison_active = false;
     if (set_rows_cpu_compare_config.enabled) {
-        GGML_LOG_DEBUG("ET: Initializing CPU comparison for SET_ROWS operation\n");
         if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, GGML_OP_SET_ROWS)) {
             cpu_comparison_active = true;
         } else {
@@ -1090,7 +917,6 @@ bool ggml_et_op_set_rows(ggml_backend_et_device_context* dev_ctx, const ggml_ten
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
-        GGML_LOG_DEBUG("ET: Performing CPU computation and comparison for SET_ROWS operation\n");
         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &set_rows_cpu_compare_config)) {
             GGML_LOG_WARN("ET: CPU comparison failed for SET_ROWS operation\n");
         }
