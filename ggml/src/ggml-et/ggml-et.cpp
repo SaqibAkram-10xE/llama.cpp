@@ -451,7 +451,8 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
 
         // GGML_LOG_DEBUG("ET: Processing node %d: %s (%s)\n", i, node->name, ggml_op_name(node->op));
 
-        if(node->op == GGML_OP_MUL){
+        // if(node->op == GGML_OP_MUL)
+        {
             ggml_et_op_mul(dev_ctx, cgraph);
         }
 

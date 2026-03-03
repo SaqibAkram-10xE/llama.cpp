@@ -8,6 +8,46 @@
 #include "ggml_tensor.h"
 #include "platform.h"
 
+#include "mul_mat_Q8_0.c"
+// #include "../../ggml-et-ops.h"
+
+struct ggml_et_elmap_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor dst;
+};
+
+// struct ggml_et_binary_params {
+//     struct ggml_tensor src0;
+//     struct ggml_tensor src1;
+//     struct ggml_tensor dst;
+// };
+
+struct ggml_cgraph {
+    int size;    // maximum number of nodes/leafs/grads/grad_accs
+    int n_nodes; // number of nodes currently in use
+    int n_leafs; // number of leafs currently in use
+
+    struct ggml_tensor ** nodes;     // tensors with data that can change if the graph is evaluated
+    // struct ggml_tensor ** grads;     // the outputs of these tensors are the gradients of the nodes
+    // struct ggml_tensor ** grad_accs; // accumulators for node gradients
+    // struct ggml_tensor ** leafs;     // tensors with constant data
+    // int32_t             * use_counts;// number of uses of each tensor, indexed by hash table slot
+
+    // struct ggml_hash_set visited_hash_set;
+
+    // enum ggml_cgraph_eval_order order;
+};
+
+void delay(unsigned long count) {
+    volatile unsigned long i;
+    for (i = 0; i < count; i++) {
+        // empty
+    }
+}
+#define FENCE __asm__ __volatile__ ("fence\n");
+
+
 // TODO: only even threads
 
 // Block operation implementations using ET vector instructions
@@ -96,7 +136,7 @@ KERNEL_TRAMPOLINE();
 
 
 // int entry_point(struct ggml_et_binary_params* params, void* env) {
-int el_map_f32(struct ggml_et_binary_params* params, void* env) {
+int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
     if (!kernel_env) {
@@ -117,7 +157,7 @@ int el_map_f32(struct ggml_et_binary_params* params, void* env) {
 
     struct ggml_tensor* src0 = &params->src0;
     struct ggml_tensor* src1 = &params->src1;
-    struct ggml_tensor* dst = &params->dst;
+    struct ggml_tensor* dst  = &params->dst;
 
     if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
         return -1; // Unsupported type combination
@@ -195,28 +235,11 @@ int el_map_f32(struct ggml_et_binary_params* params, void* env) {
     return 0;
 }
 
-#include "mul_mat_Q8_0.c"
-
-struct ggml_cgraph {
-    int size;    // maximum number of nodes/leafs/grads/grad_accs
-    int n_nodes; // number of nodes currently in use
-    int n_leafs; // number of leafs currently in use
-
-    struct ggml_tensor ** nodes;     // tensors with data that can change if the graph is evaluated
-    // struct ggml_tensor ** grads;     // the outputs of these tensors are the gradients of the nodes
-    // struct ggml_tensor ** grad_accs; // accumulators for node gradients
-    // struct ggml_tensor ** leafs;     // tensors with constant data
-    // int32_t             * use_counts;// number of uses of each tensor, indexed by hash table slot
-
-    // struct ggml_hash_set visited_hash_set;
-
-    // enum ggml_cgraph_eval_order order;
-};
 
 int entry_point(struct ggml_cgraph* cgraph, void* env) {
     
+    // delay(1000000);
     
-
     for (int i = 0; i < cgraph->n_nodes; i++) 
     {
         struct ggml_tensor * node = cgraph->nodes[i];
@@ -224,88 +247,150 @@ int entry_point(struct ggml_cgraph* cgraph, void* env) {
             continue;
         }
 
-        if(node->op == GGML_OP_MUL){
-            // ggml_et_op_mul(dev_ctx, cgraph);
-            // el_map_f32(params, env);
-            
+        FENCE
+    
+       
+        switch (node->op) {
+            case GGML_OP_MUL:
+            case GGML_OP_ADD:
+                {
+                    // ggml_et_op_mul(dev_ctx, node);
+                    if (!node) {
+                        break;
+                    }
+
+                    if (!node->src[0] || !node->src[1]) {
+                        // GGML_LOG_ERROR("ET: Element map operation missing required inputs\n");
+                        // return false;
+                        break;
+                    }
+
+                    if (node->type != GGML_TYPE_F32 ||
+                        node->src[0]->type != GGML_TYPE_F32 ||
+                        node->src[1]->type != GGML_TYPE_F32) {
+                        break;
+                    }
+                    struct ggml_et_elmap_params params;
+                    params.src0 = *node->src[0];
+                    params.src1 = *node->src[1];
+                    params.dst = *node;
+
+                    el_map_f32(&params, env);
+
+                }
+                break;
+
+            // case GGML_OP_ADD:
+            //     // ggml_et_op_mul(dev_ctx, node);
+            //     // ggml_et_op_add(dev_ctx, node);
+            //     break;
+
+            case GGML_OP_MUL_MAT:
+                // ggml_et_op_mul(dev_ctx, node);
+                {
+                    if (!node) {
+                       break;
+                    }
+
+                    if (!node->src[0] || !node->src[1]) {
+                        break;
+                    }
+
+                    const char* kernel_name;
+                    const char* src0_type_name;
+
+                    if (node->type == GGML_TYPE_F32 &&
+                        node->src[0]->type == GGML_TYPE_Q8_0 &&
+                        node->src[1]->type == GGML_TYPE_F32) {
+
+                        if((node->src[0]->ne[2] > 1) || (node->src[0]->ne[3] > 1)) {
+                            kernel_name = "mul_mat_f32";
+                        }
+                        else{
+                            kernel_name = "mul_mat_Q8_0";
+                        }
+                        // kernel_name = "mul_mat_Q8_0"; //mul_mat_f32
+                        src0_type_name = "Q8_0";
+                        
+                    } else if (node->type == GGML_TYPE_F32 &&
+                            node->src[0]->type == GGML_TYPE_F16 &&
+                            node->src[1]->type == GGML_TYPE_F32) {
+                        kernel_name = "mul_mat_f32";
+                        src0_type_name = "F16";
+
+                    } else if (node->type == GGML_TYPE_F32 &&
+                            node->src[0]->type == GGML_TYPE_F32 &&
+                            node->src[1]->type == GGML_TYPE_F32) {
+
+                        kernel_name = "mul_mat_f32";
+                        src0_type_name = "F32";
+
+                    } else {
+                        break;
+                    }
+
+                    struct ggml_et_binary_params params;
+                    params.src0 = *node->src[0];  // weight matrix
+                    params.src1 = *node->src[1];  // activation matrix
+                    params.dst = *node;           // output matrix
+
+                    mul_mat_Q8_0(&params, env);
+
+                }
+                break;
+
+            case GGML_OP_MUL_MAT_ID:
+                // ggml_et_op_mul(dev_ctx, node);
+                // ggml_et_op_mul_mat_id(dev_ctx, node);
+                break;
+
+            case GGML_OP_ROPE:
+                // ggml_et_op_mul(dev_ctx, node);
+                // ggml_et_op_rope(dev_ctx, node);
+                break;
+
+            case GGML_OP_RMS_NORM:
+                // ggml_et_op_mul(dev_ctx, node);
+                // ggml_et_op_rms_norm(dev_ctx, node);
+                break;
+
+            case GGML_OP_GLU:
+                // ggml_et_op_mul(dev_ctx, node);
+                // ggml_et_op_glu(dev_ctx, node);
+                break;
+
+            case GGML_OP_SOFT_MAX:
+                // ggml_et_op_mul(dev_ctx, node);
+                // ggml_et_op_softmax(dev_ctx, node);
+                break;
+
+            case GGML_OP_GET_ROWS:
+                // ggml_et_op_mul(dev_ctx, node);
+                // ggml_et_op_get_rows(dev_ctx, node);
+                break;
+
+            case GGML_OP_CONT:
+                // ggml_et_op_mul(dev_ctx, node);
+                // ggml_et_op_cont(dev_ctx, node);
+                break;
+
+            case GGML_OP_SET_ROWS:
+                // ggml_et_op_mul(dev_ctx, node);
+                // ggml_et_op_set_rows(dev_ctx, node);
+                break;
+
+            case GGML_OP_RESHAPE:
+            case GGML_OP_VIEW:
+            case GGML_OP_PERMUTE:
+            case GGML_OP_TRANSPOSE:
+                // These are metadata-only operations that require no computation
+                // GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
+                break;
+
+            default:
+                // GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
+                break; //GGML_STATUS_FAILED;
         }
-
-        // switch (node->op) {
-        //     case GGML_OP_MUL:
-        //         ggml_et_op_mul(dev_ctx, node);
-        //         break;
-
-        //     case GGML_OP_ADD:
-        //         ggml_et_op_mul(dev_ctx, node);
-        //         // ggml_et_op_add(dev_ctx, node);
-        //         break;
-
-        //     case GGML_OP_MUL_MAT:
-        //         ggml_et_op_mul(dev_ctx, node);
-        //         // ggml_et_op_mul_mat(dev_ctx, node);
-
-        //         // if (once < 100){
-        //         //     uint64_t * host_data = (uint64_t *) node->data;
-
-        //         //     printf("Tensor error: %lu\n", host_data[0]);
-
-        //         //     // printf("Tensor error:");
-        //         //     once++;
-        //         // } 
-        //         break;
-
-        //     case GGML_OP_MUL_MAT_ID:
-        //         ggml_et_op_mul(dev_ctx, node);
-        //         // ggml_et_op_mul_mat_id(dev_ctx, node);
-        //         break;
-
-        //     case GGML_OP_ROPE:
-        //         ggml_et_op_mul(dev_ctx, node);
-        //         // ggml_et_op_rope(dev_ctx, node);
-        //         break;
-
-        //     case GGML_OP_RMS_NORM:
-        //         ggml_et_op_mul(dev_ctx, node);
-        //         // ggml_et_op_rms_norm(dev_ctx, node);
-        //         break;
-
-        //     case GGML_OP_GLU:
-        //         ggml_et_op_mul(dev_ctx, node);
-        //         // ggml_et_op_glu(dev_ctx, node);
-        //         break;
-
-        //     case GGML_OP_SOFT_MAX:
-        //         ggml_et_op_mul(dev_ctx, node);
-        //         // ggml_et_op_softmax(dev_ctx, node);
-        //         break;
-
-        //     case GGML_OP_GET_ROWS:
-        //         ggml_et_op_mul(dev_ctx, node);
-        //         // ggml_et_op_get_rows(dev_ctx, node);
-        //         break;
-
-        //     case GGML_OP_CONT:
-        //         ggml_et_op_mul(dev_ctx, node);
-        //         // ggml_et_op_cont(dev_ctx, node);
-        //         break;
-
-        //     case GGML_OP_SET_ROWS:
-        //         ggml_et_op_mul(dev_ctx, node);
-        //         // ggml_et_op_set_rows(dev_ctx, node);
-        //         break;
-
-        //     case GGML_OP_RESHAPE:
-        //     case GGML_OP_VIEW:
-        //     case GGML_OP_PERMUTE:
-        //     case GGML_OP_TRANSPOSE:
-        //         // These are metadata-only operations that require no computation
-        //         GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
-        //         break;
-
-        //     default:
-        //         GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
-        //         return GGML_STATUS_FAILED;
-        // }
 
 
         

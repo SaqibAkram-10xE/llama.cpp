@@ -61,7 +61,7 @@ static inline void prefetch_weight_row(const void* start_ptr, int64_t num_blocks
 }
 
 // int entry_point(struct ggml_et_binary_params* params, void* env) {
-int mul_mat_f32(struct ggml_et_binary_params* params, void* env) {
+int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
     
     uint64_t hart_id = get_hart_id();
     uint64_t global_id = ((hart_id >> 6) << 5) + ((hart_id >> 1) & 0x1F);
