@@ -1217,7 +1217,7 @@ int entry_point(struct ggml_cgraph* cgraph, void* env) {
         }
 
         FENCE
-    
+        delay(10000000);
        
         switch (node->op) {
             case GGML_OP_MUL:
