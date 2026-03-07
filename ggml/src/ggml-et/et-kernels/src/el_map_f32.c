@@ -5,6 +5,7 @@
 //******************************************************************************
 
 #include <stdint.h>
+#include <stdbool.h>
 #include "ggml_tensor.h"
 #include "platform.h"
 
@@ -81,19 +82,6 @@ struct memset_params {
     size_t size;           // Number of bytes to set
 };
 
-struct ggml_et_rope_params {
-    struct ggml_tensor src0;  // F32 input tensor
-    struct ggml_tensor src1;  // I32 position tensor
-    struct ggml_tensor src2;  // F32 frequency factors (optional)
-    struct ggml_tensor dst;   // F32 output tensor
-    rope_params_t rope_params;
-};
-
-// ROPE constants (matching GGML definitions)
-#define GGML_ROPE_TYPE_NEOX 2
-#define CACHE_LINE_SIZE_F32 16
-
-// ROPE operation parameters structure (matches ggml-et-ops.h)
 typedef struct {
     int32_t n_past;
     int32_t n_dims;        // Number of dimensions to apply ROPE to (must be even)
@@ -108,6 +96,18 @@ typedef struct {
     float   beta_slow;     // Slow beta for YaRN
     int32_t sections[4];   // Sections for multi-modal ROPE
 } rope_params_t;
+
+struct ggml_et_rope_params {
+    struct ggml_tensor src0;  // F32 input tensor
+    struct ggml_tensor src1;  // I32 position tensor
+    struct ggml_tensor src2;  // F32 frequency factors (optional)
+    struct ggml_tensor dst;   // F32 output tensor
+    rope_params_t rope_params;
+};
+
+// ROPE constants (matching GGML definitions)
+#define GGML_ROPE_TYPE_NEOX 2
+#define CACHE_LINE_SIZE_F32 16
 
 // struct ggml_et_binary_params {
 //     struct ggml_tensor src0;
@@ -138,19 +138,6 @@ void delay(unsigned long count) {
     }
 }
 #define FENCE __asm__ __volatile__ ("fence\n");
-
-// Helper functions from different kernels
-static inline float silu_f32(float x) {
-    if (x > 20.0f) {
-        return x;
-    } else if (x < -20.0f) {
-        return 0.0f;
-    } else {
-        float exp_neg_x = et_expf(-x);
-        float denominator = 1.0f + exp_neg_x;
-        return et_fdiv(x, denominator);
-    }
-}
 
 static float find_max_f32(const float* x, int n) {
     float max_val = x[0];
@@ -212,6 +199,19 @@ static void compute_softmax_row(
         for (int i = 0; i < ne00; i++) {
             dst[i] *= inv_sum;
         }
+    }
+}
+
+// Helper functions from different kernels
+static inline float silu_f32(float x) {
+    if (x > 20.0f) {
+        return x;
+    } else if (x < -20.0f) {
+        return 0.0f;
+    } else {
+        float exp_neg_x = et_expf(-x);
+        float denominator = 1.0f + exp_neg_x;
+        return et_fdiv(x, denominator);
     }
 }
 
@@ -429,46 +429,6 @@ static inline void block_swiglu(float* dst_block, const float* x_block, const fl
     // Handle remaining elements (< 8) with scalar operations
     for (int32_t i = vec_end; i < elements; i++) {
         dst_block[i] = silu_f32(x_block[i]) * g_block[i];
-    }
-}
-
-static inline void block_add(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
-    // Process 8 elements at a time using vector addition
-    int32_t vec_end = (elements / 8) * 8;
-
-    // Set mask register to enable all 8 vector elements
-    unsigned long temp_mask;
-    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
-    __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
-
-    for (int32_t i = 0; i < vec_end; i += 8) {
-        // Compute results into temporary buffer
-        float temp_result[8];
-        __asm__ volatile(
-            "flw.ps f10, %[src0_vec]\n"        // Load 8 src0 values
-            "flw.ps f11, %[src1_vec]\n"        // Load 8 src1 values
-            "fadd.ps f12, f10, f11\n"          // dst = src0 + src1 (8-wide)
-            "fsw.ps f12, %[dst_vec]\n"         // Store 8 results to temp buffer
-
-            : [dst_vec] "=m"(*(float(*)[8])temp_result)
-            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
-              [src1_vec] "m"(*(const float(*)[8])&src1_block[i])
-            : "f10", "f11", "f12"
-        );
-
-        // Use atomic stores to write results to global memory
-        for (int32_t j = 0; j < 8; j++) {
-            atomic_store_f32((volatile float*)&dst_block[i + j], temp_result[j]);
-        }
-    }
-
-    // Restore original mask
-    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
-
-    // Handle remaining elements (< 8) with scalar operations and atomic stores
-    for (int32_t i = vec_end; i < elements; i++) {
-        float result = src0_block[i] + src1_block[i];
-        atomic_store_f32((volatile float*)&dst_block[i], result);
     }
 }
 
@@ -1378,7 +1338,7 @@ int entry_point(struct ggml_cgraph* cgraph, void* env) {
 
                     struct ggml_et_glu_params params;
                     params.src0 = *node->src[0];
-                    params.src1 = node->src[1] ? *node->src[1] : node->src[0]; // Handle single tensor mode
+                    params.src1 = node->src[1] ? *(node->src[1]) : *(node->src[0]); // Handle single tensor mode
                     params.dst = *node;
                     params.glu_op_type = GGML_GLU_OP_SWIGLU; // Default to SwiGLU
                     params.swapped = 0; // Default to not swapped
@@ -1396,8 +1356,8 @@ int entry_point(struct ggml_cgraph* cgraph, void* env) {
 
                     struct ggml_et_softmax_params params;
                     params.src0 = *node->src[0];
-                    params.src1 = node->src[1] ? *node->src[1] : *node->src[0]; // Use src0 as dummy if no mask
-                    params.src2 = node->src[2] ? *node->src[2] : *node->src[0]; // Use src0 as dummy if no sinks
+                    params.src1 = node->src[1] ? *(node->src[1]) : *(node->src[0]); // Use src0 as dummy if no mask
+                    params.src2 = node->src[2] ? *(node->src[2]) : *(node->src[0]); // Use src0 as dummy if no sinks
                     params.dst = *node;
                     params.scale = 1.0f; // Default scale
                     params.max_bias = 0.0f; // Default max bias
@@ -1457,9 +1417,9 @@ int entry_point(struct ggml_cgraph* cgraph, void* env) {
                     if (node->type != GGML_TYPE_F32 || node->src[0]->type != GGML_TYPE_F32 || node->src[1]->type != GGML_TYPE_I32) break;
 
                     struct ggml_et_rope_params params;
-                    params.src0 = *node->src[0];
-                    params.src1 = *node->src[1];
-                    params.src2 = node->src[2] ? *node->src[2] : *node->src[0]; // Use src0 as dummy if no freq factors
+                    params.src0 = *(node->src[0]);
+                    params.src1 = *(node->src[1]);
+                    params.src2 = node->src[2] ? *(node->src[2]) : *(node->src[0]); // Use src0 as dummy if no freq factors
                     params.dst = *node;
                     
                     // Default rope parameters - these should be taken from the actual node if available
