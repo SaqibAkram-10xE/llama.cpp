@@ -59,6 +59,8 @@ static inline void prefetch_weight_row(const void* start_ptr, int64_t num_blocks
 }
 
 int entry_point(struct ggml_et_binary_params* params, void* env) {
+// int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
+
     uint64_t hart_id = get_hart_id();
     const int64_t stride_m = 2048; 
 
