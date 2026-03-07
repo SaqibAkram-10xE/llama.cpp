@@ -118,7 +118,8 @@ struct ggml_et_mul_mat_id_params {
     ggml_tensor dst;      // Output (F32) [M, n_expert_used, batch, 1]
 };
 
-bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
+
+bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, ggml_cgraph* cgraph);
 bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
 bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
 bool ggml_et_op_mul_mat_id(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
@@ -129,4 +130,4 @@ bool ggml_et_op_softmax(ggml_backend_et_device_context* dev_ctx, const ggml_tens
 bool ggml_et_op_get_rows(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
 bool ggml_et_op_set_rows(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
 bool ggml_et_op_cont(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
-bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
+bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph* cgraph);
