@@ -1216,9 +1216,14 @@ int entry_point(struct ggml_cgraph* cgraph, void* env) {
             continue;
         }
 
+        // Ensure all threads complete previous operation
         FENCE
-        delay(10000000);
-       
+        __asm__ volatile("fence rw, rw");
+        
+        // Add small delay for debugging
+        // For debugging: uncomment to add delay between operations
+        if (i < 5) delay(100000); // Only delay first few operations
+        
         switch (node->op) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
@@ -1323,7 +1328,8 @@ int entry_point(struct ggml_cgraph* cgraph, void* env) {
                     struct ggml_et_rms_norm_params params;
                     params.src0 = *node->src[0];
                     params.dst = *node;
-                    params.eps = 1e-6f; // Default epsilon, should be taken from node if available
+                    // Extract actual epsilon from node if available in ggml_op_params
+                    params.eps = 1e-6f; // TODO: Extract from node->op_params when available
 
                     rms_norm_f32_impl(&params, env);
                 }
