@@ -1275,11 +1275,21 @@ int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
     return 0;
 }
 
-
+static int once = 0;
 // #include "mul_mat_Q8_0.c"
 int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
+    if(once == 0) {
+        once = 1;
+        // For debugging: print cgraph info at start of execution
+        et_printf("ET: Starting execution of computation graph with %d nodes\n", cgraph->n_nodes);
+    }
+    
     
     // delay(1000000);
+
+
+
+    /*
     
     for (int i = 0; i < cgraph->n_nodes; i++) 
     {
@@ -1534,6 +1544,9 @@ int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
 
         
     }
+
+
+*/
 
     // if (params->dst.op == GGML_OP_MUL || params->dst.op == GGML_OP_ADD) {
     //     return el_map_f32(params, env);

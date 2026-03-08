@@ -88,13 +88,15 @@ static ggml_et_cpu_compare_config set_rows_cpu_compare_config = {
 bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
     // Delegate to generic element map operation
     return ggml_et_op_elmap(dev_ctx, cgraph);
+    return true;
     
 }
 
-// bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
-//     // Delegate to generic element map operation
-//     return ggml_et_op_elmap(dev_ctx, node);
-// }
+bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
+    // Delegate to generic element map operation
+    // return ggml_et_op_elmap(dev_ctx, node);
+    return true;
+}
 
 bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
     
@@ -108,9 +110,9 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
    
 
     kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cgraph, sizeof(*cgraph), 0xFFFFFFFF, true);
-    if (kernel_result != 0){
-        printf(".");
-    }
+    // if (kernel_result != 0){
+    //     printf(".");
+    // }
      
     return kernel_result;
 }
@@ -310,7 +312,7 @@ bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tens
         }
     }
 
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
+    bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF, false);
 
         // printf("Tensor error:");
     // if (params.src0.data != NULL)
