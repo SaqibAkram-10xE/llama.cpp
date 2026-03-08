@@ -1203,65 +1203,15 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     return 0;
 }
 
-int entry_point(struct ggml_cgraph* cgraph, void* env) {
+int entry_point(struct ggml_et_elmap_params* params, void* env) {
+    if (!params) {
+        return -1;
+    }
+    
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
-
-    if (!kernel_env || !cgraph) {
+    if (!kernel_env) {
         return -1;
     }
 
-    // Thread coordination - same pattern as other kernels
-    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    int num_threads = get_num_threads(kernel_env->shire_mask);
-
-    if (thread_id < 0 || (thread_id & 1)) {
-        return 0; // Skip odd threads to avoid resource contention
-    }
-
-    int effective_thread_id = thread_id / 2;
-    int effective_num_threads = (num_threads + 1) / 2;
-
-    // Only process if we're the first thread (thread 0)
-    // This kernel processes the entire graph, so we don't need multiple threads
-    if (effective_thread_id != 0) {
-        return 0;
-    }
-
-    // Process all nodes in the computation graph
-    for (int i = 0; i < cgraph->n_nodes; i++) {
-        struct ggml_tensor * node = cgraph->nodes[i];
-        if (node->op == GGML_OP_NONE) {
-            continue;
-        }
-
-        // Ensure all threads complete previous operation
-        FENCE
-        __asm__ volatile("fence rw, rw");
-        
-        // Handle element-wise operations (MUL, ADD)
-        if (node->op == GGML_OP_MUL || node->op == GGML_OP_ADD) {
-            if (!node->src[0] || !node->src[1]) {
-                continue;
-            }
-
-            if (node->type != GGML_TYPE_F32 ||
-                node->src[0]->type != GGML_TYPE_F32 ||
-                node->src[1]->type != GGML_TYPE_F32) {
-                continue;
-            }
-
-            struct ggml_et_elmap_params params;
-            params.src0 = *node->src[0];
-            params.src1 = *node->src[1];
-            params.dst = *node;
-
-            int result = el_map_f32(&params, env);
-            if (result != 0) {
-                return result;
-            }
-        }
-        // Skip other operations - they are handled by their respective kernels
-    }
-    
-    return 0;
+    return el_map_f32(params, env);
 }
