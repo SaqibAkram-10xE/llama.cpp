@@ -107,8 +107,8 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
     // params.n_nodes = cgraph->n_nodes;
    
 
-    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cgraph, sizeof(*cgraph), 0xFFFFFFFF);
-    if (kernel_result != 1){
+    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cgraph, sizeof(*cgraph), 0xFFFFFFFF, true);
+    if (kernel_result != 0){
         printf(".");
     }
      
