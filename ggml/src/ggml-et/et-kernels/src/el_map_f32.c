@@ -115,7 +115,7 @@ struct ggml_et_rope_params {
 //     struct ggml_tensor dst;
 // };
 
-struct ggml_cgraph {
+struct ggml_cgraph_et {
     int size;    // maximum number of nodes/leafs/grads/grad_accs
     int n_nodes; // number of nodes currently in use
     int n_leafs; // number of leafs currently in use
@@ -1277,7 +1277,7 @@ int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
 
 
 // #include "mul_mat_Q8_0.c"
-int entry_point(struct ggml_cgraph* cgraph, void* env) {
+int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
     
     // delay(1000000);
     

@@ -40,7 +40,7 @@ struct ggml_et_binary_params {
     ggml_tensor dst;
 };
 
-struct ggml_cgraph {
+struct ggml_cgraph_et {
     int size;    // maximum number of nodes/leafs/grads/grad_accs
     int n_nodes; // number of nodes currently in use
     int n_leafs; // number of leafs currently in use
