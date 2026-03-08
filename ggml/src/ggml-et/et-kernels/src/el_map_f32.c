@@ -9,7 +9,7 @@
 #include "ggml_tensor.h"
 #include "platform.h"
 
-#include "mul_mat_Q8_0.c"
+// #include "mul_mat_Q8_0.c"
 #include "quants.h"
 #include "math_fp.h"
 #include "block_ops.h"
