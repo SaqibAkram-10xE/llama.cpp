@@ -496,26 +496,32 @@ static void ggml_backend_et_synchronize(ggml_backend_t backend) {
 static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_et_device_context * dev_ctx = (ggml_backend_et_device_context *)backend->device->context;
 
+
+    printf("***HOST***: Computing graph with %d nodes\n", cgraph->n_nodes);
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
+        printf("***HOST***: Node %d pointer: %p\n", i, (void*)node);
 
         if (node->op == GGML_OP_NONE) {
             continue;
         }
-
+        printf("***HOST***: Processing node %d: %s (%s)\n", i, node->name, ggml_op_name(node->op));
+        
+        ggml_et_op_mul(dev_ctx, cgraph);
+        
         switch (node->op) {
             case GGML_OP_MUL:
                 // ggml_et_op_mul(dev_ctx, node);
-                ggml_et_op_mul(dev_ctx, cgraph);
+                // ggml_et_op_mul(dev_ctx, cgraph);
                 
                 break;
 
             case GGML_OP_ADD:
-                ggml_et_op_add(dev_ctx, node);
+                // ggml_et_op_add(dev_ctx, node);
                 break;
 
             case GGML_OP_MUL_MAT:
-                ggml_et_op_mul_mat(dev_ctx, node);
+                // ggml_et_op_mul_mat(dev_ctx, node);
 
                 // if (once < 100){
                 //     uint64_t * host_data = (uint64_t *) node->data;
@@ -528,35 +534,35 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
                 break;
 
             case GGML_OP_MUL_MAT_ID:
-                ggml_et_op_mul_mat_id(dev_ctx, node);
+                // ggml_et_op_mul_mat_id(dev_ctx, node);
                 break;
 
             case GGML_OP_ROPE:
-                ggml_et_op_rope(dev_ctx, node);
+                // ggml_et_op_rope(dev_ctx, node);
                 break;
 
             case GGML_OP_RMS_NORM:
-                ggml_et_op_rms_norm(dev_ctx, node);
+                // ggml_et_op_rms_norm(dev_ctx, node);
                 break;
 
             case GGML_OP_GLU:
-                ggml_et_op_glu(dev_ctx, node);
+                // ggml_et_op_glu(dev_ctx, node);
                 break;
 
             case GGML_OP_SOFT_MAX:
-                ggml_et_op_softmax(dev_ctx, node);
+                // ggml_et_op_softmax(dev_ctx, node);
                 break;
 
             case GGML_OP_GET_ROWS:
-                ggml_et_op_get_rows(dev_ctx, node);
+                // ggml_et_op_get_rows(dev_ctx, node);
                 break;
 
             case GGML_OP_CONT:
-                ggml_et_op_cont(dev_ctx, node);
+                // ggml_et_op_cont(dev_ctx, node);
                 break;
 
             case GGML_OP_SET_ROWS:
-                ggml_et_op_set_rows(dev_ctx, node);
+                // ggml_et_op_set_rows(dev_ctx, node);
                 break;
 
             case GGML_OP_RESHAPE:
@@ -570,6 +576,8 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
                 GGML_LOG_ERROR("ET: Unsupported operation in graph: %s", ggml_op_name(node->op));
                 return GGML_STATUS_FAILED;
         }
+         
+    
     }
 
     return GGML_STATUS_SUCCESS;

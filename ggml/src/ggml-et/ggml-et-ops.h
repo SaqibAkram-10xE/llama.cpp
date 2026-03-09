@@ -134,6 +134,23 @@ struct ggml_et_mul_mat_id_params {
     ggml_tensor dst;      // Output (F32) [M, n_expert_used, batch, 1]
 };
 
+struct ggml_et_common_params{
+    ggml_tensor src0;
+    ggml_tensor src1;
+    ggml_tensor src2;
+    ggml_tensor dst;
+    // sotmax parameters
+    float scale;          // Scale factor
+    float max_bias;       // Max bias for ALiBi (0.0f if not used)
+    // GLU parameters
+    int32_t glu_op_type;  // GLU operation type (REGLU=0, GEGLU=1, SWIGLU=2, etc.)
+    int32_t swapped;      // Whether gate and value are swapped
+    // RMS_Norm parameters
+    float eps;         // Epsilon parameter for numerical stability
+    // ROPE parameters
+    rope_params_t rope_params;
+};
+
 
 bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, ggml_cgraph* cgraph);
 bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);

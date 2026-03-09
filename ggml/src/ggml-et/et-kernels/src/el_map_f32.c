@@ -14,6 +14,119 @@
 #include "math_fp.h"
 #include "block_ops.h"
 
+static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
+    "NONE",
+
+    "DUP",
+    "ADD",
+    "ADD_ID",
+    "ADD1",
+    "ACC",
+    "SUB",
+    "MUL",
+    "DIV",
+    "SQR",
+    "SQRT",
+    "LOG",
+    "SIN",
+    "COS",
+    "SUM",
+    "SUM_ROWS",
+    "CUMSUM",
+    "MEAN",
+    "ARGMAX",
+    "COUNT_EQUAL",
+    "REPEAT",
+    "REPEAT_BACK",
+    "CONCAT",
+    "SILU_BACK",
+    "NORM",
+    "RMS_NORM",
+    "RMS_NORM_BACK",
+    "GROUP_NORM",
+    "L2_NORM",
+
+    "MUL_MAT",
+    "MUL_MAT_ID",
+    "OUT_PROD",
+
+    "SCALE",
+    "SET",
+    "CPY",
+    "CONT",
+    "RESHAPE",
+    "VIEW",
+    "PERMUTE",
+    "TRANSPOSE",
+    "GET_ROWS",
+    "GET_ROWS_BACK",
+    "SET_ROWS",
+    "DIAG",
+    "DIAG_MASK_INF",
+    "DIAG_MASK_ZERO",
+    "SOFT_MAX",
+    "SOFT_MAX_BACK",
+    "ROPE",
+    "ROPE_BACK",
+    "CLAMP",
+    "CONV_TRANSPOSE_1D",
+    "IM2COL",
+    "IM2COL_BACK",
+    "IM2COL_3D",
+    "CONV_2D",
+    "CONV_3D",
+    "CONV_2D_DW",
+    "CONV_TRANSPOSE_2D",
+    "POOL_1D",
+    "POOL_2D",
+    "POOL_2D_BACK",
+    "UPSCALE",
+    "PAD",
+    "PAD_REFLECT_1D",
+    "ROLL",
+    "ARANGE",
+    "TIMESTEP_EMBEDDING",
+    "ARGSORT",
+    "TOP_K",
+    "LEAKY_RELU",
+    "TRI",
+    "FILL",
+
+    "FLASH_ATTN_EXT",
+    "FLASH_ATTN_BACK",
+    "SSM_CONV",
+    "SSM_SCAN",
+    "WIN_PART",
+    "WIN_UNPART",
+    "GET_REL_POS",
+    "ADD_REL_POS",
+    "RWKV_WKV6",
+    "GATED_LINEAR_ATTN",
+    "RWKV_WKV7",
+    "SOLVE_TRI",
+
+    "UNARY",
+
+    "MAP_CUSTOM1",
+    "MAP_CUSTOM2",
+    "MAP_CUSTOM3",
+
+    "CUSTOM",
+
+    "CROSS_ENTROPY_LOSS",
+    "CROSS_ENTROPY_LOSS_BACK",
+    "OPT_STEP_ADAMW",
+    "OPT_STEP_SGD",
+
+    "GLU",
+};
+
+const char * ggml_op_name(enum ggml_op op) {
+    return GGML_OP_NAME[op];
+}
+
+
+
 // GLU operation types (from ggml.h)
 enum ggml_glu_op {
     GGML_GLU_OP_REGLU = 0,
@@ -1275,36 +1388,38 @@ int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
     return 0;
 }
 
-static int once = 0;
-// #include "mul_mat_Q8_0.c"
 int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
-    if(once == 0) {
-        once = 1;
-        // For debugging: print cgraph info at start of execution
-        et_printf("ET: Starting execution of computation graph with %d nodes\n", cgraph->n_nodes);
-    }
     
     
-    // delay(1000000);
-
-
-
-    /*
+    int64_t hart_id = get_hart_id();
+    
+    hart_id == 0 ? et_printf("***DEV***: Hart %d starting execution\n", hart_id) : et_printf("");
+    
+    hart_id == 0 ? et_printf("***DEV***: Computing graph with %d nodes\n", cgraph->n_nodes) : et_printf("");
     
     for (int i = 0; i < cgraph->n_nodes; i++) 
     {
+        hart_id == 0 ? et_printf("***DEV***: in loop\n") : et_printf("");
+        
+        // struct ggml_tensor * node = cgraph->nodes[i];
+        
+        // hart_id == 0 ? et_printf("***DEV***: NODE %d\n", ggml_op_name(node->op)) : et_printf("");
+        hart_id == 0 ? et_printf("***DEV***: NODE %d pointer: %p\n", i, cgraph->nodes[i]) : et_printf("");
+
         struct ggml_tensor * node = cgraph->nodes[i];
         if (node->op == GGML_OP_NONE) {
             continue;
         }
 
         // Ensure all threads complete previous operation
-        FENCE
-        __asm__ volatile("fence rw, rw");
+        // FENCE
+        // __asm__ volatile("fence rw, rw");
         
         // Add small delay for debugging
         // For debugging: uncomment to add delay between operations
-        if (i < 5) delay(100000); // Only delay first few operations
+        // if (i < 5) delay(100000); // Only delay first few operations
+    
+    
         
         switch (node->op) {
             case GGML_OP_MUL:
@@ -1331,7 +1446,9 @@ int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
                     params.src1 = *node->src[1];
                     params.dst = *node;
 
-                    el_map_f32(&params, env);
+                    hart_id == 0 ? et_printf("***DEV***: OP name: %s\n", ggml_op_name(node->op)) : et_printf("");
+                    
+                    // el_map_f32(&params, env);
 
                 }
                 break;
@@ -1546,7 +1663,7 @@ int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
     }
 
 
-*/
+
 
     // if (params->dst.op == GGML_OP_MUL || params->dst.op == GGML_OP_ADD) {
     //     return el_map_f32(params, env);

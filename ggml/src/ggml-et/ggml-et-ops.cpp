@@ -88,7 +88,7 @@ static ggml_et_cpu_compare_config set_rows_cpu_compare_config = {
 bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
     // Delegate to generic element map operation
     return ggml_et_op_elmap(dev_ctx, cgraph);
-    return true;
+    // return true;
     
 }
 
