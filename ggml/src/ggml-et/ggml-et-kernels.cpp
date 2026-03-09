@@ -1,4 +1,5 @@
 #include "ggml-et-kernels.h"
+#include "ggml-et-ops.h"
 #include "ggml-impl.h"
 #include "ggml-et-kernels-embed.hpp"
 #include <fstream>
