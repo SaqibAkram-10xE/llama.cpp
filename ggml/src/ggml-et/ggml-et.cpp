@@ -496,6 +496,7 @@ static void ggml_backend_et_synchronize(ggml_backend_t backend) {
 
 static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_et_device_context * dev_ctx = (ggml_backend_et_device_context *)backend->device->context;
+    std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
 
     printf("***HOST***: Computing graph with %d nodes\n", cgraph->n_nodes);
     
@@ -583,13 +584,16 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
 
             default:
                 GGML_LOG_ERROR("ET: Unsupported operation in graph: %s", ggml_op_name(node->op));
+                // Clean up device graph memory
+                if (runtime) {
+                    runtime->freeDevice(dev_ctx->rtid, reinterpret_cast<std::byte*>(device_graph));
+                }
                 return GGML_STATUS_FAILED;
         }
          
     }
 
     // Clean up device graph memory
-    std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
     if (runtime) {
         runtime->freeDevice(dev_ctx->rtid, reinterpret_cast<std::byte*>(device_graph));
     }

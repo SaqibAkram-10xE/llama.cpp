@@ -100,7 +100,11 @@ bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* 
 
 bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
     
-    
+    std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
+    if (!runtime) {
+        GGML_LOG_ERROR("ET: Runtime not available for graph allocation\n");
+        return false;
+    }
 
     bool kernel_result = false;
 
@@ -114,7 +118,6 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
     kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", device_graph, sizeof(*cgraph), 0xFFFFFFFF, true);
     
     // Clean up device graph memory
-    std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
     if (runtime) {
         runtime->freeDevice(dev_ctx->rtid, reinterpret_cast<std::byte*>(device_graph));
     }
