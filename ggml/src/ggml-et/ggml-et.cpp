@@ -424,6 +424,7 @@ static void ggml_backend_et_free(ggml_backend_t backend) {
     if (dev && dev->context) {
         ggml_backend_et_device_context * dev_ctx = (ggml_backend_et_device_context *)dev->context;
         ggml_et_unload_all_kernels(dev_ctx);
+        ggml_et_free_graph_buffer(dev_ctx);
     }
 
     delete et_ctx;
@@ -496,8 +497,15 @@ static void ggml_backend_et_synchronize(ggml_backend_t backend) {
 static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_et_device_context * dev_ctx = (ggml_backend_et_device_context *)backend->device->context;
 
-
     printf("***HOST***: Computing graph with %d nodes\n", cgraph->n_nodes);
+    
+    // Allocate and copy graph to ET device memory
+    void* device_graph = ggml_et_allocate_and_copy_graph(dev_ctx, cgraph);
+    if (!device_graph) {
+        GGML_LOG_ERROR("ET: Failed to allocate and copy graph to device memory\n");
+        return GGML_STATUS_FAILED;
+    }
+    
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
         printf("***HOST***: Node %d pointer: %p\n", i, (void*)node);
@@ -507,6 +515,7 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
         }
         printf("***HOST***: Processing node %d: %s (%s)\n", i, node->name, ggml_op_name(node->op));
         
+        // Pass the device-local graph to the operation
         ggml_et_op_mul(dev_ctx, cgraph);
         
         switch (node->op) {
@@ -577,7 +586,12 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
                 return GGML_STATUS_FAILED;
         }
          
-    
+    }
+
+    // Clean up device graph memory
+    std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
+    if (runtime) {
+        runtime->freeDevice(dev_ctx->rtid, reinterpret_cast<std::byte*>(device_graph));
     }
 
     return GGML_STATUS_SUCCESS;
@@ -1116,6 +1130,10 @@ ggml_backend_reg_t ggml_backend_et_reg(void) {
 	    dev_ctx->default_stream = ggml_et_runtime()->createStream(rtid);
 
 		dev_ctx->trace_buffer = ggml_et_runtime()->mallocDevice(rtid, ET_TRACE_BUFFER_SIZE);
+
+	    // Initialize graph buffer fields
+	    dev_ctx->graph_buffer = nullptr;
+	    dev_ctx->graph_buffer_size = 0;
 
 	    dev->context = dev_ctx;
 

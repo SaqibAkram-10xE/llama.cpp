@@ -4,6 +4,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 
 #define ET_TRACE_DECODER_IMPL
 #include <et-trace/decoder.h>
@@ -225,5 +226,88 @@ void ggml_et_unload_all_kernels(ggml_backend_et_device_context* dev_ctx) {
 
     for (const auto& kernel_name : kernel_names) {
         ggml_et_unload_kernel(dev_ctx, kernel_name);
+    }
+}
+
+void* ggml_et_allocate_and_copy_graph(ggml_backend_et_device_context* dev_ctx, const ggml_cgraph* cgraph) {
+    std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
+    if (!runtime) {
+        GGML_LOG_ERROR("ET: Runtime not available for graph allocation\n");
+        return nullptr;
+    }
+
+    if (!cgraph) {
+        GGML_LOG_ERROR("ET: Invalid graph pointer\n");
+        return nullptr;
+    }
+
+    // Calculate total size needed for graph structure
+    size_t graph_size = sizeof(ggml_cgraph);
+    size_t nodes_size = cgraph->size * sizeof(ggml_tensor*);
+    size_t total_size = graph_size + nodes_size;
+    
+    // Ensure proper alignment
+    const size_t alignment = 64; // Common cache line alignment
+    total_size = (total_size + alignment - 1) & ~(alignment - 1);
+
+    // Free existing graph buffer if any
+    ggml_et_free_graph_buffer(dev_ctx);
+
+    // Allocate host buffer for temporary storage
+    std::byte* host_buffer = nullptr;
+    try {
+        host_buffer = new std::byte[total_size];
+    } catch (const std::bad_alloc&) {
+        GGML_LOG_ERROR("ET: Failed to allocate host memory for graph buffer\n");
+        return nullptr;
+    }
+
+    // Copy graph structure to host buffer
+    memset(host_buffer, 0, total_size); // Clear the buffer
+    memcpy(host_buffer, cgraph, graph_size);
+    
+    // Copy nodes array
+    ggml_cgraph* temp_graph = reinterpret_cast<ggml_cgraph*>(host_buffer);
+    temp_graph->nodes = reinterpret_cast<ggml_tensor**>(host_buffer + graph_size);
+    memcpy(temp_graph->nodes, cgraph->nodes, nodes_size);
+
+    // Allocate device memory and copy from host
+    std::byte* device_graph_ptr = nullptr;
+    try {
+        // Use the runtime to allocate device memory
+        device_graph_ptr = runtime->mallocDevice(dev_ctx->rtid, total_size, alignment);
+        if (!device_graph_ptr) {
+            GGML_LOG_ERROR("ET: Failed to allocate device memory for graph\n");
+            delete[] host_buffer;
+            return nullptr;
+        }
+
+        // Copy from host to device
+        runtime->memcpyHostToDevice(dev_ctx->default_stream, 
+                                   reinterpret_cast<const std::byte*>(host_buffer), 
+                                   device_graph_ptr, 
+                                   total_size);
+        runtime->waitForStream(dev_ctx->default_stream);
+
+    } catch (const std::exception& e) {
+        GGML_LOG_ERROR("ET: Exception during graph allocation: %s\n", e.what());
+        if (device_graph_ptr) {
+            runtime->freeDevice(dev_ctx->rtid, device_graph_ptr);
+        }
+        delete[] host_buffer;
+        return nullptr;
+    }
+
+    // Clean up host buffer
+    delete[] host_buffer;
+
+    return device_graph_ptr;
+}
+
+void ggml_et_free_graph_buffer(ggml_backend_et_device_context* dev_ctx) {
+    if (dev_ctx->graph_buffer) {
+        delete[] dev_ctx->graph_buffer;
+        dev_ctx->graph_buffer = nullptr;
+        dev_ctx->graph_buffer_size = 0;
     }
 }
