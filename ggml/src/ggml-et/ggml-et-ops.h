@@ -40,20 +40,11 @@ struct ggml_et_binary_params {
     ggml_tensor dst;
 };
 
-struct ggml_cgraph_et {
-    int size;    // maximum number of nodes/leafs/grads/grad_accs
-    int n_nodes; // number of nodes currently in use
-    int n_leafs; // number of leafs currently in use
-
-    struct ggml_tensor ** nodes;     // tensors with data that can change if the graph is evaluated
-    // struct ggml_tensor ** grads;     // the outputs of these tensors are the gradients of the nodes
-    // struct ggml_tensor ** grad_accs; // accumulators for node gradients
-    // struct ggml_tensor ** leafs;     // tensors with constant data
-    // int32_t             * use_counts;// number of uses of each tensor, indexed by hash table slot
-
-    // struct ggml_hash_set visited_hash_set;
-
-    // enum ggml_cgraph_eval_order order;
+struct ggml_et_graph_params {
+    int n_nodes;
+    int n_leafs;
+    int size;
+    // Don't include nodes array - just pass essential info
 };
 
 // Element map parameters for embarrassingly parallel binary operations (MUL, ADD, etc.)

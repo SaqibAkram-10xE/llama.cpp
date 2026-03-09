@@ -229,6 +229,51 @@ void ggml_et_unload_all_kernels(ggml_backend_et_device_context* dev_ctx) {
     }
 }
 
+void* ggml_et_create_graph_params(ggml_backend_et_device_context* dev_ctx, const ggml_cgraph* cgraph) {
+    std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
+    if (!runtime) {
+        GGML_LOG_ERROR("ET: Runtime not available for graph params creation\n");
+        return nullptr;
+    }
+
+    if (!cgraph) {
+        GGML_LOG_ERROR("ET: Invalid graph pointer\n");
+        return nullptr;
+    }
+
+    // Create simple graph parameters
+    ggml_et_graph_params params;
+    params.n_nodes = cgraph->n_nodes;
+    params.n_leafs = cgraph->n_leafs;
+    params.size = cgraph->size;
+
+    // Allocate device memory for parameters
+    std::byte* device_params = nullptr;
+    try {
+        device_params = runtime->mallocDevice(dev_ctx->rtid, sizeof(params), 64);
+        if (!device_params) {
+            GGML_LOG_ERROR("ET: Failed to allocate device memory for graph params\n");
+            return nullptr;
+        }
+
+        // Copy from host to device
+        runtime->memcpyHostToDevice(dev_ctx->default_stream, 
+                                   reinterpret_cast<const std::byte*>(&params), 
+                                   device_params, 
+                                   sizeof(params));
+        runtime->waitForStream(dev_ctx->default_stream);
+
+    } catch (const std::exception& e) {
+        GGML_LOG_ERROR("ET: Exception during graph params creation: %s\n", e.what());
+        if (device_params) {
+            runtime->freeDevice(dev_ctx->rtid, device_params);
+        }
+        return nullptr;
+    }
+
+    return device_params;
+}
+
 void* ggml_et_allocate_and_copy_graph(ggml_backend_et_device_context* dev_ctx, const ggml_cgraph* cgraph) {
     std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
     if (!runtime) {

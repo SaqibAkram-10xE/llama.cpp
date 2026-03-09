@@ -108,18 +108,18 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
 
     bool kernel_result = false;
 
-    // Allocate and copy graph to device memory
-    void* device_graph = ggml_et_allocate_and_copy_graph(dev_ctx, cgraph);
-    if (!device_graph) {
-        GGML_LOG_ERROR("ET: Failed to allocate and copy graph to device memory\n");
+    // Create simple graph parameters for device memory
+    void* device_params = ggml_et_create_graph_params(dev_ctx, cgraph);
+    if (!device_params) {
+        GGML_LOG_ERROR("ET: Failed to create graph params for device memory\n");
         return false;
     }
 
-    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", device_graph, sizeof(*cgraph), 0xFFFFFFFF, true);
+    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", device_params, sizeof(ggml_et_graph_params), 0xFFFFFFFF, true);
     
-    // Clean up device graph memory
+    // Clean up device params memory
     if (runtime) {
-        runtime->freeDevice(dev_ctx->rtid, reinterpret_cast<std::byte*>(device_graph));
+        runtime->freeDevice(dev_ctx->rtid, reinterpret_cast<std::byte*>(device_params));
     }
      
     return kernel_result;
