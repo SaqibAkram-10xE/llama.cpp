@@ -92,44 +92,47 @@ static inline void block_add(float* dst_block, const float* src0_block, const fl
 }
 
 int entry_point(struct ggml_et_binary_params* params, void* env) {
-    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
+    // kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
-    if (!kernel_env) {
-        return -1;
-    }
+    // if (!kernel_env) {
+    //     return -1;
+    // }
 
-    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    int num_threads = get_num_threads(kernel_env->shire_mask);
+    // int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+    // int num_threads = get_num_threads(kernel_env->shire_mask);
 
-    if (thread_id < 0) {
-        return 0;
-    }
+    uint64_t hart_id = get_hart_id();
+    const int64_t num_threads = 2048; 
 
-    if (params == 0 || ((uint64_t)params & 0x7) != 0) {
-        return -1; // Invalid pointer
-    }
+    // if (thread_id < 0) {
+    //     return 0;
+    // }
+
+    // if (params == 0 || ((uint64_t)params & 0x7) != 0) {
+    //     return -1; // Invalid pointer
+    // }
 
     struct ggml_tensor* src0 = &params->src0;
     struct ggml_tensor* src1 = &params->src1;
     struct ggml_tensor* dst = &params->dst;
 
-    if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
-        return -1; // Unsupported type combination
-    }
+    // if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
+    //     return -1; // Unsupported type combination
+    // }
 
     float* src0_data = (float*)src0->data;
     float* src1_data = (float*)src1->data;
     float* dst_data = (float*)dst->data;
 
-    if (!src0_data || !src1_data || !dst_data) {
-        return -1; // Null data pointer
-    }
+    // if (!src0_data || !src1_data || !dst_data) {
+    //     return -1; // Null data pointer
+    // }
 
-    enum ggml_op operation = dst->op;
+    // enum ggml_op operation = dst->op;
 
-    if (operation != GGML_OP_MUL && operation != GGML_OP_ADD) {
-        return -1; // Unsupported operation
-    }
+    // if (operation != GGML_OP_MUL && operation != GGML_OP_ADD) {
+    //     return -1; // Unsupported operation
+    // }
 
     const int64_t ne0 = dst->ne[0], ne1 = dst->ne[1], ne2 = dst->ne[2], ne3 = dst->ne[3];
     const int64_t ne00 = src0->ne[0], ne01 = src0->ne[1], ne02 = src0->ne[2], ne03 = src0->ne[3];
@@ -144,7 +147,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
 
     // Distribute rows across threads using ceiling division to handle remainder
     const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
-    const int64_t start_row = thread_id * rows_per_thread;
+    const int64_t start_row = hart_id * rows_per_thread;
     const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
     if (start_row >= total_rows) {
@@ -175,7 +178,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
             const float* src0_block = src0_ptr + r * ne10;
             float* dst_block = dst_ptr + r * ne10;
 
-            switch (operation) {
+            switch (dst->op) {
                 case GGML_OP_MUL:
                     block_mul(dst_block, src0_block, src1_ptr, (int)ne10);
                     break;
