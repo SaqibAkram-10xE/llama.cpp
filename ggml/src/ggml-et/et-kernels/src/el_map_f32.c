@@ -177,7 +177,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
             const float* src0_block = src0_ptr + r * ne10;
             float* dst_block = dst_ptr + r * ne10;
 
-            switch (operation) {
+            switch (dst->op) {
                 case GGML_OP_MUL:
                     block_mul(dst_block, src0_block, src1_ptr, (int)ne10);
                     break;
