@@ -127,7 +127,7 @@ bool ggml_et_launch_kernel(ggml_backend_et_device_context* dev_ctx, const std::s
         // Setup kernel launch options
         rt::KernelLaunchOptions k_opts;
         k_opts.setShireMask(shire_mask);  // Default: all shires (0xFFFFFFFF)
-        k_opts.setBarrier(true);          // Wait for completion
+        k_opts.setBarrier(false);          // Wait for completion
         k_opts.setFlushL3(false);         // No L3 flush needed
         if(enable_print) {
             k_opts.setUserTracing(
@@ -208,8 +208,8 @@ bool ggml_et_launch_kernel_fast(ggml_backend_et_device_context* dev_ctx,
     
     rt::KernelLaunchOptions k_opts;
     k_opts.setShireMask(shire_mask);
-    k_opts.setBarrier(true); // Disable barrier if kernels can overlap/pipeline
-    k_opts.setFlushL3(true);
+    k_opts.setBarrier(false); // Disable barrier if kernels can overlap/pipeline
+    k_opts.setFlushL3(false);
 
     // Launch asynchronously - Do not wait/sync here!
     runtime->kernelLaunch(dev_ctx->default_stream, kernel_id,
