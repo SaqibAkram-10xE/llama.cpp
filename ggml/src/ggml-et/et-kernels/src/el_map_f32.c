@@ -102,7 +102,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
     // int num_threads = get_num_threads(kernel_env->shire_mask);
 
     uint64_t hart_id = get_hart_id();
-    const int64_t num_threads = 2048; 
+    const int64_t num_threads = 1; 
 
     // if (thread_id < 0) {
     //     return 0;
@@ -146,7 +146,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
     const int64_t total_rows = ne1 * ne2 * ne3;
 
     // Distribute rows across threads using ceiling division to handle remainder
-    const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
+    const int64_t rows_per_thread = 1;//(total_rows + num_threads - 1) / num_threads;
     const int64_t start_row = hart_id * rows_per_thread;
     const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
