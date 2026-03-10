@@ -156,8 +156,10 @@ static void copy_q8_0_row_cache_aligned(float* dst, const block_q8_0* src_blocks
 static int get_row_f32_mc_row_cache_aligned(struct ggml_et_get_rows_params* params, void* env)
 {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
-    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    int num_threads = get_num_threads(kernel_env->shire_mask);
+    // int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+    // int num_threads = get_num_threads(kernel_env->shire_mask);
+    uint64_t hart_id = get_hart_id();
+    const int64_t num_threads = 2048; 
 
     struct ggml_tensor* src0 = &params->src0;  // Data tensor (F32 or Q8_0)
     struct ggml_tensor* src1 = &params->src1;  // Row indices tensor (I32)
@@ -175,7 +177,7 @@ static int get_row_f32_mc_row_cache_aligned(struct ggml_et_get_rows_params* para
 
     const int64_t total_rows_to_extract = ne10 * ne11 * ne12 * ne13;
 
-    for (int64_t i = thread_id; i < total_rows_to_extract; i+=num_threads) {
+    for (int64_t i = hart_id; i < total_rows_to_extract; i+=num_threads) {
         // Calculate multi-dimensional index for the current output position
         const int64_t i13_idx = i / (ne12 * ne11 * ne10);
         const int64_t i12_idx = (i - i13_idx * ne12 * ne11 * ne10) / (ne11 * ne10);
