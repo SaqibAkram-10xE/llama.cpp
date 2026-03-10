@@ -16,43 +16,45 @@ struct ggml_et_cont_params {
 };
 
 int entry_point(struct ggml_et_cont_params* params, void* env) {
-    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
+    // kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
-    if (!kernel_env) {
-        return -1;
-    }
+    // if (!kernel_env) {
+    //     return -1;
+    // }
 
-    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    int num_threads = get_num_threads(kernel_env->shire_mask);
+    // int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+    // int num_threads = get_num_threads(kernel_env->shire_mask);
+    uint64_t hart_id = get_hart_id();
+    const int64_t num_threads = 1; 
 
-    if (thread_id < 0) {
-        return 0;
-    }
+    // if (thread_id < 0) {
+    //     return 0;
+    // }
 
-    if (params == 0 || ((uint64_t)params & 0x7) != 0) {
-        return -1; // Invalid pointer
-    }
+    // if (params == 0 || ((uint64_t)params & 0x7) != 0) {
+    //     return -1; // Invalid pointer
+    // }
 
     struct ggml_tensor* src0 = &params->src0;  // Non-contiguous input
     struct ggml_tensor* dst = &params->dst;    // Contiguous output
 
-    if (src0->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
-        return -1; // Unsupported type combination
-    }
+    // if (src0->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
+    //     return -1; // Unsupported type combination
+    // }
 
     float* src0_data = (float*)src0->data;
     float* dst_data = (float*)dst->data;
 
-    if (!src0_data || !dst_data) {
-        return -1; // Null data pointer
-    }
+    // if (!src0_data || !dst_data) {
+    //     return -1; // Null data pointer
+    // }
 
     // Verify total element count matches (CONT can reshape dimensions)
     const int64_t src_elements = src0->ne[0] * src0->ne[1] * src0->ne[2] * src0->ne[3];
     const int64_t dst_elements = dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3];
-    if (src_elements != dst_elements) {
-        return -1;
-    }
+    // if (src_elements != dst_elements) {
+    //     return -1;
+    // }
 
     const int64_t ne00 = src0->ne[0];
     const int64_t ne01 = src0->ne[1];
@@ -66,8 +68,8 @@ int entry_point(struct ggml_et_cont_params* params, void* env) {
 
     // Parallelize by rows (dimension 1)
     const int64_t total_rows = ne01;
-    const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
-    const int64_t start_row = thread_id * rows_per_thread;
+    const int64_t rows_per_thread = 1;//(total_rows + num_threads - 1) / num_threads;
+    const int64_t start_row = hart_id * rows_per_thread;
     const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
     if (start_row >= total_rows) {
