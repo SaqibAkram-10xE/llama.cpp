@@ -31,6 +31,16 @@ bool ggml_et_launch_kernel(ggml_backend_et_device_context* dev_ctx,
                            bool enable_print = false,
                            bool sync_error_check = false);
 
+// Optimized kernel launch function that takes kernel ID directly
+// Faster than ggml_et_launch_kernel as it bypasses kernel name lookup
+// Returns true on success, false on failure
+// Execution is asynchronous - does not wait for completion
+bool ggml_et_launch_kernel_fast(ggml_backend_et_device_context* dev_ctx,
+                                rt::KernelId kernel_id,
+                                void* params,
+                                size_t params_size,
+                                uint64_t shire_mask);
+
 // Unload kernel from device and free resources
 // Safe to call even if kernel not loaded
 void ggml_et_unload_kernel(ggml_backend_et_device_context* dev_ctx,

@@ -135,7 +135,19 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, const ggml_tensor
         }
     }
 
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", &params, sizeof(params), 0xFFFFFFFF);
+    // Ensure kernel is loaded and get kernel ID for fast launch
+    if (!ggml_et_load_kernel(dev_ctx, "el_map_f32")) {
+        GGML_LOG_ERROR("ET: Failed to load kernel el_map_f32\n");
+        return false;
+    }
+    auto kernel_it = dev_ctx->loaded_kernels.find("el_map_f32");
+    if (kernel_it == dev_ctx->loaded_kernels.end()) {
+        GGML_LOG_ERROR("ET: Kernel el_map_f32 not found after loading\n");
+        return false;
+    }
+    rt::KernelId kernel_id = kernel_it->second;
+    
+    bool kernel_result = ggml_et_launch_kernel_fast(dev_ctx, kernel_id, &params, sizeof(params), 0xFFFFFFFF);
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
@@ -203,8 +215,19 @@ bool ggml_et_op_glu(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* 
         }
     }
 
-    // Launch ET kernel
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, "glu_f32", &params, sizeof(params), 0xFFFFFFFF);
+    // Ensure kernel is loaded and get kernel ID for fast launch
+    if (!ggml_et_load_kernel(dev_ctx, "glu_f32")) {
+        GGML_LOG_ERROR("ET: Failed to load kernel glu_f32\n");
+        return false;
+    }
+    auto kernel_it = dev_ctx->loaded_kernels.find("glu_f32");
+    if (kernel_it == dev_ctx->loaded_kernels.end()) {
+        GGML_LOG_ERROR("ET: Kernel glu_f32 not found after loading\n");
+        return false;
+    }
+    rt::KernelId kernel_id = kernel_it->second;
+    
+    bool kernel_result = ggml_et_launch_kernel_fast(dev_ctx, kernel_id, &params, sizeof(params), 0xFFFFFFFF);
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
@@ -279,7 +302,19 @@ bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tens
         }
     }
 
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
+    // Ensure kernel is loaded and get kernel ID for fast launch
+    if (!ggml_et_load_kernel(dev_ctx, kernel_name)) {
+        GGML_LOG_ERROR("ET: Failed to load kernel %s\n", kernel_name);
+        return false;
+    }
+    auto kernel_it = dev_ctx->loaded_kernels.find(kernel_name);
+    if (kernel_it == dev_ctx->loaded_kernels.end()) {
+        GGML_LOG_ERROR("ET: Kernel %s not found after loading\n", kernel_name);
+        return false;
+    }
+    rt::KernelId kernel_id = kernel_it->second;
+    
+    bool kernel_result = ggml_et_launch_kernel_fast(dev_ctx, kernel_id, &params, sizeof(params), 0xFFFFFFFF);
 
         // printf("Tensor error:");
     // if (params.src0.data != NULL)
@@ -402,7 +437,19 @@ bool ggml_et_op_mul_mat_id(ggml_backend_et_device_context* dev_ctx, const ggml_t
     }
 
     // Launch ET kernel
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
+    // Ensure kernel is loaded and get kernel ID for fast launch
+    if (!ggml_et_load_kernel(dev_ctx, kernel_name)) {
+        GGML_LOG_ERROR("ET: Failed to load kernel %s\n", kernel_name);
+        return false;
+    }
+    auto kernel_it = dev_ctx->loaded_kernels.find(kernel_name);
+    if (kernel_it == dev_ctx->loaded_kernels.end()) {
+        GGML_LOG_ERROR("ET: Kernel %s not found after loading\n", kernel_name);
+        return false;
+    }
+    rt::KernelId kernel_id = kernel_it->second;
+    
+    bool kernel_result = ggml_et_launch_kernel_fast(dev_ctx, kernel_id, &params, sizeof(params), 0xFFFFFFFF);
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
@@ -492,7 +539,19 @@ bool ggml_et_op_rope(ggml_backend_et_device_context* dev_ctx, const ggml_tensor*
         }
     }
 
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
+    // Ensure kernel is loaded and get kernel ID for fast launch
+    if (!ggml_et_load_kernel(dev_ctx, kernel_name)) {
+        GGML_LOG_ERROR("ET: Failed to load kernel %s\n", kernel_name);
+        return false;
+    }
+    auto kernel_it = dev_ctx->loaded_kernels.find(kernel_name);
+    if (kernel_it == dev_ctx->loaded_kernels.end()) {
+        GGML_LOG_ERROR("ET: Kernel %s not found after loading\n", kernel_name);
+        return false;
+    }
+    rt::KernelId kernel_id = kernel_it->second;
+    
+    bool kernel_result = ggml_et_launch_kernel_fast(dev_ctx, kernel_id, &params, sizeof(params), 0xFFFFFFFF);
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
@@ -554,7 +613,19 @@ bool ggml_et_op_rms_norm(ggml_backend_et_device_context* dev_ctx, const ggml_ten
         }
     }
 
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
+    // Ensure kernel is loaded and get kernel ID for fast launch
+    if (!ggml_et_load_kernel(dev_ctx, kernel_name)) {
+        GGML_LOG_ERROR("ET: Failed to load kernel %s\n", kernel_name);
+        return false;
+    }
+    auto kernel_it = dev_ctx->loaded_kernels.find(kernel_name);
+    if (kernel_it == dev_ctx->loaded_kernels.end()) {
+        GGML_LOG_ERROR("ET: Kernel %s not found after loading\n", kernel_name);
+        return false;
+    }
+    rt::KernelId kernel_id = kernel_it->second;
+    
+    bool kernel_result = ggml_et_launch_kernel_fast(dev_ctx, kernel_id, &params, sizeof(params), 0xFFFFFFFF);
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
@@ -667,7 +738,19 @@ bool ggml_et_op_softmax(ggml_backend_et_device_context* dev_ctx, const ggml_tens
         }
     }
 
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
+    // Ensure kernel is loaded and get kernel ID for fast launch
+    if (!ggml_et_load_kernel(dev_ctx, kernel_name)) {
+        GGML_LOG_ERROR("ET: Failed to load kernel %s\n", kernel_name);
+        return false;
+    }
+    auto kernel_it = dev_ctx->loaded_kernels.find(kernel_name);
+    if (kernel_it == dev_ctx->loaded_kernels.end()) {
+        GGML_LOG_ERROR("ET: Kernel %s not found after loading\n", kernel_name);
+        return false;
+    }
+    rt::KernelId kernel_id = kernel_it->second;
+    
+    bool kernel_result = ggml_et_launch_kernel_fast(dev_ctx, kernel_id, &params, sizeof(params), 0xFFFFFFFF);
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
@@ -750,7 +833,19 @@ bool ggml_et_op_get_rows(ggml_backend_et_device_context* dev_ctx, const ggml_ten
         }
     }
 
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
+    // Ensure kernel is loaded and get kernel ID for fast launch
+    if (!ggml_et_load_kernel(dev_ctx, kernel_name)) {
+        GGML_LOG_ERROR("ET: Failed to load kernel %s\n", kernel_name);
+        return false;
+    }
+    auto kernel_it = dev_ctx->loaded_kernels.find(kernel_name);
+    if (kernel_it == dev_ctx->loaded_kernels.end()) {
+        GGML_LOG_ERROR("ET: Kernel %s not found after loading\n", kernel_name);
+        return false;
+    }
+    rt::KernelId kernel_id = kernel_it->second;
+    
+    bool kernel_result = ggml_et_launch_kernel_fast(dev_ctx, kernel_id, &params, sizeof(params), 0xFFFFFFFF);
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
@@ -820,7 +915,19 @@ bool ggml_et_op_cont(ggml_backend_et_device_context* dev_ctx, const ggml_tensor*
         }
     }
 
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
+    // Ensure kernel is loaded and get kernel ID for fast launch
+    if (!ggml_et_load_kernel(dev_ctx, kernel_name)) {
+        GGML_LOG_ERROR("ET: Failed to load kernel %s\n", kernel_name);
+        return false;
+    }
+    auto kernel_it = dev_ctx->loaded_kernels.find(kernel_name);
+    if (kernel_it == dev_ctx->loaded_kernels.end()) {
+        GGML_LOG_ERROR("ET: Kernel %s not found after loading\n", kernel_name);
+        return false;
+    }
+    rt::KernelId kernel_id = kernel_it->second;
+    
+    bool kernel_result = ggml_et_launch_kernel_fast(dev_ctx, kernel_id, &params, sizeof(params), 0xFFFFFFFF);
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {
@@ -913,7 +1020,19 @@ bool ggml_et_op_set_rows(ggml_backend_et_device_context* dev_ctx, const ggml_ten
         }
     }
 
-    bool kernel_result = ggml_et_launch_kernel(dev_ctx, kernel_name, &params, sizeof(params), 0xFFFFFFFF);
+    // Ensure kernel is loaded and get kernel ID for fast launch
+    if (!ggml_et_load_kernel(dev_ctx, kernel_name)) {
+        GGML_LOG_ERROR("ET: Failed to load kernel %s\n", kernel_name);
+        return false;
+    }
+    auto kernel_it = dev_ctx->loaded_kernels.find(kernel_name);
+    if (kernel_it == dev_ctx->loaded_kernels.end()) {
+        GGML_LOG_ERROR("ET: Kernel %s not found after loading\n", kernel_name);
+        return false;
+    }
+    rt::KernelId kernel_id = kernel_it->second;
+    
+    bool kernel_result = ggml_et_launch_kernel_fast(dev_ctx, kernel_id, &params, sizeof(params), 0xFFFFFFFF);
 
     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
     if (cpu_comparison_active) {

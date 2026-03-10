@@ -194,6 +194,30 @@ bool ggml_et_launch_kernel(ggml_backend_et_device_context* dev_ctx, const std::s
     }
 }
 
+// Optimized version - takes kernel ID directly for faster launch
+bool ggml_et_launch_kernel_fast(ggml_backend_et_device_context* dev_ctx, 
+                               rt::KernelId kernel_id, // Pass ID, not Name
+                               void* params, size_t params_size, 
+                               uint64_t shire_mask) {
+    
+    std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
+    if (!runtime) {
+        GGML_LOG_ERROR("ET: Runtime not available for kernel launch\n");
+        return false;
+    }
+    
+    rt::KernelLaunchOptions k_opts;
+    k_opts.setShireMask(shire_mask);
+    k_opts.setBarrier(false); // Disable barrier if kernels can overlap/pipeline
+    k_opts.setFlushL3(false);
+
+    // Launch asynchronously - Do not wait/sync here!
+    runtime->kernelLaunch(dev_ctx->default_stream, kernel_id,
+                         reinterpret_cast<std::byte*>(params), 
+                         params_size, k_opts);
+    return true;
+}
+
 void ggml_et_unload_kernel(ggml_backend_et_device_context* dev_ctx, const std::string& kernel_name) {
     std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
     if (!runtime) {
