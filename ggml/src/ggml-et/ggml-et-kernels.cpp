@@ -208,8 +208,8 @@ bool ggml_et_launch_kernel_fast(ggml_backend_et_device_context* dev_ctx,
     
     rt::KernelLaunchOptions k_opts;
     k_opts.setShireMask(shire_mask);
-    k_opts.setBarrier(false); // Disable barrier if kernels can overlap/pipeline
-    k_opts.setFlushL3(false);
+    k_opts.setBarrier(true); // Disable barrier if kernels can overlap/pipeline
+    k_opts.setFlushL3(true);
 
     // Launch asynchronously - Do not wait/sync here!
     runtime->kernelLaunch(dev_ctx->default_stream, kernel_id,
