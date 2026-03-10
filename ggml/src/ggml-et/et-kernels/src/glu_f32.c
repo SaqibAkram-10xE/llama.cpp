@@ -120,6 +120,15 @@ static inline void block_swiglu(float* dst_block, const float* x_block, const fl
     }
 }
 
+
+
+
+
+
+
+
+
+
 // Main entry point for GLU kernel
 int entry_point(struct ggml_et_glu_params* params, void* env) {
     // Cast env to proper type
@@ -130,20 +139,20 @@ int entry_point(struct ggml_et_glu_params* params, void* env) {
         return -1;
     }
 
-    // Get thread info using shire mask from environment
-    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    int num_threads = get_num_threads(kernel_env->shire_mask);
+    // // Get thread info using shire mask from environment
+    // int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+    // int num_threads = get_num_threads(kernel_env->shire_mask);
 
-    // Return early if this hart is not active
-    if (thread_id < 0) {
-        return 0;
-    }
+    // // Return early if this hart is not active
+    // if (thread_id < 0) {
+    //     return 0;
+    // }
 
-    // TEMPORARY: Make kernel single-threaded to avoid race conditions
-    // Only thread 0 should do the work, all others return immediately
-    if (thread_id != 0) {
-        return 0;
-    }
+    // // TEMPORARY: Make kernel single-threaded to avoid race conditions
+    // // Only thread 0 should do the work, all others return immediately
+    // if (thread_id != 0) {
+    //     return 0;
+    // }
 
     // Basic safety check on params
     if (params == 0 || ((uint64_t)params & 0x7) != 0) {
@@ -293,3 +302,100 @@ int entry_point(struct ggml_et_glu_params* params, void* env) {
 
     return 0;
 }
+
+
+
+
+
+
+
+// #include <stdint.h>
+// #include "ggml_tensor.h"
+// #include "platform.h"
+
+// // ET-SOC-01 Hardware specific constants
+// static const float LOG2E = 1.44269504f;
+// static const float ONE   = 1.0f;
+// static const float ZERO  = 0.0f;
+
+// // Replacement for silu_f32 that avoids illegal fdiv.s
+// static inline float et_silu_scalar(float x) {
+//     if (x <= -20.0f) return 0.0f;
+//     if (x >= 20.0f)  return x;
+//     // Use the ET-specific intrinsic for division or an approximation
+//     // Here we use a reciprocal-based approach consistent with the hardware
+//     float e_neg_x = et_expf(-x);
+//     float den = 1.0f + e_neg_x;
+//     return x * (1.0f / den); // The ET compiler usually handles 1.0/x better than x/y
+// }
+
+// int entry_point(struct ggml_et_glu_params* params, void* env) {
+//     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
+//     if (!kernel_env || !params) return -1;
+
+//     // 1. TRUE PARALLELIZATION
+//     // Distribute work across all available harts in the shire
+//     int thread_id   = get_relative_thread_id(kernel_env->shire_mask);
+//     int num_threads = get_num_threads(kernel_env->shire_mask);
+    
+//     if (thread_id < 0) return 0;
+
+//     struct ggml_tensor* src0 = &params->src0;
+//     struct ggml_tensor* dst  = &params->dst;
+    
+//     const int64_t nc = dst->ne[0]; 
+//     const int64_t nr = dst->ne[1] * dst->ne[2] * dst->ne[3];
+
+//     // Work split by rows to keep memory access aligned to 32-byte vector boundaries
+//     int64_t rows_per_thread = (nr + num_threads - 1) / num_threads;
+//     int64_t r_start = thread_id * rows_per_thread;
+//     int64_t r_end   = (r_start + rows_per_thread > nr) ? nr : r_start + rows_per_thread;
+
+//     if (r_start >= nr) return 0;
+
+//     // Set vector mask once (m0) to enable 8-wide SIMD
+//     __asm__ volatile("mov.m.x m0, x0, 0xFF");
+
+//     for (int64_t r = r_start; r < r_end; r++) {
+//         float* d_row = (float*)((char*)dst->data  + r * dst->nb[1]);
+//         float* s_row = (float*)((char*)src0->data + r * src0->nb[1]);
+        
+//         // SwiGLU: Half of src0 is x, half is g
+//         float* x_ptr = s_row;
+//         float* g_ptr = s_row + nc;
+
+//         int64_t c = 0;
+//         // 2. VECTORIZED LOOP (No fdiv.s here!)
+//         for (; c <= nc - 8; c += 8) {
+//             __asm__ volatile(
+//                 "flw.ps f10, 0(%[x_in])\n"         // Load x
+//                 "flw.ps f11, 0(%[g_in])\n"         // Load g
+//                 "fbc.ps f20, %[z]\n"               // broadcast 0.0
+//                 "fbc.ps f21, %[o]\n"               // broadcast 1.0
+//                 "fbc.ps f22, %[l]\n"               // broadcast log2e
+                
+//                 "fsub.ps f12, f20, f10\n"          // -x
+//                 "fmul.ps f13, f12, f22\n"          // -x * log2e
+//                 "fexp.ps f14, f13\n"               // 2^(-x*log2e) = exp(-x)
+//                 "fadd.ps f15, f14, f21\n"          // 1 + exp(-x)
+//                 "frcp.ps f16, f15\n"               // 1 / (1 + exp(-x)) -> Hardware Reciprocal
+                
+//                 "fmul.ps f17, f10, f16\n"          // x * sigmoid(x)
+//                 "fmul.ps f18, f17, f11\n"          // result * g
+                
+//                 "fsw.ps f18, 0(%[d_out])\n"        // Store result
+//                 : 
+//                 : [d_out]"r"(&d_row[c]), [x_in]"r"(&x_ptr[c]), [g_in]"r"(&g_ptr[c]),
+//                   [z]"m"(ZERO), [o]"m"(ONE), [l]"m"(LOG2E)
+//                 : "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f17", "f18", "f20", "f21", "f22", "memory"
+//             );
+//         }
+
+//         // 3. SCALAR FALLBACK (Careful with math here)
+//         for (; c < nc; c++) {
+//             d_row[c] = et_silu_scalar(x_ptr[c]) * g_ptr[c];
+//         }
+//     }
+
+//     return 0;
+// }

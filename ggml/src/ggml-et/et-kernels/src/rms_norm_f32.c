@@ -24,8 +24,8 @@ int entry_point(struct ggml_et_rms_norm_params* params, void* env) {
         return -1;
     }
 
-    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    int num_threads = get_num_threads(kernel_env->shire_mask);
+    int thread_id = get_hart_id();  // get_relative_thread_id(kernel_env->shire_mask);
+    int num_threads = 2048;//get_num_threads(kernel_env->shire_mask);
 
     if (thread_id < 0) {
         return 0;

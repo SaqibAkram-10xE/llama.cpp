@@ -159,7 +159,7 @@ static int get_row_f32_mc_row_cache_aligned(struct ggml_et_get_rows_params* para
     // int thread_id = get_relative_thread_id(kernel_env->shire_mask);
     // int num_threads = get_num_threads(kernel_env->shire_mask);
     uint64_t hart_id = get_hart_id();
-    const int64_t num_threads = 2048; 
+    const int64_t num_threads = 1; 
 
     struct ggml_tensor* src0 = &params->src0;  // Data tensor (F32 or Q8_0)
     struct ggml_tensor* src1 = &params->src1;  // Row indices tensor (I32)
@@ -240,14 +240,15 @@ int entry_point(struct ggml_et_get_rows_params* params, void* env) {
         return get_row_f32_mc_row_cache_aligned(params, env);
     }
 
-    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    if (thread_id < 0) {
-        return 0;
-    }
+    
+    // int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+    // if (thread_id < 0) {
+    //     return 0;
+    // }
 
-    if (thread_id != 0) {
-        return 0;
-    }
+    // if (thread_id != 0) {
+    //     return 0;
+    // }
 
     if (params == 0 || ((uint64_t)params & 0x7) != 0) {
         return -1; // Invalid pointer
