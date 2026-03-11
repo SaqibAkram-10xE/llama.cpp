@@ -1388,39 +1388,30 @@ int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
     return 0;
 }
 
+static int once = 0;
+
 int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
     
-    
     int64_t hart_id = get_hart_id();
+    static int once = 0;
     
-    hart_id == 0 ? et_printf("***DEV***: Hart %d starting execution\n", hart_id) : et_printf("");
-    
-    hart_id == 0 ? et_printf("***DEV***: Computing graph with %d nodes\n", cgraph->n_nodes) : et_printf("");
-    
-    for (int i = 0; i < cgraph->n_nodes; i++) 
-    {
-        hart_id == 0 ? et_printf("***DEV***: in loop\n") : et_printf("");
-        
-        // struct ggml_tensor * node = cgraph->nodes[i];
-        
-        // hart_id == 0 ? et_printf("***DEV***: NODE %d\n", ggml_op_name(node->op)) : et_printf("");
-        hart_id == 0 ? et_printf("***DEV***: NODE %d pointer: %p\n", i, cgraph->nodes[i]) : et_printf("");
+    if(once == 0){
+        hart_id == 0 ? et_printf("***DEV***: Hart %d starting execution\n", hart_id) : et_printf("");
+        hart_id == 0 ? et_printf("***DEV***: Computing graph with %d nodes\n", cgraph->n_nodes) : et_printf("");
+    }
+    hart_id == 0 ? et_printf("***DEV***: Processing node\n") : et_printf("");
+    struct ggml_et_binary_params * params;
+    params->src0 = (cgraph->nodes[0]->src[0]);
+    params->src1 = (cgraph->nodes[0]->src[1]);
+    params->dst = (cgraph->nodes[0]);
+    // We can access cgraph->nodes[i] pointer (host memory mapped)
+    // hart_id == 0 ? et_printf("***DEV***: node pointer: %p\n", cgraph->nodes[i]) : et_printf("");
+    hart_id == 0 ? et_printf("***DEV***: data pointer: %d\n", params->dst.op) : et_printf("");
 
-        struct ggml_tensor * node = cgraph->nodes[i];
-        if (node->op == GGML_OP_NONE) {
-            continue;
-        }
-
-        // Ensure all threads complete previous operation
-        // FENCE
-        // __asm__ volatile("fence rw, rw");
-        
-        // Add small delay for debugging
-        // For debugging: uncomment to add delay between operations
-        // if (i < 5) delay(100000); // Only delay first few operations
+    const uint8_t n_nodes = cgraph->n_nodes;
+    hart_id == 0 ? et_printf("***DEV***: n_nodes %d\n", n_nodes) : et_printf("");
     
-    
-        
+/*    
         switch (node->op) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
@@ -1657,21 +1648,7 @@ int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
                 // GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
                 break; //GGML_STATUS_FAILED;
         }
+*/
 
-
-        
-    }
-
-
-
-
-    // if (params->dst.op == GGML_OP_MUL || params->dst.op == GGML_OP_ADD) {
-    //     return el_map_f32(params, env);
-    // } else if(params->dst.op == GGML_OP_MUL_MAT){
-    //     return mul_mat_f32(params, env);
-    // } else {
-    //     return -1; // Unsupported operation
-    // }
-    
     return 0;
 }

@@ -129,7 +129,7 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
 
     bool kernel_result = false;
 
-    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cgraph, sizeof(*cgraph), 0xFFFFFFFF, true);
+    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cgraph, sizeof(*cgraph), 0xFFFFFFFF);
       
     return kernel_result;
 }
@@ -280,6 +280,9 @@ bool ggml_et_op_mul_mat(ggml_backend_et_device_context* dev_ctx, const ggml_tens
         GGML_LOG_ERROR("ET: MUL_MAT operation missing required inputs\n");
         return false;
     }
+
+    // printf("***HOST***: cgraph->nodes[0]->src[0]: %p\n", (void*)node->src[0]->data);
+
 
     const char* kernel_name;
     const char* src0_type_name;

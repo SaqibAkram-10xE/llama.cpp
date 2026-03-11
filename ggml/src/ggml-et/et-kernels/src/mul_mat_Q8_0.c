@@ -61,8 +61,9 @@ static inline void prefetch_weight_row(const void* start_ptr, int64_t num_blocks
 int entry_point(struct ggml_et_binary_params* params, void* env) {
 // int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
 
-    uint64_t hart_id = get_hart_id();
+    int64_t hart_id = get_hart_id();
     const int64_t stride_m = 2048; 
+    hart_id == 0 ? et_printf("***DEV***: data pointer %p\n", (void*)params->src0.data) : et_printf("");
 
     // Matrix dimensions
     const int64_t K    = params->src0.ne[0];
