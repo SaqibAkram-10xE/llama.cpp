@@ -41,9 +41,9 @@ struct ggml_backend_et_device_context {
     // trace buffer - for printing support
     std::byte* trace_buffer;
     
-    // Graph buffer for storing graph structure in ET device memory
-    std::byte* graph_buffer;
-    size_t graph_buffer_size;
+    // // Graph buffer for storing graph structure in ET device memory
+    // std::byte* graph_buffer;
+    // size_t graph_buffer_size;
 };
 
 struct ggml_backend_et_reg_ctx {

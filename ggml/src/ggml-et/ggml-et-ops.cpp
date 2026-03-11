@@ -98,30 +98,39 @@ bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* 
     return true;
 }
 
-bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
+// bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
     
-    std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
-    if (!runtime) {
-        GGML_LOG_ERROR("ET: Runtime not available for graph allocation\n");
-        return false;
-    }
+//     std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
+//     if (!runtime) {
+//         GGML_LOG_ERROR("ET: Runtime not available for graph allocation\n");
+//         return false;
+//     }
+
+//     bool kernel_result = false;
+
+//     // Create simple graph parameters for device memory
+//     // void* device_params = ggml_et_create_graph_params(dev_ctx, cgraph);
+//     // if (!device_params) {
+//     //     GGML_LOG_ERROR("ET: Failed to create graph params for device memory\n");
+//     //     return false;
+//     // }
+
+//     kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", device_params, sizeof(ggml_et_graph_params), 0xFFFFFFFF, true);
+    
+//     // Clean up device params memory
+//     if (runtime) {
+//         runtime->freeDevice(dev_ctx->rtid, reinterpret_cast<std::byte*>(device_params));
+//     }
+     
+//     return kernel_result;
+// }
+
+bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
 
     bool kernel_result = false;
 
-    // Create simple graph parameters for device memory
-    void* device_params = ggml_et_create_graph_params(dev_ctx, cgraph);
-    if (!device_params) {
-        GGML_LOG_ERROR("ET: Failed to create graph params for device memory\n");
-        return false;
-    }
-
-    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", device_params, sizeof(ggml_et_graph_params), 0xFFFFFFFF, true);
-    
-    // Clean up device params memory
-    if (runtime) {
-        runtime->freeDevice(dev_ctx->rtid, reinterpret_cast<std::byte*>(device_params));
-    }
-     
+    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cgraph, sizeof(*cgraph), 0xFFFFFFFF, true);
+      
     return kernel_result;
 }
 

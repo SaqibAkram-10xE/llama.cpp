@@ -33,8 +33,8 @@ bool ggml_et_launch_kernel(ggml_backend_et_device_context* dev_ctx,
 
 // Allocate graph buffer in ET device memory and copy graph structure
 // Returns device pointer to graph on success, nullptr on failure
-void* ggml_et_allocate_and_copy_graph(ggml_backend_et_device_context* dev_ctx,
-                                      const ggml_cgraph* cgraph);
+// void* ggml_et_allocate_and_copy_graph(ggml_backend_et_device_context* dev_ctx,
+//                                       const ggml_cgraph* cgraph);
 
 // Create simple graph parameters for kernel launch
 // Returns device pointer to params on success, nullptr on failure
@@ -42,7 +42,7 @@ void* ggml_et_create_graph_params(ggml_backend_et_device_context* dev_ctx,
                                   const ggml_cgraph* cgraph);
 
 // Free graph buffer in ET device memory
-void ggml_et_free_graph_buffer(ggml_backend_et_device_context* dev_ctx);
+// void ggml_et_free_graph_buffer(ggml_backend_et_device_context* dev_ctx);
 
 // Unload kernel from device and free resources
 // Safe to call even if kernel not loaded
