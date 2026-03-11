@@ -131,12 +131,6 @@ int entry_point(struct ggml_et_softmax_params* params, void* env) {
         return 0;
     }
 
-    // Single-threaded implementation: only thread 0 does the work
-    // All other threads return early
-    if (thread_id != 0) {
-        return 0;
-    }
-
     // Basic safety check on params
     if (params == 0 || ((uint64_t)params & 0x7) != 0) {
         return -1; // Invalid pointer
@@ -192,6 +186,23 @@ int entry_point(struct ggml_et_softmax_params* params, void* env) {
         }
     }
 
+    // Multi-threaded implementation: distribute work across all threads
+    // Each thread processes a subset of rows
+    
+    // Calculate total number of rows to process
+    const int64_t total_rows = ne03 * ne02 * ne01;
+    
+    // Calculate work distribution for this thread
+    const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
+    const int64_t start_row = thread_id * rows_per_thread;
+    const int64_t end_row = (start_row + rows_per_thread < total_rows) ? 
+                           start_row + rows_per_thread : total_rows;
+    
+    // Return early if this thread has no work
+    if (start_row >= total_rows) {
+        return 0;
+    }
+
     // ALiBi slope calculation - compute per attention head
     const uint32_t n_head = (uint32_t)ne02;
     uint32_t n_head_log2 = 0;
@@ -216,65 +227,67 @@ int entry_point(struct ggml_et_softmax_params* params, void* env) {
         m1 = et_expf(-max_bias * 0.69314718f * inv_n_head_log2 * 0.5f);
     }
 
-    // Process tensor row by row
-    // Calculate based on 4D tensor layout: [ne00, ne01, ne02, ne03]
-    for (int64_t i03 = 0; i03 < ne03; i03++) {
-        for (int64_t i02 = 0; i02 < ne02; i02++) {
-            // Calculate ALiBi slope for this attention head
-            float slope = 1.0f;
-            if (max_bias > 0.0f) {
-                const uint32_t h = (uint32_t)i02;  // head index
-                if (h < n_head_log2) {
-                    // slope = m0^(h+1) for first half of heads
-                    slope = m0;
-                    for (uint32_t i = 0; i < h; i++) {
-                        slope *= m0;
-                    }
-                } else {
-                    // slope = m1^(2*(h - n_head_log2) + 1) for second half
-                    const uint32_t exp = 2 * (h - n_head_log2) + 1;
-                    slope = m1;
-                    for (uint32_t i = 1; i < exp; i++) {
-                        slope *= m1;
-                    }
+    // Process rows distributed across threads
+    // Convert linear row index back to 4D tensor indices: [i03, i02, i01]
+    for (int64_t linear_row = start_row; linear_row < end_row; linear_row++) {
+        // Convert linear row index back to 4D coordinates
+        const int64_t i03 = linear_row / (ne02 * ne01);
+        const int64_t remainder = linear_row % (ne02 * ne01);
+        const int64_t i02 = remainder / ne01;
+        const int64_t i01 = remainder % ne01;
+        
+        // Calculate ALiBi slope for this attention head
+        float slope = 1.0f;
+        if (max_bias > 0.0f) {
+            const uint32_t h = (uint32_t)i02;  // head index
+            if (h < n_head_log2) {
+                // slope = m0^(h+1) for first half of heads
+                slope = m0;
+                for (uint32_t i = 0; i < h; i++) {
+                    slope *= m0;
                 }
-            }
-
-            float sink_value = 0.0f;
-            if (use_sinks && sinks_data) {
-                // Sinks tensor is 1D array indexed by head (i02)
-                sink_value = sinks_data[i02];
-            }
-
-            for (int64_t i01 = 0; i01 < ne01; i01++) {
-                const int64_t src_offset = i03 * ne02 * ne01 * ne00 +
-                                          i02 * ne01 * ne00 +
-                                          i01 * ne00;
-
-                const float* src_row = src0_data + src_offset;
-                float* dst_row = dst_data + src_offset;
-                const float* mask_row = NULL;
-
-                // Calculate mask row offset using ggml's broadcasting rules
-                if (use_mask && mask_data) {
-                    // ggml broadcasting logic:
-                    // - i11 = i01 (direct mapping for dimension 1, even if mask is larger)
-                    // - i12 = i02 % ne12 (modulo broadcasting for dimension 2)
-                    // - i13 = i03 % ne13 (modulo broadcasting for dimension 3)
-                    const int64_t mask_i03 = (ne13 > 0) ? i03 % ne13 : 0;
-                    const int64_t mask_i02 = (ne12 > 0) ? i02 % ne12 : 0;
-                    const int64_t mask_i01 = i01;  // Direct mapping (mask >= input guaranteed)
-
-                    const int64_t mask_offset = mask_i03 * ne12 * ne11 * ne10 +
-                                               mask_i02 * ne11 * ne10 +
-                                               mask_i01 * ne10;
-
-                    mask_row = mask_data + mask_offset;
+            } else {
+                // slope = m1^(2*(h - n_head_log2) + 1) for second half
+                const uint32_t exp = 2 * (h - n_head_log2) + 1;
+                slope = m1;
+                for (uint32_t i = 1; i < exp; i++) {
+                    slope *= m1;
                 }
-
-                compute_softmax_row(dst_row, src_row, mask_row, (int)ne00, (int)ne10, scale, slope, sink_value, use_sinks);
             }
         }
+
+        float sink_value = 0.0f;
+        if (use_sinks && sinks_data) {
+            // Sinks tensor is 1D array indexed by head (i02)
+            sink_value = sinks_data[i02];
+        }
+
+        const int64_t src_offset = i03 * ne02 * ne01 * ne00 +
+                                  i02 * ne01 * ne00 +
+                                  i01 * ne00;
+
+        const float* src_row = src0_data + src_offset;
+        float* dst_row = dst_data + src_offset;
+        const float* mask_row = NULL;
+
+        // Calculate mask row offset using ggml's broadcasting rules
+        if (use_mask && mask_data) {
+            // ggml broadcasting logic:
+            // - i11 = i01 (direct mapping for dimension 1, even if mask is larger)
+            // - i12 = i02 % ne12 (modulo broadcasting for dimension 2)
+            // - i13 = i03 % ne13 (modulo broadcasting for dimension 3)
+            const int64_t mask_i03 = (ne13 > 0) ? i03 % ne13 : 0;
+            const int64_t mask_i02 = (ne12 > 0) ? i02 % ne12 : 0;
+            const int64_t mask_i01 = i01;  // Direct mapping (mask >= input guaranteed)
+
+            const int64_t mask_offset = mask_i03 * ne12 * ne11 * ne10 +
+                                       mask_i02 * ne11 * ne10 +
+                                       mask_i01 * ne10;
+
+            mask_row = mask_data + mask_offset;
+        }
+
+        compute_softmax_row(dst_row, src_row, mask_row, (int)ne00, (int)ne10, scale, slope, sink_value, use_sinks);
     }
 
     return 0; // Success
