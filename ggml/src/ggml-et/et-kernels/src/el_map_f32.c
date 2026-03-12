@@ -231,12 +231,22 @@ struct ggml_et_rope_params {
 //     struct ggml_tensor dst;
 // };
 
+struct ggml_tensor_et {
+    int64_t ne[4];      // dimensions
+    size_t nb[4];       // strides
+    enum ggml_type type;
+    void* data;         // Device pointer if needed
+};
+
 struct ggml_cgraph_et {
-    int size;    // maximum number of nodes/leafs/grads/grad_accs
-    int n_nodes; // number of nodes currently in use
-    int n_leafs; // number of leafs currently in use
-    struct ggml_tensor ** nodes;     // tensors with data that can change if the graph is evaluated
-    uint8_t node_op[];
+    int size;
+    int n_nodes;
+    int n_leafs;
+    struct ggml_tensor ** nodes;
+    
+    // Change these to pointers
+    struct ggml_tensor_et * node_meta; 
+    uint8_t * node_op;                
 };
 
 void delay(unsigned long count) {
@@ -1415,11 +1425,21 @@ int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
     for (int i = 0; i < n_nodes; i++)
     {
         const int node_op = cgraph->node_op[i];
-        hart_id == 0 ? et_printf("***DEV***: Processing node %d with op %d\n", i, node_op) : et_printf("");
+        // hart_id == 0 ? et_printf("***DEV***: Processing node %d with op %d\n", i, node_op) : et_printf("");
         switch (node_op) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
                 {
+                    // Print tensor metadata verification
+                    hart_id == 0 ? et_printf("***DEV***: ADD OP - Node %d metadata:\n", i) : et_printf("");
+                    hart_id == 0 ? et_printf("***DEV***:   type: %d\n", cgraph->node_meta[i].type) : et_printf("");
+                    hart_id == 0 ? et_printf("***DEV***:   ne[0]: %ld, ne[1]: %ld, ne[2]: %ld, ne[3]: %ld\n", 
+                        cgraph->node_meta[i].ne[0], cgraph->node_meta[i].ne[1], 
+                        cgraph->node_meta[i].ne[2], cgraph->node_meta[i].ne[3]) : et_printf("");
+                    hart_id == 0 ? et_printf("***DEV***:   nb[0]: %zu, nb[1]: %zu, nb[2]: %zu, nb[3]: %zu\n", 
+                        cgraph->node_meta[i].nb[0], cgraph->node_meta[i].nb[1], 
+                        cgraph->node_meta[i].nb[2], cgraph->node_meta[i].nb[3]) : et_printf("");
+                    hart_id == 0 ? et_printf("***DEV***:   data: %p\n", cgraph->node_meta[i].data) : et_printf("");
                  
                     // if (node->type != GGML_TYPE_F32 ||
                     //     node->src[0]->type != GGML_TYPE_F32 ||
