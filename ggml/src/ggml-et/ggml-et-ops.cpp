@@ -125,11 +125,39 @@ bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* 
 //     return kernel_result;
 // }
 
+// struct ggml_cgraph_et {
+//     int size;    // maximum number of nodes/leafs/grads/grad_accs
+//     int n_nodes; // number of nodes currently in use
+//     int n_leafs; // number of leafs currently in use
+
+//     struct ggml_tensor ** nodes;     // tensors with data that can change if the graph is evaluated
+//     uint8_t node_op[1000000];
+//     // struct ggml_tensor ** grads;     // the outputs of these tensors are the gradients of the nodes
+//     // struct ggml_tensor ** grad_accs; // accumulators for node gradients
+//     // struct ggml_tensor ** leafs;     // tensors with constant data
+//     // int32_t             * use_counts;// number of uses of each tensor, indexed by hash table slot
+
+//     // struct ggml_hash_set visited_hash_set;
+
+//     // enum ggml_cgraph_eval_order order;
+// };
+
 bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
 
     bool kernel_result = false;
 
-    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cgraph, sizeof(*cgraph), 0xFFFFFFFF);
+    struct ggml_cgraph_et * device_cgraph;
+    device_cgraph = (struct ggml_cgraph_et *)malloc(sizeof(struct ggml_cgraph_et));
+    device_cgraph->n_nodes = cgraph->n_nodes;
+    device_cgraph->n_leafs = cgraph->n_leafs;
+    device_cgraph->nodes = cgraph->nodes;
+    for(int i=0; i < cgraph->n_nodes; i++){
+        device_cgraph->node_op[i] = (uint8_t)cgraph->nodes[i]->op;
+    }
+    // printf("***HOST***: Computing graph with %d nodes. size: %lu\n",
+    //      device_cgraph->n_nodes, sizeof(*device_cgraph));
+
+    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", device_cgraph, sizeof(*device_cgraph), 0xFFFFFFFF);
       
     return kernel_result;
 }

@@ -142,6 +142,15 @@ struct ggml_et_common_params{
     rope_params_t rope_params;
 };
 
+struct ggml_cgraph_et {
+    int size;    // maximum number of nodes/leafs/grads/grad_accs
+    int n_nodes; // number of nodes currently in use
+    int n_leafs; // number of leafs currently in use
+    struct ggml_tensor ** nodes;     // tensors with data that can change if the graph is evaluated
+    uint8_t node_op[671350]; // 671350 To do map it from model loading
+};
+
+
 
 bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, ggml_cgraph* cgraph);
 bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);

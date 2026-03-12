@@ -14,116 +14,119 @@
 #include "math_fp.h"
 #include "block_ops.h"
 
-static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
-    "NONE",
 
-    "DUP",
-    "ADD",
-    "ADD_ID",
-    "ADD1",
-    "ACC",
-    "SUB",
-    "MUL",
-    "DIV",
-    "SQR",
-    "SQRT",
-    "LOG",
-    "SIN",
-    "COS",
-    "SUM",
-    "SUM_ROWS",
-    "CUMSUM",
-    "MEAN",
-    "ARGMAX",
-    "COUNT_EQUAL",
-    "REPEAT",
-    "REPEAT_BACK",
-    "CONCAT",
-    "SILU_BACK",
-    "NORM",
-    "RMS_NORM",
-    "RMS_NORM_BACK",
-    "GROUP_NORM",
-    "L2_NORM",
+// enum ggml_op {
+//     GGML_OP_NONE = 0,
 
-    "MUL_MAT",
-    "MUL_MAT_ID",
-    "OUT_PROD",
+//     GGML_OP_DUP = 1,
+//     GGML_OP_ADD = 2,
+//     GGML_OP_ADD_ID = 3,
+//     GGML_OP_ADD1 = 4,
+//     GGML_OP_ACC = 5,
+//     GGML_OP_SUB = 6,
+//     GGML_OP_MUL = 7,
+//     GGML_OP_DIV = 8,
+//     GGML_OP_SQR = 9,
+//     GGML_OP_SQRT = 10,
+//     GGML_OP_LOG = 11,
+//     GGML_OP_SIN = 12,
+//     GGML_OP_COS = 13,
+//     GGML_OP_SUM = 14,
+//     GGML_OP_SUM_ROWS = 15,
+//     GGML_OP_CUMSUM = 16,
+//     GGML_OP_MEAN = 17,
+//     GGML_OP_ARGMAX = 18,
+//     GGML_OP_COUNT_EQUAL = 19,
+//     GGML_OP_REPEAT = 20,
+//     GGML_OP_REPEAT_BACK = 21,
+//     GGML_OP_CONCAT = 22,
+//     GGML_OP_SILU_BACK = 23,
+//     GGML_OP_NORM = 24,
+//     GGML_OP_RMS_NORM = 25,
+//     GGML_OP_RMS_NORM_BACK = 26,
+//     GGML_OP_GROUP_NORM = 27,
+//     GGML_OP_L2_NORM = 28,
 
-    "SCALE",
-    "SET",
-    "CPY",
-    "CONT",
-    "RESHAPE",
-    "VIEW",
-    "PERMUTE",
-    "TRANSPOSE",
-    "GET_ROWS",
-    "GET_ROWS_BACK",
-    "SET_ROWS",
-    "DIAG",
-    "DIAG_MASK_INF",
-    "DIAG_MASK_ZERO",
-    "SOFT_MAX",
-    "SOFT_MAX_BACK",
-    "ROPE",
-    "ROPE_BACK",
-    "CLAMP",
-    "CONV_TRANSPOSE_1D",
-    "IM2COL",
-    "IM2COL_BACK",
-    "IM2COL_3D",
-    "CONV_2D",
-    "CONV_3D",
-    "CONV_2D_DW",
-    "CONV_TRANSPOSE_2D",
-    "POOL_1D",
-    "POOL_2D",
-    "POOL_2D_BACK",
-    "UPSCALE",
-    "PAD",
-    "PAD_REFLECT_1D",
-    "ROLL",
-    "ARANGE",
-    "TIMESTEP_EMBEDDING",
-    "ARGSORT",
-    "TOP_K",
-    "LEAKY_RELU",
-    "TRI",
-    "FILL",
+//     GGML_OP_MUL_MAT = 29,
+//     GGML_OP_MUL_MAT_ID = 30,
+//     GGML_OP_OUT_PROD = 31,
 
-    "FLASH_ATTN_EXT",
-    "FLASH_ATTN_BACK",
-    "SSM_CONV",
-    "SSM_SCAN",
-    "WIN_PART",
-    "WIN_UNPART",
-    "GET_REL_POS",
-    "ADD_REL_POS",
-    "RWKV_WKV6",
-    "GATED_LINEAR_ATTN",
-    "RWKV_WKV7",
-    "SOLVE_TRI",
+//     GGML_OP_SCALE = 32,
+//     GGML_OP_SET = 33,
+//     GGML_OP_CPY = 34,
+//     GGML_OP_CONT = 35,
+//     GGML_OP_RESHAPE = 36,
+//     GGML_OP_VIEW = 37,
+//     GGML_OP_PERMUTE = 38,
+//     GGML_OP_TRANSPOSE = 39,
+//     GGML_OP_GET_ROWS = 40,
+//     GGML_OP_GET_ROWS_BACK = 41,
+//     GGML_OP_SET_ROWS = 42,
+//     GGML_OP_DIAG = 43,
+//     GGML_OP_DIAG_MASK_INF = 44,
+//     GGML_OP_DIAG_MASK_ZERO = 45,
+//     GGML_OP_SOFT_MAX = 46,
+//     GGML_OP_SOFT_MAX_BACK = 47,
+//     GGML_OP_ROPE = 48,
+//     GGML_OP_ROPE_BACK = 49,
+//     GGML_OP_CLAMP = 50,
+//     GGML_OP_CONV_TRANSPOSE_1D = 51,
+//     GGML_OP_IM2COL = 52,
+//     GGML_OP_IM2COL_BACK = 53,
+//     GGML_OP_IM2COL_3D = 54,
+//     GGML_OP_CONV_2D = 55,
+//     GGML_OP_CONV_3D = 56,
+//     GGML_OP_CONV_2D_DW = 57,
+//     GGML_OP_CONV_TRANSPOSE_2D = 58,
+//     GGML_OP_POOL_1D = 59,
+//     GGML_OP_POOL_2D = 60,
+//     GGML_OP_POOL_2D_BACK = 61,
+//     GGML_OP_UPSCALE = 62,
+//     GGML_OP_PAD = 63,
+//     GGML_OP_PAD_REFLECT_1D = 64,
+//     GGML_OP_ROLL = 65,
+//     GGML_OP_ARANGE = 66,
+//     GGML_OP_TIMESTEP_EMBEDDING = 67,
+//     GGML_OP_ARGSORT = 68,
+//     GGML_OP_TOP_K = 69,
+//     GGML_OP_LEAKY_RELU = 70,
+//     GGML_OP_TRI = 71,
+//     GGML_OP_FILL = 72,
 
-    "UNARY",
+//     GGML_OP_FLASH_ATTN_EXT = 73,
+//     GGML_OP_FLASH_ATTN_BACK = 74,
+//     GGML_OP_SSM_CONV = 75,
+//     GGML_OP_SSM_SCAN = 76,
+//     GGML_OP_WIN_PART = 77,
+//     GGML_OP_WIN_UNPART = 78,
+//     GGML_OP_GET_REL_POS = 79,
+//     GGML_OP_ADD_REL_POS = 80,
+//     GGML_OP_RWKV_WKV6 = 81,
+//     GGML_OP_GATED_LINEAR_ATTN = 82,
+//     GGML_OP_RWKV_WKV7 = 83,
+//     GGML_OP_SOLVE_TRI = 84,
 
-    "MAP_CUSTOM1",
-    "MAP_CUSTOM2",
-    "MAP_CUSTOM3",
+//     GGML_OP_UNARY = 85,
 
-    "CUSTOM",
+//     GGML_OP_MAP_CUSTOM1 = 86,
+//     GGML_OP_MAP_CUSTOM2 = 87,
+//     GGML_OP_MAP_CUSTOM3 = 88,
 
-    "CROSS_ENTROPY_LOSS",
-    "CROSS_ENTROPY_LOSS_BACK",
-    "OPT_STEP_ADAMW",
-    "OPT_STEP_SGD",
+//     GGML_OP_CUSTOM = 89,
 
-    "GLU",
-};
+//     GGML_OP_CROSS_ENTROPY_LOSS = 90,
+//     GGML_OP_CROSS_ENTROPY_LOSS_BACK = 91,
+//     GGML_OP_OPT_STEP_ADAMW = 92,
+//     GGML_OP_OPT_STEP_SGD = 93,
 
-const char * ggml_op_name(enum ggml_op op) {
-    return GGML_OP_NAME[op];
-}
+//     GGML_OP_GLU = 94,
+
+//     GGML_OP_COUNT = 95,
+// };
+
+// const char * ggml_op_name(enum ggml_op op) {
+//     return GGML_OP_NAME[op];
+// }
 
 
 
@@ -232,16 +235,8 @@ struct ggml_cgraph_et {
     int size;    // maximum number of nodes/leafs/grads/grad_accs
     int n_nodes; // number of nodes currently in use
     int n_leafs; // number of leafs currently in use
-
     struct ggml_tensor ** nodes;     // tensors with data that can change if the graph is evaluated
-    // struct ggml_tensor ** grads;     // the outputs of these tensors are the gradients of the nodes
-    // struct ggml_tensor ** grad_accs; // accumulators for node gradients
-    // struct ggml_tensor ** leafs;     // tensors with constant data
-    // int32_t             * use_counts;// number of uses of each tensor, indexed by hash table slot
-
-    // struct ggml_hash_set visited_hash_set;
-
-    // enum ggml_cgraph_eval_order order;
+    uint8_t node_op[];
 };
 
 void delay(unsigned long count) {
@@ -1399,45 +1394,43 @@ int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
         hart_id == 0 ? et_printf("***DEV***: Hart %d starting execution\n", hart_id) : et_printf("");
         hart_id == 0 ? et_printf("***DEV***: Computing graph with %d nodes\n", cgraph->n_nodes) : et_printf("");
     }
-    hart_id == 0 ? et_printf("***DEV***: Processing node\n") : et_printf("");
-    struct ggml_et_binary_params * params;
-    params->src0 = (cgraph->nodes[0]->src[0]);
-    params->src1 = (cgraph->nodes[0]->src[1]);
-    params->dst = (cgraph->nodes[0]);
-    // We can access cgraph->nodes[i] pointer (host memory mapped)
-    // hart_id == 0 ? et_printf("***DEV***: node pointer: %p\n", cgraph->nodes[i]) : et_printf("");
-    hart_id == 0 ? et_printf("***DEV***: data pointer: %d\n", params->dst.op) : et_printf("");
-
+    struct ggml_et_binary_params param;
+    param.src0.data = cgraph->nodes[0]->src[0]->data;
+    param.src1.data = cgraph->nodes[0]->src[1]->data;
+    param.dst.data  = cgraph->nodes[0]->data;
     const uint8_t n_nodes = cgraph->n_nodes;
-    hart_id == 0 ? et_printf("***DEV***: n_nodes %d\n", n_nodes) : et_printf("");
-    
-/*    
-        switch (node->op) {
+    // hart_id == 0 ? et_printf("***DEV***: cgraph->nodes[0]->src[0]->type: %d\n", cgraph->nodes[0]->src[0]->type) : et_printf("");
+
+
+    // We can access cgraph->nodes[i] pointer (host memory mapped)
+
+    if(once == 0){
+        hart_id == 0 ? et_printf("***DEV***: cgraph->size: %d\n", cgraph->size) : et_printf("");
+        hart_id == 0 ? et_printf("***DEV***: cgraph->nleafs: %d\n", cgraph->n_leafs) : et_printf("");
+        hart_id == 0 ? et_printf("***DEV***: cgraph->node_op[0] %d\n", cgraph->node_op[0]) : et_printf("");
+        hart_id == 0 ? et_printf("***DEV***: n_nodes %d\n", n_nodes) : et_printf("");
+        once = 1;
+    }
+
+    for (int i = 0; i < n_nodes; i++)
+    {
+        const int node_op = cgraph->node_op[i];
+        hart_id == 0 ? et_printf("***DEV***: Processing node %d with op %d\n", i, node_op) : et_printf("");
+        switch (node_op) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
                 {
-                    // ggml_et_op_mul(dev_ctx, node);
-                    if (!node) {
-                        break;
-                    }
-
-                    if (!node->src[0] || !node->src[1]) {
-                        // GGML_LOG_ERROR("ET: Element map operation missing required inputs\n");
-                        // return false;
-                        break;
-                    }
-
-                    if (node->type != GGML_TYPE_F32 ||
-                        node->src[0]->type != GGML_TYPE_F32 ||
-                        node->src[1]->type != GGML_TYPE_F32) {
-                        break;
-                    }
-                    struct ggml_et_elmap_params params;
-                    params.src0 = *node->src[0];
-                    params.src1 = *node->src[1];
-                    params.dst = *node;
-
-                    hart_id == 0 ? et_printf("***DEV***: OP name: %s\n", ggml_op_name(node->op)) : et_printf("");
+                 
+                    // if (node->type != GGML_TYPE_F32 ||
+                    //     node->src[0]->type != GGML_TYPE_F32 ||
+                    //     node->src[1]->type != GGML_TYPE_F32) {
+                    //     break;
+                    // }
+                    
+                    // struct ggml_et_elmap_params params;
+                    // params.src0 = *node->src[0];
+                    // params.src1 = *node->src[1];
+                    // params.dst = *node;
                     
                     // el_map_f32(&params, env);
 
@@ -1448,7 +1441,7 @@ int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
             //     // ggml_et_op_mul(dev_ctx, node);
             //     // ggml_et_op_add(dev_ctx, node);
             //     break;
-
+/*
             case GGML_OP_MUL_MAT:
                 // ggml_et_op_mul(dev_ctx, node);
                 {
@@ -1643,12 +1636,16 @@ int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
                 // These are metadata-only operations that require no computation
                 // GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
                 break;
-
+*/
             default:
                 // GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
                 break; //GGML_STATUS_FAILED;
         }
-*/
+    
+    
+    }
 
+   
+        
     return 0;
 }

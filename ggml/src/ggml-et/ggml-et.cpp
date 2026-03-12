@@ -498,13 +498,14 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
     ggml_backend_et_device_context * dev_ctx = (ggml_backend_et_device_context *)backend->device->context;
     std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
 
-    if(once == 0){
-        printf("***HOST***: Computing graph with %d nodes. size: %lu\n", cgraph->n_nodes, sizeof(*cgraph));
-        printf("***HOST***: Graph pointer: %p\n", (void*)cgraph);
-        printf("***HOST***: cgraph->nodes[0]: %p\n", (void*)cgraph->nodes[0]);
-        printf("***HOST***: cgraph->nodes[0]->src[0]->data: %p\n", (void*)cgraph->nodes[0]->src[0]->data);
-        once = 1;
-    }
+    // if(once == 0){
+    //     printf("***HOST***: Computing graph with %d nodes. size: %lu\n", cgraph->n_nodes, sizeof(*cgraph));
+    //     printf("***HOST***: Graph->nodes[0]: %p\n", (void*)cgraph->nodes[0]);
+    //     printf("***HOST***: cgraph->nodes[0]->src[0]: %p\n", (void*)cgraph->nodes[0]->src[0]);
+    //     printf("***HOST***: cgraph->nodes[0]->src[0]->data: %p\n", (void*)cgraph->nodes[0]->src[0]->data);
+    //     printf("***HOST***: cgraph->nodes[0]->node[0]->op: %p\n", (void*)cgraph->nodes[0]->op);
+    //     once = 1;
+    // }
     
     
         ggml_et_op_mul(dev_ctx, cgraph);
