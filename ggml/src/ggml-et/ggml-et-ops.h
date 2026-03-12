@@ -160,6 +160,13 @@ struct ggml_cgraph_et {
     uint8_t * node_op;                
 };
 
+// Unified structure for kernel launch
+struct ggml_et_elmap_full_params {
+    struct ggml_cgraph_et cgraph;
+    struct ggml_tensor_et * node_meta;  // Pointer to tensor metadata
+    uint8_t * node_op;                   // Pointer to operations
+};
+
 
 
 bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, ggml_cgraph* cgraph);

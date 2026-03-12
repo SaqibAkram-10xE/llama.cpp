@@ -1393,53 +1393,72 @@ int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
     return 0;
 }
 
+// Unified structure for kernel launch
+struct ggml_et_elmap_full_params {
+    struct ggml_cgraph_et cgraph;
+    struct ggml_tensor_et * node_meta;  // Pointer to tensor metadata
+    uint8_t * node_op;                   // Pointer to operations
+};
+
 static int once = 0;
 
-int entry_point(struct ggml_cgraph_et* cgraph, void* env) {
+int entry_point(struct ggml_et_elmap_full_params* full_params, void* env) {
     
     int64_t hart_id = get_hart_id();
     static int once = 0;
     
     if(once == 0){
         hart_id == 0 ? et_printf("***DEV***: Hart %d starting execution\n", hart_id) : et_printf("");
-        hart_id == 0 ? et_printf("***DEV***: Computing graph with %d nodes\n", cgraph->n_nodes) : et_printf("");
+        hart_id == 0 ? et_printf("***DEV***: Computing graph with %d nodes\n", full_params->cgraph.n_nodes) : et_printf("");
     }
     struct ggml_et_binary_params param;
-    param.src0.data = cgraph->nodes[0]->src[0]->data;
-    param.src1.data = cgraph->nodes[0]->src[1]->data;
-    param.dst.data  = cgraph->nodes[0]->data;
-    const uint8_t n_nodes = cgraph->n_nodes;
+    param.src0.data = full_params->cgraph.nodes[0]->src[0]->data;
+    hart_id == 0 ? et_printf("***DEV***: 1\n") : et_printf("");
+    param.src1.data = full_params->cgraph.nodes[0]->src[1]->data;
+    hart_id == 0 ? et_printf("***DEV***: 2\n") : et_printf("");
+    param.dst.data  = full_params->cgraph.nodes[0]->data;
+    hart_id == 0 ? et_printf("***DEV***: 3\n") : et_printf("");
+    const uint8_t n_nodes = full_params->cgraph.n_nodes;
+    hart_id == 0 ? et_printf("***DEV***: 4\n") : et_printf("");
     // hart_id == 0 ? et_printf("***DEV***: cgraph->nodes[0]->src[0]->type: %d\n", cgraph->nodes[0]->src[0]->type) : et_printf("");
 
 
     // We can access cgraph->nodes[i] pointer (host memory mapped)
 
-    if(once == 0){
-        hart_id == 0 ? et_printf("***DEV***: cgraph->size: %d\n", cgraph->size) : et_printf("");
-        hart_id == 0 ? et_printf("***DEV***: cgraph->nleafs: %d\n", cgraph->n_leafs) : et_printf("");
-        hart_id == 0 ? et_printf("***DEV***: cgraph->node_op[0] %d\n", cgraph->node_op[0]) : et_printf("");
+    // if(once == 0)
+    {
+        hart_id == 0 ? et_printf("***DEV***: cgraph->size: %d\n", full_params->cgraph.size) : et_printf("");
+        hart_id == 0 ? et_printf("***DEV***: cgraph->nleafs: %d\n", full_params->cgraph.n_leafs) : et_printf("");
+        hart_id == 0 ? et_printf("***DEV***: node_op[0] %d\n", full_params->node_op[0]) : et_printf("");
         hart_id == 0 ? et_printf("***DEV***: n_nodes %d\n", n_nodes) : et_printf("");
-        once = 1;
+        // once = 1;
     }
+    hart_id == 0 ? et_printf("***DEV***: 5\n") : et_printf("");
 
     for (int i = 0; i < n_nodes; i++)
     {
-        const int node_op = cgraph->node_op[i];
+        hart_id == 0 ? et_printf("***DEV***: 6\n") : et_printf("");
+
+        const int node_op_val = full_params->node_op[i];
         // hart_id == 0 ? et_printf("***DEV***: Processing node %d with op %d\n", i, node_op) : et_printf("");
-        switch (node_op) {
+        hart_id == 0 ? et_printf("***DEV***: 7\n") : et_printf("");
+
+        switch (node_op_val) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
                 {
+                    hart_id == 0 ? et_printf("***DEV***: 8\n") : et_printf("");
+
                     // Print tensor metadata verification
                     hart_id == 0 ? et_printf("***DEV***: ADD OP - Node %d metadata:\n", i) : et_printf("");
-                    hart_id == 0 ? et_printf("***DEV***:   type: %d\n", cgraph->node_meta[i].type) : et_printf("");
+                    hart_id == 0 ? et_printf("***DEV***:   type: %d\n", full_params->node_meta[i].type) : et_printf("");
                     hart_id == 0 ? et_printf("***DEV***:   ne[0]: %ld, ne[1]: %ld, ne[2]: %ld, ne[3]: %ld\n", 
-                        cgraph->node_meta[i].ne[0], cgraph->node_meta[i].ne[1], 
-                        cgraph->node_meta[i].ne[2], cgraph->node_meta[i].ne[3]) : et_printf("");
+                        full_params->node_meta[i].ne[0], full_params->node_meta[i].ne[1], 
+                        full_params->node_meta[i].ne[2], full_params->node_meta[i].ne[3]) : et_printf("");
                     hart_id == 0 ? et_printf("***DEV***:   nb[0]: %zu, nb[1]: %zu, nb[2]: %zu, nb[3]: %zu\n", 
-                        cgraph->node_meta[i].nb[0], cgraph->node_meta[i].nb[1], 
-                        cgraph->node_meta[i].nb[2], cgraph->node_meta[i].nb[3]) : et_printf("");
-                    hart_id == 0 ? et_printf("***DEV***:   data: %p\n", cgraph->node_meta[i].data) : et_printf("");
+                        full_params->node_meta[i].nb[0], full_params->node_meta[i].nb[1], 
+                        full_params->node_meta[i].nb[2], full_params->node_meta[i].nb[3]) : et_printf("");
+                    hart_id == 0 ? et_printf("***DEV***:   data: %p\n", full_params->node_meta[i].data) : et_printf("");
                  
                     // if (node->type != GGML_TYPE_F32 ||
                     //     node->src[0]->type != GGML_TYPE_F32 ||
