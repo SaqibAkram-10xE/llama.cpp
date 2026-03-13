@@ -127,19 +127,19 @@ bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* 
 
 
 
+// Helper function to fill tensor metadata
+static inline void fill_tensor_meta(struct ggml_tensor_et * dst, struct ggml_tensor * src) {
+    dst->type = src->type;
+    dst->data = src->data;
+    for(int j = 0; j < 4; j++){
+        dst->ne[j] = src->ne[j];
+        dst->nb[j] = src->nb[j];
+    }
+}
+
 bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
 
     bool kernel_result = false;
-
-    // Helper function to fill tensor metadata
-    static inline void fill_tensor_meta(struct ggml_tensor_et * dst, struct ggml_tensor * src) {
-        dst->type = src->type;
-        dst->data = src->data;
-        for(int j = 0; j < 4; j++){
-            dst->ne[j] = src->ne[j];
-            dst->nb[j] = src->nb[j];
-        }
-    }
 
     // Calculate total size for contiguous allocation
     size_t total_size =
