@@ -156,8 +156,8 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
     cg->n_leafs = cgraph->n_leafs;
     cg->nodes = cgraph->nodes;
     
-    printf("***HOST***: cgraph->size: %d, n_nodes: %d, n_leafs: %d\n", 
-           cgraph->size, cgraph->n_nodes, cgraph->n_leafs);
+    // printf("***HOST***: cgraph->size: %d, n_nodes: %d, n_leafs: %d\n", 
+    //        cgraph->size, cgraph->n_nodes, cgraph->n_leafs);
 
     // Derive pointers to data regions
     struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *) cg->data;
@@ -195,8 +195,8 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
         }
     }
    
-    printf("***HOST***: Computing graph with %d nodes. size: %lu\n",
-         cg->n_nodes, total_size);
+    // printf("***HOST***: Computing graph with %d nodes. size: %lu\n",
+    //      cg->n_nodes, total_size);
 
     // Pass single pointer to kernel
     kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cg, total_size, 0xFFFFFFFF);
