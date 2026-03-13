@@ -1439,7 +1439,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
                 {
-                    if(once == 0){
+                    if(once == 0)
+                    {
                         hart_id == 0 ? et_printf("***DEV***: ADD OP - Node %d metadata:\n", i) : et_printf("");
                         hart_id == 0 ? et_printf("***DEV***:   src0 type: %d\n", node_meta[i].src0.type) : et_printf("");
                         hart_id == 0 ? et_printf("***DEV***:   src1 type: %d\n", node_meta[i].src1.type) : et_printf("");
