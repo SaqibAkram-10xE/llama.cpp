@@ -154,17 +154,8 @@ struct ggml_cgraph_et {
     int n_nodes;
     int n_leafs;
     struct ggml_tensor ** nodes;
-    
-    // Change these to pointers
-    struct ggml_tensor_et * node_meta; 
-    uint8_t * node_op;                
-};
 
-// Unified structure for kernel launch
-struct ggml_et_elmap_full_params {
-    struct ggml_cgraph_et cgraph;
-    struct ggml_tensor_et * node_meta;  // Pointer to tensor metadata
-    uint8_t * node_op;                   // Pointer to operations
+    uint8_t data[];   // flexible array at end
 };
 
 

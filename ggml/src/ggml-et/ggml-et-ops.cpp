@@ -131,52 +131,47 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
 
     bool kernel_result = false;
 
-    // Calculate sizes
-    size_t meta_size = cgraph->n_nodes * sizeof(struct ggml_tensor_et);
-    size_t op_size = cgraph->n_nodes * sizeof(uint8_t);
-    size_t total_size = sizeof(struct ggml_et_elmap_full_params) + meta_size + op_size;
+    // Calculate total size for contiguous allocation
+    size_t total_size =
+        sizeof(struct ggml_cgraph_et) +
+        cgraph->n_nodes * sizeof(struct ggml_tensor_et) +
+        cgraph->n_nodes * sizeof(uint8_t);
+
+    // Allocate the whole block
+    struct ggml_cgraph_et * cg = (struct ggml_cgraph_et *)malloc(total_size);
     
-    // Allocate single contiguous buffer
-    uint8_t* buffer = (uint8_t*)malloc(total_size);
-    struct ggml_et_elmap_full_params * full_params = (struct ggml_et_elmap_full_params *)buffer;
-    
-    // Set pointers to appropriate offsets in the buffer
-    uint8_t* meta_ptr = buffer + sizeof(struct ggml_et_elmap_full_params);
-    uint8_t* op_ptr = meta_ptr + meta_size;
-    full_params->node_meta = (struct ggml_tensor_et *)meta_ptr;
-    full_params->node_op = (uint8_t *)op_ptr;
-    
-    // Fill cgraph structure
-    full_params->cgraph.size = cgraph->size;
-    full_params->cgraph.n_nodes = cgraph->n_nodes;
-    full_params->cgraph.n_leafs = cgraph->n_leafs;
-    full_params->cgraph.nodes = cgraph->nodes;
-    full_params->cgraph.node_meta = full_params->node_meta;  // Point to our buffer
-    full_params->cgraph.node_op = full_params->node_op;      // Point to our buffer
-    
+    // Populate basic fields
+    cg->size = cgraph->size;
+    cg->n_nodes = cgraph->n_nodes;
+    cg->n_leafs = cgraph->n_leafs;
+    cg->nodes = cgraph->nodes;
+
+    // Derive pointers to data regions
+    struct ggml_tensor_et * node_meta = (struct ggml_tensor_et *) cg->data;
+    uint8_t * node_op = (uint8_t *) (node_meta + cgraph->n_nodes);
+
     // Fill tensor metadata and operations
     for(int i=0; i < cgraph->n_nodes; i++){
-        full_params->node_op[i] = (uint8_t)cgraph->nodes[i]->op;
+        node_op[i] = (uint8_t)cgraph->nodes[i]->op;
         
         // Fill tensor metadata
         struct ggml_tensor* node = cgraph->nodes[i];
-        full_params->node_meta[i].type = node->type;
-        full_params->node_meta[i].data = node->data;
+        node_meta[i].type = node->type;
+        node_meta[i].data = node->data;
         for(int j=0; j<4; j++){
-            full_params->node_meta[i].ne[j] = node->ne[j];
-            full_params->node_meta[i].nb[j] = node->nb[j];
+            node_meta[i].ne[j] = node->ne[j];
+            node_meta[i].nb[j] = node->nb[j];
         }
     }
 
     
     printf("***HOST***: Computing graph with %d nodes. size: %lu\n",
-         full_params->cgraph.n_nodes, total_size);
+         cg->n_nodes, total_size);
 
-    // Pass unified structure as single parameter
-    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", 
-        full_params, total_size, 0xFFFFFFFF);
+    // Pass single pointer to kernel
+    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cg, total_size, 0xFFFFFFFF);
     
-    free(buffer);
+    free(cg);
     return kernel_result;
 }
 
