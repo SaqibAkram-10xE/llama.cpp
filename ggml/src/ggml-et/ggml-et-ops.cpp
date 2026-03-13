@@ -155,6 +155,9 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
     cg->n_nodes = cgraph->n_nodes;
     cg->n_leafs = cgraph->n_leafs;
     cg->nodes = cgraph->nodes;
+    
+    printf("***HOST***: cgraph->size: %d, n_nodes: %d, n_leafs: %d\n", 
+           cgraph->size, cgraph->n_nodes, cgraph->n_leafs);
 
     // Derive pointers to data regions
     struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *) cg->data;
@@ -162,18 +165,36 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
 
     // Fill tensor metadata and operations
     for (int i = 0; i < cgraph->n_nodes; i++) {
-        node_op[i] = (uint8_t)cgraph->nodes[i]->op;
         
+        // Check if node exists
+        if (!cgraph->nodes[i]) {
+            printf("ERROR: cgraph->nodes[%d] is NULL\n", i);
+            continue;
+        }
+        node_op[i] = (uint8_t)cgraph->nodes[i]->op;
         struct ggml_tensor * node = cgraph->nodes[i];
-        struct ggml_tensor * src0 = node->src[0];
-        struct ggml_tensor * src1 = node->src[1];
-
-        fill_tensor_meta(&node_meta[i].dst, node);
-        fill_tensor_meta(&node_meta[i].src0, src0);
-        fill_tensor_meta(&node_meta[i].src1, src1);
+        // Check src[0]
+        struct ggml_tensor * src0 = NULL;
+        if (node->src[0]) {
+            src0 = node->src[0];
+        }
+        // Check src[1] 
+        struct ggml_tensor * src1 = NULL;
+        if (node->src[1]) {
+            src1 = node->src[1];
+        }
+        // Only fill metadata if tensors exist
+        if (node) {
+            fill_tensor_meta(&node_meta[i].dst, node);
+        }
+        if (src0) {
+            fill_tensor_meta(&node_meta[i].src0, src0);
+        }
+        if (src1) {
+            fill_tensor_meta(&node_meta[i].src1, src1);
+        }
     }
-
-    
+   
     printf("***HOST***: Computing graph with %d nodes. size: %lu\n",
          cg->n_nodes, total_size);
 
