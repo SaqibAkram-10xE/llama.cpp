@@ -131,13 +131,23 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
 
     bool kernel_result = false;
 
+    // Helper function to fill tensor metadata
+    static inline void fill_tensor_meta(struct ggml_tensor_et * dst, struct ggml_tensor * src) {
+        dst->type = src->type;
+        dst->data = src->data;
+        for(int j = 0; j < 4; j++){
+            dst->ne[j] = src->ne[j];
+            dst->nb[j] = src->nb[j];
+        }
+    }
+
     // Calculate total size for contiguous allocation
     size_t total_size =
         sizeof(struct ggml_cgraph_et) +
-        cgraph->n_nodes * sizeof(struct ggml_tensor_et) +
+        cgraph->n_nodes * sizeof(struct ggml_node_meta_et) +
         cgraph->n_nodes * sizeof(uint8_t);
 
-    // Allocate the whole block
+    // Allocate whole block
     struct ggml_cgraph_et * cg = (struct ggml_cgraph_et *)malloc(total_size);
     
     // Populate basic fields
@@ -147,21 +157,20 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
     cg->nodes = cgraph->nodes;
 
     // Derive pointers to data regions
-    struct ggml_tensor_et * node_meta = (struct ggml_tensor_et *) cg->data;
+    struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *) cg->data;
     uint8_t * node_op = (uint8_t *) (node_meta + cgraph->n_nodes);
 
     // Fill tensor metadata and operations
-    for(int i=0; i < cgraph->n_nodes; i++){
+    for (int i = 0; i < cgraph->n_nodes; i++) {
         node_op[i] = (uint8_t)cgraph->nodes[i]->op;
         
-        // Fill tensor metadata
-        struct ggml_tensor* node = cgraph->nodes[i];
-        node_meta[i].type = node->type;
-        node_meta[i].data = node->data;
-        for(int j=0; j<4; j++){
-            node_meta[i].ne[j] = node->ne[j];
-            node_meta[i].nb[j] = node->nb[j];
-        }
+        struct ggml_tensor * node = cgraph->nodes[i];
+        struct ggml_tensor * src0 = node->src[0];
+        struct ggml_tensor * src1 = node->src[1];
+
+        fill_tensor_meta(&node_meta[i].dst, node);
+        fill_tensor_meta(&node_meta[i].src0, src0);
+        fill_tensor_meta(&node_meta[i].src1, src1);
     }
 
     

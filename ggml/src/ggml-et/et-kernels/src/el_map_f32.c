@@ -238,6 +238,12 @@ struct ggml_tensor_et {
     void* data;         // Device pointer if needed
 };
 
+struct ggml_node_meta_et {
+    struct ggml_tensor_et src0;
+    struct ggml_tensor_et src1;
+    struct ggml_tensor_et dst;
+};
+
 struct ggml_cgraph_et {
     int size;
     int n_nodes;
@@ -1221,13 +1227,8 @@ int rope_f32_impl(struct ggml_et_rope_params* params, void* env) {
     return 0;
 }
 
-int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
+int el_map_f32(struct ggml_et_elmap_params* params) {
     
-    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
-    if (!kernel_env) {
-        return -1;
-    }
-
     // int thread_id = get_relative_thread_id(kernel_env->shire_mask);
     int thread_id = get_hart_id();
     int num_threads = 2048; // get_num_threads(kernel_env->shire_mask);
@@ -1391,7 +1392,17 @@ int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
     return 0;
 }
 
-static int once = 0;
+// Helper function to convert ggml_tensor_et to ggml_tensor
+static inline void convert_to_ggml_tensor(struct ggml_tensor * dst, struct ggml_tensor_et * src) {
+    dst->type = src->type;
+    dst->data = src->data;
+    for(int j = 0; j < 4; j++){
+        dst->ne[j] = src->ne[j];
+        dst->nb[j] = src->nb[j];
+    }
+}
+
+// static int once = 0;
 
 int entry_point(struct ggml_cgraph_et* cg, void* env) {
     
@@ -1399,17 +1410,14 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     static int once = 0;
     
     // Reconstruct pointers on device side
-    struct ggml_tensor_et * node_meta = (struct ggml_tensor_et *) cg->data;
+    struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *) cg->data;
     uint8_t * node_op = (uint8_t *) (node_meta + cg->n_nodes);
     
     if(once == 0){
         hart_id == 0 ? et_printf("***DEV***: Hart %d starting execution\n", hart_id) : et_printf("");
         hart_id == 0 ? et_printf("***DEV***: Computing graph with %d nodes\n", cg->n_nodes) : et_printf("");
     }
-    struct ggml_et_binary_params param;
-    param.src0.data = cg->nodes[0]->src[0]->data;
-    param.src1.data = cg->nodes[0]->src[1]->data;
-    param.dst.data  = cg->nodes[0]->data;
+    
     const uint8_t n_nodes = cg->n_nodes;
     // hart_id == 0 ? et_printf("***DEV***: cgraph->nodes[0]->src[0]->type: %d\n", cgraph->nodes[0]->src[0]->type) : et_printf("");
     // We can access cgraph->nodes[i] pointer (host memory mapped)
@@ -1426,38 +1434,30 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     for (int i = 0; i < n_nodes; i++)
     {
         const int node_op_val = node_op[i];
-
+        
         switch (node_op_val) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
                 {
-                    // Print tensor metadata verification
                     if(once == 0){
                         hart_id == 0 ? et_printf("***DEV***: ADD OP - Node %d metadata:\n", i) : et_printf("");
-                        hart_id == 0 ? et_printf("***DEV***:   type: %d\n", node_meta[i].type) : et_printf("");
-                        hart_id == 0 ? et_printf("***DEV***:   ne[0]: %ld, ne[1]: %ld, ne[2]: %ld, ne[3]: %ld\n", 
-                            node_meta[i].ne[0], node_meta[i].ne[1], 
-                            node_meta[i].ne[2], node_meta[i].ne[3]) : et_printf("");
-                        hart_id == 0 ? et_printf("***DEV***:   nb[0]: %zu, nb[1]: %zu, nb[2]: %zu, nb[3]: %zu\n", 
-                            node_meta[i].nb[0], node_meta[i].nb[1], 
-                            node_meta[i].nb[2], node_meta[i].nb[3]) : et_printf("");
-                        hart_id == 0 ? et_printf("***DEV***:   data: %p\n", node_meta[i].data) : et_printf("");
+                        hart_id == 0 ? et_printf("***DEV***:   src0 type: %d\n", node_meta[i].src0.type) : et_printf("");
+                        hart_id == 0 ? et_printf("***DEV***:   src1 type: %d\n", node_meta[i].src1.type) : et_printf("");
+                        hart_id == 0 ? et_printf("***DEV***:   dst type: %d\n", node_meta[i].dst.type) : et_printf("");
                         once = 1;
                     }
-                 
-                    // if (node->type != GGML_TYPE_F32 ||
-                    //     node->src[0]->type != GGML_TYPE_F32 ||
-                    //     node->src[1]->type != GGML_TYPE_F32) {
-                    //     break;
-                    // }
+               
+                    struct ggml_tensor_et* src0 = &node_meta[i].src0;
+                    struct ggml_tensor_et* src1 = &node_meta[i].src1;
+                    struct ggml_tensor_et* dst  = &node_meta[i].dst;
                     
-                    // struct ggml_et_elmap_params params;
-                    // params.src0 = *node->src[0];
-                    // params.src1 = *node->src[1];
-                    // params.dst = *node;
+                    // Create params for el_map_f32
+                    struct ggml_et_elmap_params params;
+                    convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
+                    convert_to_ggml_tensor(&params.src1, &node_meta[i].src1);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst);
                     
-                    // el_map_f32(&params, env);
-
+                    el_map_f32(&params);
                 }
                 break;
 

@@ -149,6 +149,12 @@ struct ggml_tensor_et {
     void* data;         // Device pointer if needed
 };
 
+struct ggml_node_meta_et {
+    struct ggml_tensor_et src0;
+    struct ggml_tensor_et src1;
+    struct ggml_tensor_et dst;
+};
+
 struct ggml_cgraph_et {
     int size;
     int n_nodes;
