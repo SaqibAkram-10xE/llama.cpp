@@ -1435,13 +1435,13 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     {
         FENCE
         const int node_op_val = node_op[i];
-        hart_id == 0 ? et_printf("***DEV***: node_op[%d] %d\n", i, node_op_val) : et_printf("");
+        // hart_id == 0 ? et_printf("***DEV***: node_op[%d] %d\n", i, node_op_val) : et_printf("");
         
         switch (node_op_val) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
                 {
-                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_MUL/ADD \n") : et_printf("");
+                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_MUL/ADD \n") : et_printf("");
 
                     // if(once == 0)
                     // {
@@ -1520,7 +1520,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst);
-                    hart_id == 0 ? et_printf("***DEV***: Executed mul_mat \n") : et_printf("");
+                    // hart_id == 0 ? et_printf("***DEV***: Executed mul_mat \n") : et_printf("");
 
                     if (params.dst.type == GGML_TYPE_F32 &&
                         params.src0.type == GGML_TYPE_Q8_0 &&
@@ -1542,7 +1542,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 break;
 
             case GGML_OP_MUL_MAT_ID:
-                hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_MUL_MAT_ID \n") : et_printf("");
+                // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_MUL_MAT_ID \n") : et_printf("");
 
                 // ggml_et_op_mul(dev_ctx, node);
                 // ggml_et_op_mul_mat_id(dev_ctx, node);
@@ -1550,7 +1550,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_RMS_NORM:
                 {
-                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_RMS_NORM \n") : et_printf("");
+                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_RMS_NORM \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0]) break;
 
@@ -1568,7 +1568,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_GLU:
                 {
-                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_GLU \n") : et_printf("");
+                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_GLU \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0]) break;
 
@@ -1587,7 +1587,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_SOFT_MAX:
                 {
-                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_SOFT_MAX \n") : et_printf("");
+                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_SOFT_MAX \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0]) break;
 
@@ -1607,7 +1607,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_GET_ROWS:
                 {
-                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_GET_ROWS \n") : et_printf("");
+                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_GET_ROWS \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0] || !node->src[1]) break;
 
@@ -1622,7 +1622,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_SET_ROWS:
                 {
-                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_SET_ROWS \n") : et_printf("");
+                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_SET_ROWS \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0] || !node->src[1]) break;
 
@@ -1637,7 +1637,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_CONT:
                 {
-                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_CONT \n") : et_printf("");
+                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_CONT \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0]) break;
 
@@ -1653,7 +1653,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_ROPE:
                 {
-                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_ROPE \n") : et_printf("");
+                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_ROPE \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0] || !node->src[1]) break;
 
@@ -1688,7 +1688,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case GGML_OP_PERMUTE:
             case GGML_OP_TRANSPOSE:
                 {
-                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_RESHAPE/VIEW/PERMUTE/TRANSPOSE \n") : et_printf("");
+                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_RESHAPE/VIEW/PERMUTE/TRANSPOSE \n") : et_printf("");
                     // These are metadata-only operations that require no computation
                     // GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
                 }
@@ -1696,7 +1696,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             default:
                 {
-                    hart_id == 0 ? et_printf("***DEV***: Executed DEFAULT/UNSUPPORTED OP %d \n", node_op_val) : et_printf("");
+                    // hart_id == 0 ? et_printf("***DEV***: Executed DEFAULT/UNSUPPORTED OP %d \n", node_op_val) : et_printf("");
                     // GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
                 }
                 break; //GGML_STATUS_FAILED;

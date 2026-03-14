@@ -511,7 +511,7 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
     ggml_et_op_mul(dev_ctx, cgraph);
 
     // printf("\n\n\n\n\n\n");
-    for (int i = 0; i < cgraph->n_nodes; i++) {
+    /*for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
         printf("Node# %d, Node->Op: %d,  %s\n", i, node->op, ggml_op_name(node->op));
 
@@ -593,7 +593,7 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
         }
          
     }
-    
+    */
 
     return GGML_STATUS_SUCCESS;
 }
