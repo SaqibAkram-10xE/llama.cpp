@@ -172,6 +172,8 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
             continue;
         }
         node_op[i] = (uint8_t)cgraph->nodes[i]->op;
+        printf("***HOST***: Node %d - Original op: %d, Cast to uint8: %d, Name: %s\n", 
+               i, cgraph->nodes[i]->op, node_op[i], ggml_op_name(cgraph->nodes[i]->op));
         struct ggml_tensor * node = cgraph->nodes[i];
         // Check src[0]
         struct ggml_tensor * src0 = NULL;

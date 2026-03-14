@@ -47,81 +47,81 @@
 //     GGML_OP_GROUP_NORM = 27,
 //     GGML_OP_L2_NORM = 28,
 
-//     GGML_OP_MUL_MAT = 29,
-//     GGML_OP_MUL_MAT_ID = 30,
-//     GGML_OP_OUT_PROD = 31,
+//     GGML_OP_MUL_MAT = 28,
+//     GGML_OP_MUL_MAT_ID = 29,
+//     GGML_OP_OUT_PROD = 30,
 
-//     GGML_OP_SCALE = 32,
-//     GGML_OP_SET = 33,
-//     GGML_OP_CPY = 34,
-//     GGML_OP_CONT = 35,
-//     GGML_OP_RESHAPE = 36,
-//     GGML_OP_VIEW = 37,
-//     GGML_OP_PERMUTE = 38,
-//     GGML_OP_TRANSPOSE = 39,
-//     GGML_OP_GET_ROWS = 40,
-//     GGML_OP_GET_ROWS_BACK = 41,
-//     GGML_OP_SET_ROWS = 42,
-//     GGML_OP_DIAG = 43,
-//     GGML_OP_DIAG_MASK_INF = 44,
-//     GGML_OP_DIAG_MASK_ZERO = 45,
-//     GGML_OP_SOFT_MAX = 46,
-//     GGML_OP_SOFT_MAX_BACK = 47,
-//     GGML_OP_ROPE = 48,
-//     GGML_OP_ROPE_BACK = 49,
-//     GGML_OP_CLAMP = 50,
-//     GGML_OP_CONV_TRANSPOSE_1D = 51,
-//     GGML_OP_IM2COL = 52,
-//     GGML_OP_IM2COL_BACK = 53,
-//     GGML_OP_IM2COL_3D = 54,
-//     GGML_OP_CONV_2D = 55,
-//     GGML_OP_CONV_3D = 56,
-//     GGML_OP_CONV_2D_DW = 57,
-//     GGML_OP_CONV_TRANSPOSE_2D = 58,
-//     GGML_OP_POOL_1D = 59,
-//     GGML_OP_POOL_2D = 60,
-//     GGML_OP_POOL_2D_BACK = 61,
-//     GGML_OP_UPSCALE = 62,
-//     GGML_OP_PAD = 63,
-//     GGML_OP_PAD_REFLECT_1D = 64,
-//     GGML_OP_ROLL = 65,
-//     GGML_OP_ARANGE = 66,
-//     GGML_OP_TIMESTEP_EMBEDDING = 67,
-//     GGML_OP_ARGSORT = 68,
-//     GGML_OP_TOP_K = 69,
-//     GGML_OP_LEAKY_RELU = 70,
-//     GGML_OP_TRI = 71,
-//     GGML_OP_FILL = 72,
+//     GGML_OP_SCALE = 31,
+//     GGML_OP_SET = 32,
+//     GGML_OP_CPY = 33,
+//     GGML_OP_CONT = 34,
+//     GGML_OP_RESHAPE = 35,
+//     GGML_OP_VIEW = 36,
+//     GGML_OP_PERMUTE = 37,
+//     GGML_OP_TRANSPOSE = 38,
+//     GGML_OP_GET_ROWS = 39,
+//     GGML_OP_GET_ROWS_BACK = 40,
+//     GGML_OP_SET_ROWS = 41,
+//     GGML_OP_DIAG = 42,
+//     GGML_OP_DIAG_MASK_INF = 43,
+//     GGML_OP_DIAG_MASK_ZERO = 44,
+//     GGML_OP_SOFT_MAX = 45,
+//     GGML_OP_SOFT_MAX_BACK = 46,
+//     GGML_OP_ROPE = 47,
+//     GGML_OP_ROPE_BACK = 48,
+//     GGML_OP_CLAMP = 49,
+//     GGML_OP_CONV_TRANSPOSE_1D = 50,
+//     GGML_OP_IM2COL = 51,
+//     GGML_OP_IM2COL_BACK = 52,
+//     GGML_OP_IM2COL_3D = 53,
+//     GGML_OP_CONV_2D = 54,
+//     GGML_OP_CONV_3D = 55,
+//     GGML_OP_CONV_2D_DW = 56,
+//     GGML_OP_CONV_TRANSPOSE_2D = 57,
+//     GGML_OP_POOL_1D = 58,
+//     GGML_OP_POOL_2D = 59,
+//     GGML_OP_POOL_2D_BACK = 60,
+//     GGML_OP_UPSCALE = 61,
+//     GGML_OP_PAD = 62,
+//     GGML_OP_PAD_REFLECT_1D = 63,
+//     GGML_OP_ROLL = 64,
+//     GGML_OP_ARANGE = 65,
+//     GGML_OP_TIMESTEP_EMBEDDING = 66,
+//     GGML_OP_ARGSORT = 67,
+//     GGML_OP_TOP_K = 68,
+//     GGML_OP_LEAKY_RELU = 69,
+//     GGML_OP_TRI = 70,
+//     GGML_OP_FILL = 71,
 
-//     GGML_OP_FLASH_ATTN_EXT = 73,
-//     GGML_OP_FLASH_ATTN_BACK = 74,
-//     GGML_OP_SSM_CONV = 75,
-//     GGML_OP_SSM_SCAN = 76,
-//     GGML_OP_WIN_PART = 77,
-//     GGML_OP_WIN_UNPART = 78,
-//     GGML_OP_GET_REL_POS = 79,
-//     GGML_OP_ADD_REL_POS = 80,
-//     GGML_OP_RWKV_WKV6 = 81,
-//     GGML_OP_GATED_LINEAR_ATTN = 82,
-//     GGML_OP_RWKV_WKV7 = 83,
-//     GGML_OP_SOLVE_TRI = 84,
+//     GGML_OP_FLASH_ATTN_EXT = 72,
+//     GGML_OP_FLASH_ATTN_BACK = 73,
+//     GGML_OP_SSM_CONV = 74,
+//     GGML_OP_SSM_SCAN = 75,
+//     GGML_OP_WIN_PART = 76,
+//     GGML_OP_WIN_UNPART = 77,
+//     GGML_OP_GET_REL_POS = 78,
+//     GGML_OP_ADD_REL_POS = 79,
+//     GGML_OP_RWKV_WKV6 = 80,
+//     GGML_OP_GATED_LINEAR_ATTN = 81,
+//     GGML_OP_RWKV_WKV7 = 82,
+//     GGML_OP_SOLVE_TRI = 83,
 
-//     GGML_OP_UNARY = 85,
+//     GGML_OP_UNARY = 84,
 
-//     GGML_OP_MAP_CUSTOM1 = 86,
-//     GGML_OP_MAP_CUSTOM2 = 87,
-//     GGML_OP_MAP_CUSTOM3 = 88,
+//     GGML_OP_MAP_CUSTOM1 = 85,
+//     GGML_OP_MAP_CUSTOM2 = 86,
+//     GGML_OP_MAP_CUSTOM3 = 87,
 
-//     GGML_OP_CUSTOM = 89,
+//     GGML_OP_CUSTOM = 88,
 
-//     GGML_OP_CROSS_ENTROPY_LOSS = 90,
-//     GGML_OP_CROSS_ENTROPY_LOSS_BACK = 91,
-//     GGML_OP_OPT_STEP_ADAMW = 92,
-//     GGML_OP_OPT_STEP_SGD = 93,
+//     GGML_OP_CROSS_ENTROPY_LOSS = 89,
+//     GGML_OP_CROSS_ENTROPY_LOSS_BACK = 90,
+//     GGML_OP_OPT_STEP_ADAMW = 91,
+//     GGML_OP_OPT_STEP_SGD = 92,
 
-//     GGML_OP_GLU = 94,
+//     GGML_OP_GLU = 93,
 
-//     GGML_OP_COUNT = 95,
+//     GGML_OP_COUNT = 94,
 // };
 
 // const char * ggml_op_name(enum ggml_op op) {
@@ -1430,9 +1430,10 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     //     hart_id == 0 ? et_printf("***DEV***: n_nodes %d\n", n_nodes) : et_printf("");
     //     once = 1;
     // }
-/*
+
     for (int i = 0; i < n_nodes; i++)
     {
+        FENCE
         const int node_op_val = node_op[i];
         hart_id == 0 ? et_printf("***DEV***: node_op[%d] %d\n", i, node_op_val) : et_printf("");
         
@@ -1440,6 +1441,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
                 {
+                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_MUL/ADD \n") : et_printf("");
+
                     // if(once == 0)
                     // {
                     //     hart_id == 0 ? et_printf("***DEV***: ADD OP - Node %d metadata:\n", i) : et_printf("");
@@ -1466,6 +1469,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case GGML_OP_MUL_MAT:
                 // ggml_et_op_mul(dev_ctx, node);
                 {
+                    
                     // if (!node) {
                     //    break;
                     // }
@@ -1538,12 +1542,15 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 break;
 
             case GGML_OP_MUL_MAT_ID:
+                hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_MUL_MAT_ID \n") : et_printf("");
+
                 // ggml_et_op_mul(dev_ctx, node);
                 // ggml_et_op_mul_mat_id(dev_ctx, node);
                 break;
 
             case GGML_OP_RMS_NORM:
                 {
+                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_RMS_NORM \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0]) break;
 
@@ -1561,6 +1568,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_GLU:
                 {
+                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_GLU \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0]) break;
 
@@ -1579,6 +1587,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_SOFT_MAX:
                 {
+                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_SOFT_MAX \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0]) break;
 
@@ -1598,6 +1607,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_GET_ROWS:
                 {
+                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_GET_ROWS \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0] || !node->src[1]) break;
 
@@ -1612,6 +1622,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_SET_ROWS:
                 {
+                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_SET_ROWS \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0] || !node->src[1]) break;
 
@@ -1626,6 +1637,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_CONT:
                 {
+                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_CONT \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0]) break;
 
@@ -1641,6 +1653,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_ROPE:
                 {
+                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_ROPE \n") : et_printf("");
                     // if (!node) break;
                     // if (!node->src[0] || !node->src[1]) break;
 
@@ -1674,18 +1687,24 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case GGML_OP_VIEW:
             case GGML_OP_PERMUTE:
             case GGML_OP_TRANSPOSE:
-                // These are metadata-only operations that require no computation
-                // GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
+                {
+                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_RESHAPE/VIEW/PERMUTE/TRANSPOSE \n") : et_printf("");
+                    // These are metadata-only operations that require no computation
+                    // GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
+                }
                 break;
 
             default:
-                // GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
+                {
+                    hart_id == 0 ? et_printf("***DEV***: Executed DEFAULT/UNSUPPORTED OP %d \n", node_op_val) : et_printf("");
+                    // GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
+                }
                 break; //GGML_STATUS_FAILED;
         }
     
     
     }
-    */
+    
 
    
         
