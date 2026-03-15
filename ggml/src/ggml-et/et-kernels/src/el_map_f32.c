@@ -1432,7 +1432,7 @@ int mul_mat_f32(struct ggml_et_binary_params* params) {
     // Thread coordination
     int thread_id = get_relative_thread_id(0xFFFFFFFF);
     int num_threads = get_num_threads(0xFFFFFFFF);
-            
+
     if (thread_id < 0 || (thread_id & 1)) {
         return 0; // Skip odd threads to avoid resource contention
     }
@@ -1644,22 +1644,6 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
                 {
-                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_MUL/ADD \n") : et_printf("");
-
-                    // if(once == 0)
-                    // {
-                    //     hart_id == 0 ? et_printf("***DEV***: ADD OP - Node %d metadata:\n", i) : et_printf("");
-                    //     hart_id == 0 ? et_printf("***DEV***:   src0 type: %d\n", node_meta[i].src0.type) : et_printf("");
-                    //     hart_id == 0 ? et_printf("***DEV***:   src1 type: %d\n", node_meta[i].src1.type) : et_printf("");
-                    //     hart_id == 0 ? et_printf("***DEV***:   dst type: %d\n", node_meta[i].dst.type) : et_printf("");
-                    //     once = 1;
-                    // }
-               
-                    // struct ggml_tensor_et* src0 = &node_meta[i].src0;
-                    // struct ggml_tensor_et* src1 = &node_meta[i].src1;
-                    // struct ggml_tensor_et* dst  = &node_meta[i].dst;
-                    
-                    // Create params for el_map_f32
                     struct ggml_et_elmap_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1);
@@ -1670,55 +1654,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 break;
 
             case GGML_OP_MUL_MAT:
-                // ggml_et_op_mul(dev_ctx, node);
                 {
-                    
-                    // if (!node) {
-                    //    break;
-                    // }
-
-                    // if (!node->src[0] || !node->src[1]) {
-                    //     break;
-                    // }
-
-                    // const char* kernel_name;
-                    // const char* src0_type_name;
-
-                    // if (node->type == GGML_TYPE_F32 &&
-                    //     node->src[0]->type == GGML_TYPE_Q8_0 &&
-                    //     node->src[1]->type == GGML_TYPE_F32) {
-
-                    //     if((node->src[0]->ne[2] > 1) || (node->src[0]->ne[3] > 1)) {
-                    //         kernel_name = "mul_mat_f32";
-                    //     }
-                    //     else{
-                    //         kernel_name = "mul_mat_Q8_0";
-                    //     }
-                    //     // kernel_name = "mul_mat_Q8_0"; //mul_mat_f32
-                    //     src0_type_name = "Q8_0";
-                        
-                    // } else if (node->type == GGML_TYPE_F32 &&
-                    //         node->src[0]->type == GGML_TYPE_F16 &&
-                    //         node->src[1]->type == GGML_TYPE_F32) {
-                    //     kernel_name = "mul_mat_f32";
-                    //     src0_type_name = "F16";
-
-                    // } else if (node->type == GGML_TYPE_F32 &&
-                    //         node->src[0]->type == GGML_TYPE_F32 &&
-                    //         node->src[1]->type == GGML_TYPE_F32) {
-
-                    //     kernel_name = "mul_mat_f32";
-                    //     src0_type_name = "F32";
-
-                    // } else {
-                    //     break;
-                    // }
-
-                    // struct ggml_et_binary_params params;
-                    // params.src0 = *node->src[0];  // weight matrix
-                    // params.src1 = *node->src[1];  // activation matrix
-                    // params.dst = *node;           // output matrix
-
                     struct ggml_et_binary_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1);
@@ -1729,19 +1665,19 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                         params.src0.type == GGML_TYPE_Q8_0 &&
                         params.src1.type == GGML_TYPE_F32) {
                         mul_mat_Q8_0(&params);
-                        hart_id == 0 ? et_printf("***DEV***: Executed mul_mat_Q8_0 for node %d\n", i) : et_printf("");
+                        // hart_id == 0 ? et_printf("***DEV***: Executed mul_mat_Q8_0 for node %d\n", i) : et_printf("");
                     }
                     else if (params.dst.type == GGML_TYPE_F32 &&
                         params.src0.type == GGML_TYPE_F16 &&
                         params.src1.type == GGML_TYPE_F32) {
                         mul_mat_f16(&params);
-                        hart_id == 0 ? et_printf("***DEV***: Executed mul_mat_f16 for node %d\n", i) : et_printf("");
+                        // hart_id == 0 ? et_printf("***DEV***: Executed mul_mat_f16 for node %d\n", i) : et_printf("");
                     }
                     else if (params.dst.type == GGML_TYPE_F32 &&
                         params.src0.type == GGML_TYPE_F32 &&
                         params.src1.type == GGML_TYPE_F32) {
                         mul_mat_f32(&params);
-                        hart_id == 0 ? et_printf("***DEV***: Executed mul_mat_f32 for node %d\n", i) : et_printf("");
+                        // hart_id == 0 ? et_printf("***DEV***: Executed mul_mat_f32 for node %d\n", i) : et_printf("");
                     }
                 }
                 break;
