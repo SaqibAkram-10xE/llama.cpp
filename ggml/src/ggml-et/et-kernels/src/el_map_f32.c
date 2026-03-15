@@ -1428,20 +1428,11 @@ int mul_mat_f16(struct ggml_et_binary_params* params) {
 }
 
 int mul_mat_f32(struct ggml_et_binary_params* params) {
-    // kernel_environment_t kernel_env = {
-    //     .shire_mask = get_shire_mask()
-    // };
-    
-    if (params == 0 || ((uint64_t)params & 0x7) != 0) {
-        return -1;
-    }
 
     // Thread coordination
-    // int thread_id = get_relative_thread_id(kernel_env.shire_mask);
-    // int num_threads = get_num_threads(kernel_env.shire_mask);
-    uint64_t thread_id = get_hart_id();
-    const int64_t num_threads = 2048; 
-
+    int thread_id = get_relative_thread_id(0xFFFFFFFF);
+    int num_threads = get_num_threads(0xFFFFFFFF);
+            
     if (thread_id < 0 || (thread_id & 1)) {
         return 0; // Skip odd threads to avoid resource contention
     }
