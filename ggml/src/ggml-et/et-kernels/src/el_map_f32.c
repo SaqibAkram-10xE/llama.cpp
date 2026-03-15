@@ -1772,14 +1772,18 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_ROPE:
                 {
+                    // FIX ME error
                     struct ggml_et_rope_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst);
+                    hart_id == 0 ? et_printf("\n\n\n\n***DEV***: Executed GGML_OP_ROPE for node %d\n", i) : et_printf("");
                     
                     // Default rope parameters
                     params.rope_params.n_past = 0;
                     params.rope_params.n_dims = params.src0.ne[0];
+                    hart_id == 0 ? et_printf("***DEV***: params.rope_params.n_dims :%d\n", params.rope_params.n_dims) : et_printf("");
+
                     params.rope_params.mode = GGML_ROPE_TYPE_NEOX;
                     params.rope_params.n_ctx = 512;
                     params.rope_params.n_ctx_orig = 512;
@@ -1789,12 +1793,16 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     params.rope_params.attn_factor = 0.0f;
                     params.rope_params.beta_fast = 32.0f;
                     params.rope_params.beta_slow = 1.0f;
+                    hart_id == 0 ? et_printf("***DEV***: Complete params\n") : et_printf("");
+
                     for (int j = 0; j < 4; j++) params.rope_params.sections[j] = 0;
 
                     if (params.dst.type == GGML_TYPE_F32 && 
                         params.src0.type == GGML_TYPE_F32 && 
                         params.src1.type == GGML_TYPE_I32) {
                         rope_f32_impl(&params, env);
+                        hart_id == 0 ? et_printf("***DEV***: rope_f32_impl() called\n") : et_printf("");
+
                     }
                 }
                 break;
