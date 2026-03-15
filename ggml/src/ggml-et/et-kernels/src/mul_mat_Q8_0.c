@@ -63,7 +63,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
 
     int64_t hart_id = get_hart_id();
     const int64_t stride_m = 2048; 
-    hart_id == 0 ? et_printf("***DEV***: data pointer %p\n", (void*)params->src0.data) : et_printf("");
+    // hart_id == 0 ? et_printf("***DEV***: data pointer %p\n", (void*)params->src0.data) : et_printf("");
 
     // Matrix dimensions
     const int64_t K    = params->src0.ne[0];
