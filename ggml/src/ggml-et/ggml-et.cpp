@@ -526,11 +526,11 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
         
         switch (node->op) {
             case GGML_OP_MUL:
-                ggml_et_op_mul(dev_ctx, node);
+                // ggml_et_op_mul(dev_ctx, node);
                 break;
 
             case GGML_OP_ADD:
-                ggml_et_op_add(dev_ctx, node);
+                // ggml_et_op_add(dev_ctx, node);
                 break;
 
             case GGML_OP_MUL_MAT:
