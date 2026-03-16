@@ -662,6 +662,7 @@ bool ggml_et_op_rms_norm(ggml_backend_et_device_context* dev_ctx, const ggml_ten
     }
 
     float eps;
+    printf("\n\nnode->op_params:%d\n\n",node->op_params);
     memcpy(&eps, node->op_params, sizeof(float));
 
     ggml_et_rms_norm_params params;

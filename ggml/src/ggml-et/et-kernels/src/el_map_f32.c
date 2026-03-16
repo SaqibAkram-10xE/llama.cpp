@@ -1800,7 +1800,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     if (params.dst.type == GGML_TYPE_F32 && 
                         params.src0.type == GGML_TYPE_F32 && 
                         params.src1.type == GGML_TYPE_I32) {
-                        rope_f32_impl(&params, env);
+                        // rope_f32_impl(&params, env);
                         hart_id == 0 ? et_printf("***DEV***: rope_f32_impl() called\n") : et_printf("");
 
                     }
