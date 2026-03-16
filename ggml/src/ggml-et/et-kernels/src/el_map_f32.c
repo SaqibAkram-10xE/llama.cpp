@@ -1694,7 +1694,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     struct ggml_et_rms_norm_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst);
-                    params.eps = 1e-6f; // Default epsilon
+                    params.eps = -723850508; // Default epsilon
 
                     if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
                         rms_norm_f32_impl(&params, env);
