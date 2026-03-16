@@ -185,6 +185,11 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
         if (node->src[1]) {
             src1 = node->src[1];
         }
+        // Check src[2]
+        struct ggml_tensor * src2 = NULL;
+        if (node->src[2]) {
+            src2 = node->src[2];
+        }
         // Only fill metadata if tensors exist
         if (node) {
             fill_tensor_meta(&node_meta[i].dst, node);
@@ -195,6 +200,11 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
         if (src1) {
             fill_tensor_meta(&node_meta[i].src1, src1);
         }
+        if (src2) {
+            fill_tensor_meta(&node_meta[i].src2, src2);
+        }
+        // Copy op_params
+        memcpy(node_meta[i].op_params, node->op_params, sizeof(node->op_params));
     }
    
     // printf("***HOST***: Computing graph with %d nodes. size: %lu\n",

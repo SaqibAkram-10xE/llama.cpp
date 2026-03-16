@@ -152,7 +152,9 @@ struct ggml_tensor_et {
 struct ggml_node_meta_et {
     struct ggml_tensor_et src0;
     struct ggml_tensor_et src1;
+    struct ggml_tensor_et src2;
     struct ggml_tensor_et dst;
+    int32_t op_params[16];
 };
 
 struct ggml_cgraph_et {

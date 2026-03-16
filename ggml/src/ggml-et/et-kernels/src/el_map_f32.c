@@ -6,6 +6,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 #include "ggml_tensor.h"
 #include "platform.h"
 
@@ -241,7 +242,9 @@ struct ggml_tensor_et {
 struct ggml_node_meta_et {
     struct ggml_tensor_et src0;
     struct ggml_tensor_et src1;
+    struct ggml_tensor_et src2;
     struct ggml_tensor_et dst;
+    int32_t op_params[16];
 };
 
 struct ggml_cgraph_et {
@@ -1694,8 +1697,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     struct ggml_et_rms_norm_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst);
-                    params.eps = -723850508; // Default epsilon
-
+                    memcpy(&params.eps, node_meta[i].op_params, sizeof(float));
                     if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
                         rms_norm_f32_impl(&params, env);
                     }
@@ -1708,8 +1710,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst);
-                    params.glu_op_type = GGML_GLU_OP_SWIGLU;
-                    params.swapped = 0;
+                    memcpy(&params.glu_op_type, &node_meta[i].op_params[0], sizeof(int32_t));
+                    memcpy(&params.swapped, &node_meta[i].op_params[1], sizeof(int32_t));
 
                     if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
                         glu_f32_impl(&params, env);
@@ -1723,8 +1725,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst);
-                    params.scale = 1.0f;
-                    params.max_bias = 0.0f;
+                    memcpy(&params.scale, &node_meta[i].op_params[0], sizeof(float));
+                    memcpy(&params.max_bias, &node_meta[i].op_params[1], sizeof(float));
 
                     if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
                         softmax_f32_impl(&params, env);
@@ -1772,37 +1774,31 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_ROPE:
                 {
-                    // FIX ME error
                     struct ggml_et_rope_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1);
+                    convert_to_ggml_tensor(&params.src2, &node_meta[i].src2);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst);
-                    hart_id == 0 ? et_printf("\n\n\n\n***DEV***: Executed GGML_OP_ROPE for node %d\n", i) : et_printf("");
                     
-                    // Default rope parameters
-                    params.rope_params.n_past = 0;
-                    params.rope_params.n_dims = params.src0.ne[0];
-                    hart_id == 0 ? et_printf("***DEV***: params.rope_params.n_dims :%d\n", params.rope_params.n_dims) : et_printf("");
-
-                    params.rope_params.mode = GGML_ROPE_TYPE_NEOX;
-                    params.rope_params.n_ctx = 512;
-                    params.rope_params.n_ctx_orig = 512;
-                    params.rope_params.freq_base = 10000.0f;
-                    params.rope_params.freq_scale = 1.0f;
-                    params.rope_params.ext_factor = 0.0f;
-                    params.rope_params.attn_factor = 0.0f;
-                    params.rope_params.beta_fast = 32.0f;
-                    params.rope_params.beta_slow = 1.0f;
-                    hart_id == 0 ? et_printf("***DEV***: Complete params\n") : et_printf("");
-
-                    for (int j = 0; j < 4; j++) params.rope_params.sections[j] = 0;
+                    memcpy(&params.rope_params.n_past, &node_meta[i].op_params[0], sizeof(int32_t));
+                    memcpy(&params.rope_params.n_dims, &node_meta[i].op_params[1], sizeof(int32_t));
+                    memcpy(&params.rope_params.mode, &node_meta[i].op_params[2], sizeof(int32_t));
+                    memcpy(&params.rope_params.n_ctx, &node_meta[i].op_params[3], sizeof(int32_t));
+                    memcpy(&params.rope_params.n_ctx_orig, &node_meta[i].op_params[4], sizeof(int32_t));
+                    memcpy(&params.rope_params.freq_base, &node_meta[i].op_params[5], sizeof(float));
+                    memcpy(&params.rope_params.freq_scale, &node_meta[i].op_params[6], sizeof(float));
+                    memcpy(&params.rope_params.ext_factor, &node_meta[i].op_params[7], sizeof(float));
+                    memcpy(&params.rope_params.attn_factor, &node_meta[i].op_params[8], sizeof(float));
+                    memcpy(&params.rope_params.beta_fast, &node_meta[i].op_params[9], sizeof(float));
+                    memcpy(&params.rope_params.beta_slow, &node_meta[i].op_params[10], sizeof(float));
+                    for (int j = 0; j < 4; j++) {
+                        memcpy(&params.rope_params.sections[j], &node_meta[i].op_params[11 + j], sizeof(int32_t));
+                    }
 
                     if (params.dst.type == GGML_TYPE_F32 && 
                         params.src0.type == GGML_TYPE_F32 && 
                         params.src1.type == GGML_TYPE_I32) {
-                        // rope_f32_impl(&params, env);
-                        hart_id == 0 ? et_printf("***DEV***: rope_f32_impl() called\n") : et_printf("");
-
+                        rope_f32_impl(&params, env);
                     }
                 }
                 break;
