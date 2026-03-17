@@ -1237,10 +1237,12 @@ int el_map_f32(struct ggml_et_elmap_params* params) {
     int num_threads = 2048; // get_num_threads(kernel_env->shire_mask);
 
     if (thread_id < 0) {
+        thread_id == 0 ? et_printf("el_map_f32: 1\n") : et_printf("");
         return 0;
     }
 
     if (params == 0 || ((uint64_t)params & 0x7) != 0) {
+        thread_id == 0 ? et_printf("el_map_f32: 2\n") : et_printf("");
         return -1; // Invalid pointer
     }
 
@@ -1249,6 +1251,7 @@ int el_map_f32(struct ggml_et_elmap_params* params) {
     struct ggml_tensor* dst  = &params->dst;
 
     if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
+        thread_id == 0 ? et_printf("el_map_f32: 3\n") : et_printf("");
         return -1; // Unsupported type combination
     }
 
@@ -1257,12 +1260,14 @@ int el_map_f32(struct ggml_et_elmap_params* params) {
     float* dst_data = (float*)dst->data;
 
     if (!src0_data || !src1_data || !dst_data) {
+        thread_id == 0 ? et_printf("el_map_f32: 4\n") : et_printf("");
         return -1; // Null data pointer
     }
 
     enum ggml_op operation = dst->op;
 
     if (operation != GGML_OP_MUL && operation != GGML_OP_ADD) {
+        thread_id == 0 ? et_printf("el_map_f32: 5\n") : et_printf("");
         return -1; // Unsupported operation
     }
 
@@ -1283,6 +1288,7 @@ int el_map_f32(struct ggml_et_elmap_params* params) {
     const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
     if (start_row >= total_rows) {
+        thread_id == 0 ? et_printf("el_map_f32: 6\n") : et_printf("");
         return 0;
     }
 
@@ -1641,7 +1647,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     {
         FENCE
         const int node_op_val = node_op[i];
-        hart_id == 0 ? et_printf("***DEV***: node_op[%d] %d\n", i, node_op_val) : et_printf("");
+        // hart_id == 0 ? et_printf("***DEV***: node_op[%d] %d\n", i, node_op_val) : et_printf("");
         
         switch (node_op_val) {
             case GGML_OP_MUL:
