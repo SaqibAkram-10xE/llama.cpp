@@ -14,8 +14,6 @@
 #include "quants.h"
 #include "math_fp.h"
 #include "block_ops.h"
-#include "et_backend/utils.h"
-#include "et_backend/esr_defines.h"
 
 // enum ggml_op {
 //     GGML_OP_NONE = 0,
@@ -1614,37 +1612,7 @@ static inline void convert_to_ggml_tensor(struct ggml_tensor * dst, struct ggml_
     }
 }
 
-// static int once = 0;
-
-/*! \fn inline uint64_t shire_barrier(uint64_t flb, uint64_t fcc, uint64_t thread_count, uint64_t minion_mask_t0, uint64_t minion_mask_t1)
-    \brief Shire-only barrier using FLBs and FCCs
-    \param flb FLbarrier value
-    \param fcc  FCC value
-    \param thread_count active thread count
-    \param minion_mask_t0 Mask of active thread0 minions
-    \param minion_mask_t1 Mask of active thread1 minions
-    \return last thread to reach barrier
-    \syncops Implementation of shire_barrier api
-*/
-
-// Please read te files:
-//home/saqib/Documents/Prj/P1/ET_platform/et-platform/et-common-libs/include/etsoc/isa
-
-inline uint64_t __attribute__((always_inline)) shire_barrier(uint64_t flb, uint64_t fcc,
-    uint64_t thread_count, uint64_t minion_mask_t0, uint64_t minion_mask_t1)
-{
-    uint64_t last = flbarrier(flb, thread_count - 1);
-
-    if (last)
-    {
-        fcc_send(SHIRE_OWN, THREAD_0, fcc, minion_mask_t0);
-        fcc_send(SHIRE_OWN, THREAD_1, fcc, minion_mask_t1);
-    }
-    fcc_consume(fcc);
-
-    return last;
-}
-
+// #include "/opt/et/cm-umode/include/etsoc/isa/barriers.h"
 int entry_point(struct ggml_cgraph_et* cg, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
     if (!kernel_env) return -1;
@@ -1676,12 +1644,12 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
     int num_threads = get_num_threads(kernel_env->shire_mask);
     
-    for (int i = 0; i < n_nodes; i++)
+    /*for (int i = 0; i < n_nodes; i++)
     {
         // Ensure all threads have finished the previous node before starting the next one
         // Using flb=0, fcc=0 as defaults for shire-local synchronization
         // minion_mask_t0/t1 are bitmasks for threads 0 and 1 across the minions
-        shire_barrier(0, 0, num_threads, 0xFFFFFFFF, 0xFFFFFFFF);
+        // shire_barrier(0, 0, num_threads, 0xFFFFFFFF, 0xFFFFFFFF);
         
         const int node_op_val = node_op[i];
         if (node_op_val == GGML_OP_NONE) continue;
@@ -1869,7 +1837,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
         }
     
     
-    }
+    }*/
     
 
    
