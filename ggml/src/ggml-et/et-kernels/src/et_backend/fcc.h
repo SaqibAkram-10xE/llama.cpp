@@ -54,7 +54,7 @@ typedef enum { FCC_0 = 0, FCC_1 = 1 } fcc_t;
     \return none
     \syncops Implementation of WAIT_FCC macro
 */
-#define WAIT_FCC(fcc) asm volatile("csrwi fcc, %0" : : "I"(fcc))
+#define WAIT_FCC(fcc) __asm__ volatile("csrwi fcc, %0" : : "I"(fcc))
 
 /*! \fn static inline void wait_fcc(fcc_t fcc)
     \brief fast credit counter to block on, 0 or 1, it will attempt to decrement the value in
@@ -67,7 +67,7 @@ typedef enum { FCC_0 = 0, FCC_1 = 1 } fcc_t;
 */
 static inline void wait_fcc(fcc_t fcc)
 {
-    asm volatile("csrw fcc, %0" : : "r"(fcc));
+    __asm__  volatile("csrw fcc, %0" : : "r"(fcc));
 }
 
 /*! \fn read_fcc(fcc_t fcc)
@@ -81,7 +81,7 @@ static inline uint64_t read_fcc(fcc_t fcc)
     uint64_t temp;
     uint64_t val;
 
-    asm volatile("   csrr  %0, fccnb  \n" // read FCCNB
+    __asm__ volatile("   csrr  %0, fccnb  \n" // read FCCNB
                  "   beqz  %2, 1f     \n" // if FCC1, shift FCCNB 31:16 down to 15:0
                  "   srli  %0, %0, 16 \n"
                  "1: lui   %1, 0x10   \n" // mask with 0xFFFF
