@@ -28,6 +28,7 @@ find_package(runtime REQUIRED)
 # --- Kernel list (single source of truth, shared with et-kernels) ---
 set(KERNELS
     el_map_f32
+    op_cgraph
     glu_f32
     mul_mat_f32
     mul_mat_id_f32

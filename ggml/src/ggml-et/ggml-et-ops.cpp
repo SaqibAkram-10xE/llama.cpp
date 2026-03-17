@@ -87,7 +87,7 @@ static ggml_et_cpu_compare_config set_rows_cpu_compare_config = {
 // bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
 bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
     // Delegate to generic element map operation
-    return ggml_et_op_elmap(dev_ctx, cgraph);
+    return ggml_et_op_cg(dev_ctx, cgraph);
     // return true;
     
 }
@@ -137,7 +137,7 @@ static inline void fill_tensor_meta(struct ggml_tensor_et * dst, struct ggml_ten
     }
 }
 
-bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
+bool ggml_et_op_cg(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
 
     bool kernel_result = false;
 
@@ -211,76 +211,76 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgr
     //      cg->n_nodes, total_size);
 
     // Pass single pointer to kernel
-    kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", cg, total_size, 0xFFFFFFFF);
+    kernel_result = ggml_et_launch_kernel(dev_ctx, "op_cgraph", cg, total_size, 0xFFFFFFFF);
     
     free(cg);
     return kernel_result;
 }
 
-// bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
-//     // Delegate to generic element map operation
-//     return ggml_et_op_elmap(dev_ctx, node);
-// }
+bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
+    // Delegate to generic element map operation
+    return ggml_et_op_elmap(dev_ctx, node);
+}
 
-// bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
-//     // Delegate to generic element map operation
-//     return ggml_et_op_elmap(dev_ctx, node);
-// }
+bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
+    // Delegate to generic element map operation
+    return ggml_et_op_elmap(dev_ctx, node);
+}
 
-// bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
-//     ET_PERF_START();
+bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
+    ET_PERF_START();
 
-//     if (!dev_ctx || !node) {
-//         GGML_LOG_ERROR("ET: Invalid parameters for element map operation\n");
-//         return false;
-//     }
+    if (!dev_ctx || !node) {
+        GGML_LOG_ERROR("ET: Invalid parameters for element map operation\n");
+        return false;
+    }
 
-//     if (!node->src[0] || !node->src[1]) {
-//         GGML_LOG_ERROR("ET: Element map operation missing required inputs\n");
-//         return false;
-//     }
+    if (!node->src[0] || !node->src[1]) {
+        GGML_LOG_ERROR("ET: Element map operation missing required inputs\n");
+        return false;
+    }
 
-//     if (node->type != GGML_TYPE_F32 ||
-//         node->src[0]->type != GGML_TYPE_F32 ||
-//         node->src[1]->type != GGML_TYPE_F32) {
-//         GGML_LOG_ERROR("ET: Element map operation with unsupported types: dst=%s src0=%s src1=%s\n",
-//                        ggml_type_name(node->type),
-//                        ggml_type_name(node->src[0]->type),
-//                        ggml_type_name(node->src[1]->type));
-//         return false;
-//     }
+    if (node->type != GGML_TYPE_F32 ||
+        node->src[0]->type != GGML_TYPE_F32 ||
+        node->src[1]->type != GGML_TYPE_F32) {
+        GGML_LOG_ERROR("ET: Element map operation with unsupported types: dst=%s src0=%s src1=%s\n",
+                       ggml_type_name(node->type),
+                       ggml_type_name(node->src[0]->type),
+                       ggml_type_name(node->src[1]->type));
+        return false;
+    }
 
-//     const char* op_name = ggml_op_name(node->op);
+    const char* op_name = ggml_op_name(node->op);
 
-//     ggml_et_elmap_params params;
-//     params.src0 = *node->src[0];
-//     params.src1 = *node->src[1];
-//     params.dst = *node;           // F32 output tensor (op type stored in dst.op)
+    ggml_et_elmap_params params;
+    params.src0 = *node->src[0];
+    params.src1 = *node->src[1];
+    params.dst = *node;           // F32 output tensor (op type stored in dst.op)
 
-//     // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
-//     ggml_et_cpu_compare_ctx cpu_cmp_ctx;
-//     bool cpu_comparison_active = false;
-//     if (elmap_cpu_compare_config.enabled) {
-//         if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, node->op)) {
-//             cpu_comparison_active = true;
-//         } else {
-//             GGML_LOG_WARN("ET: Failed to initialize CPU comparison for %s operation\n", op_name);
-//         }
-//     }
+    // Phase 1: Initialize CPU comparison context and copy source buffers (before ET kernel)
+    ggml_et_cpu_compare_ctx cpu_cmp_ctx;
+    bool cpu_comparison_active = false;
+    if (elmap_cpu_compare_config.enabled) {
+        if (ggml_et_cpu_compare_init_pre(&cpu_cmp_ctx, node, node->op)) {
+            cpu_comparison_active = true;
+        } else {
+            GGML_LOG_WARN("ET: Failed to initialize CPU comparison for %s operation\n", op_name);
+        }
+    }
 
-//     bool kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", &params, sizeof(params), 0xFFFFFFFF);
+    bool kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", &params, sizeof(params), 0xFFFFFFFF);
 
-//     // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
-//     if (cpu_comparison_active) {
-//         if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &elmap_cpu_compare_config)) {
-//             GGML_LOG_WARN("ET: CPU comparison failed for %s operation\n", op_name);
-//         }
-//         ggml_et_cpu_compare_free(&cpu_cmp_ctx);
-//     }
+    // Phase 2: Execute CPU computation and compare with ET result (after ET kernel)
+    if (cpu_comparison_active) {
+        if (!ggml_et_cpu_compare_compute_and_check(&cpu_cmp_ctx, node, &elmap_cpu_compare_config)) {
+            GGML_LOG_WARN("ET: CPU comparison failed for %s operation\n", op_name);
+        }
+        ggml_et_cpu_compare_free(&cpu_cmp_ctx);
+    }
 
-//     ET_PERF_END(op_name, "el_map_f32", node);
-//     return kernel_result;
-// }
+    ET_PERF_END(op_name, "el_map_f32", node);
+    return kernel_result;
+}
 
 bool ggml_et_op_glu(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
     ET_PERF_START();
