@@ -1651,6 +1651,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst);
+                    params.dst.op = node_op_val;
                     
                     el_map_f32(&params);
                 }
