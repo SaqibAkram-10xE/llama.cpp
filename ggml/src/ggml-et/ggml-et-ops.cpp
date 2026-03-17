@@ -84,49 +84,6 @@ static ggml_et_cpu_compare_config set_rows_cpu_compare_config = {
     /* .max_log_elements = */ 2048
 };
 
-// bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
-bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
-    // Delegate to generic element map operation
-    return ggml_et_op_cg(dev_ctx, cgraph);
-    // return true;
-    
-}
-
-bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
-    // Delegate to generic element map operation
-    // return ggml_et_op_elmap(dev_ctx, node);
-    return true;
-}
-
-// bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
-    
-//     std::shared_ptr<rt::IRuntime> runtime = ggml_et_runtime();
-//     if (!runtime) {
-//         GGML_LOG_ERROR("ET: Runtime not available for graph allocation\n");
-//         return false;
-//     }
-
-//     bool kernel_result = false;
-
-//     // Create simple graph parameters for device memory
-//     // void* device_params = ggml_et_create_graph_params(dev_ctx, cgraph);
-//     // if (!device_params) {
-//     //     GGML_LOG_ERROR("ET: Failed to create graph params for device memory\n");
-//     //     return false;
-//     // }
-
-//     kernel_result = ggml_et_launch_kernel(dev_ctx, "el_map_f32", device_params, sizeof(ggml_et_graph_params), 0xFFFFFFFF, true);
-    
-//     // Clean up device params memory
-//     if (runtime) {
-//         runtime->freeDevice(dev_ctx->rtid, reinterpret_cast<std::byte*>(device_params));
-//     }
-     
-//     return kernel_result;
-// }
-
-
-
 // Helper function to fill tensor metadata
 static inline void fill_tensor_meta(struct ggml_tensor_et * dst, struct ggml_tensor * src) {
     dst->type = src->type;
