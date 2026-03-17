@@ -175,6 +175,95 @@ bool ggml_et_op_sub(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* 
     return ggml_et_op_elmap(dev_ctx, node);
 }
 
+// Helper function to fill tensor metadata
+static inline void fill_tensor_meta(struct ggml_tensor_et * dst, struct ggml_tensor * src) {
+    dst->type = src->type;
+    dst->data = src->data;
+    for(int j = 0; j < 4; j++){
+        dst->ne[j] = src->ne[j];
+        dst->nb[j] = src->nb[j];
+    }
+}
+bool ggml_et_op_cg(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph) {
+
+    bool kernel_result = false;
+
+    // Calculate total size for contiguous allocation
+    size_t total_size =
+        sizeof(struct ggml_cgraph_et) +
+        cgraph->n_nodes * sizeof(struct ggml_node_meta_et) +
+        cgraph->n_nodes * sizeof(uint8_t);
+
+    // Allocate whole block
+    struct ggml_cgraph_et * cg = (struct ggml_cgraph_et *)malloc(total_size);
+    
+    // Populate basic fields
+    cg->size = cgraph->size;
+    cg->n_nodes = cgraph->n_nodes;
+    cg->n_leafs = cgraph->n_leafs;
+    cg->nodes = cgraph->nodes;
+    
+    // printf("***HOST***: cgraph->size: %d, n_nodes: %d, n_leafs: %d\n", 
+    //        cgraph->size, cgraph->n_nodes, cgraph->n_leafs);
+
+    // Derive pointers to data regions
+    struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *) cg->data;
+    uint8_t * node_op = (uint8_t *) (node_meta + cgraph->n_nodes);
+
+    // Fill tensor metadata and operations
+    for (int i = 0; i < cgraph->n_nodes; i++) {
+        
+        // Check if node exists
+        if (!cgraph->nodes[i]) {
+            // printf("ERROR: cgraph->nodes[%d] is NULL\n", i);
+            continue;
+        }
+        node_op[i] = (uint8_t)cgraph->nodes[i]->op;
+        // printf("***HOST***: Node %d - Original op: %d, Cast to uint8: %d, Name: %s\n", 
+        //        i, cgraph->nodes[i]->op, node_op[i], ggml_op_name(cgraph->nodes[i]->op));
+        struct ggml_tensor * node = cgraph->nodes[i];
+        // Check src[0]
+        struct ggml_tensor * src0 = NULL;
+        if (node->src[0]) {
+            src0 = node->src[0];
+        }
+        // Check src[1] 
+        struct ggml_tensor * src1 = NULL;
+        if (node->src[1]) {
+            src1 = node->src[1];
+        }
+        // Check src[2]
+        struct ggml_tensor * src2 = NULL;
+        if (node->src[2]) {
+            src2 = node->src[2];
+        }
+        // Only fill metadata if tensors exist
+        if (node) {
+            fill_tensor_meta(&node_meta[i].dst, node);
+        }
+        if (src0) {
+            fill_tensor_meta(&node_meta[i].src0, src0);
+        }
+        if (src1) {
+            fill_tensor_meta(&node_meta[i].src1, src1);
+        }
+        if (src2) {
+            fill_tensor_meta(&node_meta[i].src2, src2);
+        }
+        // Copy op_params
+        memcpy(node_meta[i].op_params, node->op_params, sizeof(node->op_params));
+    }
+   
+    // printf("***HOST***: Computing graph with %d nodes. size: %lu\n",
+    //      cg->n_nodes, total_size);
+
+    // Pass single pointer to kernel
+    kernel_result = ggml_et_launch_kernel(dev_ctx, "op_cgraph", cg, total_size, 0xFFFFFFFF);
+    
+    free(cg);
+    return kernel_result;
+}
+
 bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node) {
     ET_PERF_START();
 

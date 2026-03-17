@@ -29,6 +29,7 @@ find_package(runtime REQUIRED)
 set(KERNELS
     el_map_f32
     glu_f32
+    op_cgraph
     scale_f32
     mul_mat_f32
     mul_mat_f32_matrix_engine

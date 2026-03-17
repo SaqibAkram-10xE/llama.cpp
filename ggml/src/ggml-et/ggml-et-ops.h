@@ -132,6 +132,30 @@ struct ggml_et_scale_params {
     float bias;           // Bias (additive offset)
 };
 
+struct ggml_tensor_et {
+    int64_t ne[4];      // dimensions
+    size_t nb[4];       // strides
+    enum ggml_type type;
+    void* data;         // Device pointer if needed
+};
+
+struct ggml_node_meta_et {
+    struct ggml_tensor_et src0;
+    struct ggml_tensor_et src1;
+    struct ggml_tensor_et src2;
+    struct ggml_tensor_et dst;
+    int32_t op_params[16];
+};
+
+struct ggml_cgraph_et {
+    int size;
+    int n_nodes;
+    int n_leafs;
+    struct ggml_tensor ** nodes;
+
+    uint8_t data[];   // flexible array at end
+};
+
 bool ggml_et_op_scale(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
 bool ggml_et_op_mul(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
 bool ggml_et_op_add(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
@@ -149,3 +173,4 @@ bool ggml_et_op_elmap(ggml_backend_et_device_context* dev_ctx, const ggml_tensor
 bool ggml_et_op_rms_norm_mul(ggml_backend_et_device_context* dev_ctx,
                              const ggml_tensor* rms_norm_node,
                              const ggml_tensor* mul_node);
+bool ggml_et_op_cg(ggml_backend_et_device_context* dev_ctx, ggml_cgraph* cgraph);
