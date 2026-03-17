@@ -1318,9 +1318,11 @@ int el_map_f32(struct ggml_et_elmap_params* params) {
 
             switch (operation) {
                 case GGML_OP_MUL:
+                    thread_id == 0 ? et_printf("el_map_f32: MUL\n") : et_printf("");
                     block_mul(dst_block, src0_block, src1_ptr, (int)ne10);
                     break;
                 case GGML_OP_ADD:
+                    thread_id == 0 ? et_printf("el_map_f32: ADD\n") : et_printf("");
                     block_add(dst_block, src0_block, src1_ptr, (int)ne10);
                     break;
             }
@@ -1653,6 +1655,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
                 {
+                    hart_id == 0 ? et_printf("***DEV***: GGML_OP_ADD\n") : et_printf("");
                     struct ggml_et_elmap_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1);
