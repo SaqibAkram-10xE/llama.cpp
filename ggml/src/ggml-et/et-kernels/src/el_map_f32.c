@@ -1641,7 +1641,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     {
         FENCE
         const int node_op_val = node_op[i];
-        // hart_id == 0 ? et_printf("***DEV***: node_op[%d] %d\n", i, node_op_val) : et_printf("");
+        hart_id == 0 ? et_printf("***DEV***: node_op[%d] %d\n", i, node_op_val) : et_printf("");
         
         switch (node_op_val) {
             case GGML_OP_MUL:
@@ -1652,6 +1652,15 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst);
                     params.dst.op = node_op_val;
+
+                    // Type validation
+                    if (params.dst.type != GGML_TYPE_F32 ||
+                        params.src0.type != GGML_TYPE_F32 ||
+                        params.src1.type != GGML_TYPE_F32) {
+                        hart_id == 0 ? et_printf("***DEV***: Element map operation with unsupported types: dst=%d src0=%d src1=%d\n",
+                            params.dst.type, params.src0.type, params.src1.type) : et_printf("");
+                        break;
+                    }
                     
                     el_map_f32(&params);
                 }
