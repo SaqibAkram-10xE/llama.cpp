@@ -449,43 +449,73 @@ static inline void block_mul(float* dst_block, const float* src0_block, const fl
     }
 }
 
+// static inline void block_add(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
+//     // Process 8 elements at a time using vector addition
+//     int32_t vec_end = (elements / 8) * 8;
+
+//     // Set mask register to enable all 8 vector elements
+//     unsigned long temp_mask;
+//     __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
+//     __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
+
+//     for (int32_t i = 0; i < vec_end; i += 8) {
+//         // Compute results into temporary buffer
+//         float temp_result[8];
+//         __asm__ volatile(
+//             "flw.ps f10, %[src0_vec]\n"        // Load 8 src0 values
+//             "flw.ps f11, %[src1_vec]\n"        // Load 8 src1 values
+//             "fadd.ps f12, f10, f11\n"          // dst = src0 + src1 (8-wide)
+//             "fsw.ps f12, %[dst_vec]\n"         // Store 8 results to temp buffer
+
+//             : [dst_vec] "=m"(*(float(*)[8])temp_result)
+//             : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+//               [src1_vec] "m"(*(const float(*)[8])&src1_block[i])
+//             : "f10", "f11", "f12"
+//         );
+
+//         // Use atomic stores to write results to global memory
+//         for (int32_t j = 0; j < 8; j++) {
+//             atomic_store_f32((volatile float*)&dst_block[i + j], temp_result[j]);
+//         }
+//     }
+
+//     // Restore original mask
+//     __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+
+//     // Handle remaining elements (< 8) with scalar operations and atomic stores
+//     for (int32_t i = vec_end; i < elements; i++) {
+//         float result = src0_block[i] + src1_block[i];
+//         atomic_store_f32((volatile float*)&dst_block[i], result);
+//     }
+// }
 static inline void block_add(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
-    // Process 8 elements at a time using vector addition
     int32_t vec_end = (elements / 8) * 8;
 
-    // Set mask register to enable all 8 vector elements
+    // Set mask register to enable all 8 vector elements (m0 is the mask register)
     unsigned long temp_mask;
-    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
-    __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");           
 
     for (int32_t i = 0; i < vec_end; i += 8) {
-        // Compute results into temporary buffer
-        float temp_result[8];
+        // Direct vector addition and ordinary store to global memory
         __asm__ volatile(
-            "flw.ps f10, %[src0_vec]\n"        // Load 8 src0 values
-            "flw.ps f11, %[src1_vec]\n"        // Load 8 src1 values
-            "fadd.ps f12, f10, f11\n"          // dst = src0 + src1 (8-wide)
-            "fsw.ps f12, %[dst_vec]\n"         // Store 8 results to temp buffer
-
-            : [dst_vec] "=m"(*(float(*)[8])temp_result)
-            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
-              [src1_vec] "m"(*(const float(*)[8])&src1_block[i])
-            : "f10", "f11", "f12"
+            "flw.ps f10, %1\n"        // Load 8 src0 values
+            "flw.ps f11, %2\n"        // Load 8 src1 values
+            "fadd.ps f12, f10, f11\n" // dst = src0 + src1 (8-wide)
+            "fsw.ps f12, %0\n"        // Ordinary store of 8 results to dst_block
+            : "=m"(*(float(*)[8])&dst_block[i])
+            : "m"(*(const float(*)[8])&src0_block[i]),
+              "m"(*(const float(*)[8])&src1_block[i])
+            : "f10", "f11", "f12", "memory"
         );
-
-        // Use atomic stores to write results to global memory
-        for (int32_t j = 0; j < 8; j++) {
-            atomic_store_f32((volatile float*)&dst_block[i + j], temp_result[j]);
-        }
     }
 
     // Restore original mask
     __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
 
-    // Handle remaining elements (< 8) with scalar operations and atomic stores
+    // Handle remaining elements (< 8) with standard scalar stores
     for (int32_t i = vec_end; i < elements; i++) {
-        float result = src0_block[i] + src1_block[i];
-        atomic_store_f32((volatile float*)&dst_block[i], result);
+        dst_block[i] = src0_block[i] + src1_block[i];
     }
 }
 
@@ -1238,11 +1268,12 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     int thread_id = get_relative_thread_id(kernel_env->shire_mask);
     int num_threads = get_num_threads(kernel_env->shire_mask);
 
-    num_threads = 1;
+    // num_threads = 1;
+    // if (thread_id > 1){return 0;}
+
     if (thread_id < 0) {
         return 0;
     }
-    if (thread_id > 1){return 0;}
 
     if (params == 0 || ((uint64_t)params & 0x7) != 0) {
         return -1; // Invalid pointer
