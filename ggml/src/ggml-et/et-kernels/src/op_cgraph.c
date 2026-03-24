@@ -14,8 +14,8 @@
 #include "quants.h"
 #include "math_fp.h"
 #include "block_ops.h"
-#include "et_backend/utils.h"
-#include "et_backend/esr_defines.h"
+// #include "et_backend/utils.h"
+// #include "et_backend/esr_defines.h"
 
 // enum ggml_op {
 //     GGML_OP_NONE = 0,
