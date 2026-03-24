@@ -25,11 +25,12 @@ message("Using ET Platform at ${ET_PLATFORM_PATH}")
 
 find_package(runtime REQUIRED)
 
+#   op_cgraph
+#
 # --- Kernel list (single source of truth, shared with et-kernels) ---
 set(KERNELS
     el_map_f32
     glu_f32
-    op_cgraph
     scale_f32
     mul_mat_f32
     mul_mat_f32_matrix_engine
