@@ -1238,9 +1238,11 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     int thread_id = get_relative_thread_id(kernel_env->shire_mask);
     int num_threads = get_num_threads(kernel_env->shire_mask);
 
+    num_threads = 1;
     if (thread_id < 0) {
         return 0;
     }
+    if (thread_id > 1){return 0;}
 
     if (params == 0 || ((uint64_t)params & 0x7) != 0) {
         return -1; // Invalid pointer
@@ -1668,6 +1670,14 @@ void bulk_invalidate_l1() {
     __asm__ volatile ("fence" ::: "memory");
 }
 
+inline void __attribute__((always_inline))
+cache_invalidate(uint64_t inval_instr_cache, uint64_t inval_TLBs_and_PTW)
+{
+    uint64_t csr_enc = (inval_TLBs_and_PTW & 1) | ((inval_instr_cache & 1) << 1);
+
+    __asm__ __volatile__("csrw 0x7d0, %[csr_enc]\n" : : [csr_enc] "r"(csr_enc) :);
+}
+
 int entry_point(struct ggml_cgraph_et* cg, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
     if (!kernel_env) return -1;
@@ -1701,10 +1711,10 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     
     for (int i = 0; i < n_nodes; i++)
     {
-        bulk_invalidate_l1();
-        // Ensure all threads have finished the previous node before starting the next one
-        // Using flb=0, fcc=0 as defaults for shire-local synchronization
-        // minion_mask_t0/t1 are bitmasks for threads 0 and 1 across the minions
+
+        // cache_invalidate(1,1);
+
+        // bulk_invalidate_l1();
         // shire_barrier(0, 0, num_threads, 0xFFFFFFFF, 0xFFFFFFFF);
         
         const int node_op_val = node_op[i];
