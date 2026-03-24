@@ -1261,15 +1261,22 @@ int rope_f32_impl(struct ggml_et_rope_params* params, void* env) {
     return 0;
 }
 
+// Helper function to compute GCD for cache line alignment
+static inline int64_t gcd_i64(int64_t a, int64_t b) {
+    while (b != 0) {
+        int64_t temp = b;
+        b = a % b;
+        a = temp;
+    }
+    return a;
+}
+
 int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
     if (!kernel_env) return -1;
 
     int thread_id = get_relative_thread_id(kernel_env->shire_mask);
     int num_threads = get_num_threads(kernel_env->shire_mask);
-
-    // num_threads = 1;
-    // if (thread_id > 1){return 0;}
 
     if (thread_id < 0) {
         return 0;
@@ -1312,8 +1319,22 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     // Calculate total number of rows (flatten dimensions 1,2,3)
     const int64_t total_rows = ne1 * ne2 * ne3;
 
-    // Distribute rows across threads using ceiling division to handle remainder
-    const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
+    // Cache line alignment: prevent false sharing between threads
+    // Each cache line is 64 bytes = 16 floats
+    const int64_t CACHE_LINE_BYTES = 64;
+    const int64_t row_bytes = ne0 * sizeof(float);
+    const int64_t row_gcd = gcd_i64(row_bytes, CACHE_LINE_BYTES);
+    const int64_t rows_per_cache_group = CACHE_LINE_BYTES / row_gcd;
+
+    // Distribute rows across threads, rounding up to cache line boundaries
+    int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
+    
+    // Round rows_per_thread up to nearest multiple of rows_per_cache_group
+    // This ensures each thread's memory region starts at a cache line boundary
+    if (rows_per_cache_group > 1) {
+        rows_per_thread = ((rows_per_thread + rows_per_cache_group - 1) / rows_per_cache_group) * rows_per_cache_group;
+    }
+
     const int64_t start_row = thread_id * rows_per_thread;
     const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
