@@ -1614,35 +1614,58 @@ static inline void convert_to_ggml_tensor(struct ggml_tensor * dst, struct ggml_
     }
 }
 
-// static int once = 0;
+// // static int once = 0;
 
-/*! \fn inline uint64_t shire_barrier(uint64_t flb, uint64_t fcc, uint64_t thread_count, uint64_t minion_mask_t0, uint64_t minion_mask_t1)
-    \brief Shire-only barrier using FLBs and FCCs
-    \param flb FLbarrier value
-    \param fcc  FCC value
-    \param thread_count active thread count
-    \param minion_mask_t0 Mask of active thread0 minions
-    \param minion_mask_t1 Mask of active thread1 minions
-    \return last thread to reach barrier
-    \syncops Implementation of shire_barrier api
-*/
+// /*! \fn inline uint64_t shire_barrier(uint64_t flb, uint64_t fcc, uint64_t thread_count, uint64_t minion_mask_t0, uint64_t minion_mask_t1)
+//     \brief Shire-only barrier using FLBs and FCCs
+//     \param flb FLbarrier value
+//     \param fcc  FCC value
+//     \param thread_count active thread count
+//     \param minion_mask_t0 Mask of active thread0 minions
+//     \param minion_mask_t1 Mask of active thread1 minions
+//     \return last thread to reach barrier
+//     \syncops Implementation of shire_barrier api
+// */
 
-// Please read te files:
-//home/saqib/Documents/Prj/P1/ET_platform/et-platform/et-common-libs/include/etsoc/isa
+// // Please read te files:
+// //home/saqib/Documents/Prj/P1/ET_platform/et-platform/et-common-libs/include/etsoc/isa
 
-inline uint64_t __attribute__((always_inline)) shire_barrier(uint64_t flb, uint64_t fcc,
-    uint64_t thread_count, uint64_t minion_mask_t0, uint64_t minion_mask_t1)
-{
-    uint64_t last = flbarrier(flb, thread_count - 1);
+// inline uint64_t __attribute__((always_inline)) shire_barrier(uint64_t flb, uint64_t fcc,
+//     uint64_t thread_count, uint64_t minion_mask_t0, uint64_t minion_mask_t1)
+// {
+//     uint64_t last = flbarrier(flb, thread_count - 1);
 
-    if (last)
-    {
-        fcc_send(SHIRE_OWN, THREAD_0, fcc, minion_mask_t0);
-        fcc_send(SHIRE_OWN, THREAD_1, fcc, minion_mask_t1);
-    }
-    fcc_consume(fcc);
+//     if (last)
+//     {
+//         fcc_send(SHIRE_OWN, THREAD_0, fcc, minion_mask_t0);
+//         fcc_send(SHIRE_OWN, THREAD_1, fcc, minion_mask_t1);
+//     }
+//     fcc_consume(fcc);
 
-    return last;
+//     return last;
+// }
+#define MCACHE_CONTROL 0x7CA // Machine-mode CSR
+#define UCACHE_CONTROL 0x801 // User-mode shadow CSR
+
+void bulk_invalidate_l1() {
+    // 1. Memory Fence: Ensure all previous memory ops are complete
+    __asm__ volatile ("fence" ::: "memory");
+
+    // 2. Toggle the D1Split bit (Bit 0)
+    // Switching from Shared to Split (or vice-versa) invalidates the entire L1.
+    // We read the current state, flip bit 0, and write it back.
+    unsigned long current_ctrl;
+    __asm__ volatile ("csrr %0, %1" : "=r"(current_ctrl) : "i"(UCACHE_CONTROL));
+    
+    unsigned long toggled_ctrl = current_ctrl ^ 0x1; 
+    __asm__ volatile ("csrw %0, %1" :: "i"(UCACHE_CONTROL), "r"(toggled_ctrl));
+
+    // 3. Return to original state (Optional, but usually desired)
+    __asm__ volatile ("csrw %0, %1" :: "i"(UCACHE_CONTROL), "r"(current_ctrl));
+
+    // 4. Sync: Wait for the hardware FSM to finish the invalidation/zeroing
+    // Documentation suggests a TensorWait or similar sync after cacheops
+    __asm__ volatile ("fence" ::: "memory");
 }
 
 int entry_point(struct ggml_cgraph_et* cg, void* env) {
@@ -1678,10 +1701,11 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     
     for (int i = 0; i < n_nodes; i++)
     {
+        bulk_invalidate_l1();
         // Ensure all threads have finished the previous node before starting the next one
         // Using flb=0, fcc=0 as defaults for shire-local synchronization
         // minion_mask_t0/t1 are bitmasks for threads 0 and 1 across the minions
-        shire_barrier(0, 0, num_threads, 0xFFFFFFFF, 0xFFFFFFFF);
+        // shire_barrier(0, 0, num_threads, 0xFFFFFFFF, 0xFFFFFFFF);
         
         const int node_op_val = node_op[i];
         if (node_op_val == GGML_OP_NONE) continue;
