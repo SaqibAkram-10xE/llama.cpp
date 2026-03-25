@@ -104,8 +104,8 @@ bool ggml_et_op_cg(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph
         cgraph->n_nodes * sizeof(struct ggml_node_meta_et) +
         cgraph->n_nodes * sizeof(uint8_t);
 
-    // Allocate whole block
-    struct ggml_cgraph_et * cg = (struct ggml_cgraph_et *)malloc(total_size);
+    // Allocate whole block (use calloc to zero-initialize, ensuring absent optional sources have NULL data)
+    struct ggml_cgraph_et * cg = (struct ggml_cgraph_et *)calloc(1, total_size);
     
     // Populate basic fields
     cg->size = cgraph->size;

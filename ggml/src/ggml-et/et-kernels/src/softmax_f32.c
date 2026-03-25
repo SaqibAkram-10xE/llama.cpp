@@ -90,22 +90,23 @@ static void compute_softmax_row(
 
     // Step 3: Compute exponentials and sum
     // exp(x[i] - max) for numerical stability
-    float sum = 0.0f;
+    // Use double for sum accumulation to improve precision for large ne00
+    double sum = 0.0;
     for (int i = 0; i < ne00; i++) {
         float exp_val = et_expf(dst[i] - max_val);
         dst[i] = exp_val;
-        sum += exp_val;
+        sum += (double)exp_val;
     }
 
     if (use_sinks) {
-        sum += et_expf(sink_value - max_val);
+        sum += (double)et_expf(sink_value - max_val);
     }
 
     // Step 4: Normalize by sum to get probabilities
     // Avoid division by zero
-    if (sum > 0.0f) {
+    if (sum > 0.0) {
         // Use ET hardware division function instead of standard division
-        float inv_sum = et_fdiv(1.0f, sum);
+        float inv_sum = et_fdiv(1.0f, (float)sum);
         for (int i = 0; i < ne00; i++) {
             dst[i] *= inv_sum;
         }

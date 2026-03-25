@@ -1971,6 +1971,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     struct ggml_et_softmax_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.src2, &node_meta[i].src2, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, (enum ggml_op)node_op_val);
                     memcpy(&params.scale, &node_meta[i].op_params[0], sizeof(float));
                     memcpy(&params.max_bias, &node_meta[i].op_params[1], sizeof(float));
