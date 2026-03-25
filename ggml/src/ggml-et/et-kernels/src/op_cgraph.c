@@ -1908,9 +1908,9 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     
     for (int i = 0; i < n_nodes; i++)
     {
-
+        delay(100000);
         // cache_invalidate(1,1);
-
+        FENCE
         // bulk_invalidate_l1();
         // shire_barrier(0, 0, num_threads, 0xFFFFFFFF, 0xFFFFFFFF);
         
