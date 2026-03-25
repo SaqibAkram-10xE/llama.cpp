@@ -407,7 +407,7 @@ static inline void rope_yarn(float theta_extrap, float freq_scale, const float c
     *cos_theta = et_cosf(theta) * mscale;
     *sin_theta = et_sinf(theta) * mscale;
 }
-
+/*
 // Block operation implementations using ET vector instructions
 static inline void block_mul(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
     // Process 8 elements at a time using vector multiplication
@@ -447,6 +447,61 @@ static inline void block_mul(float* dst_block, const float* src0_block, const fl
         float result = src0_block[i] * src1_block[i];
         atomic_store_f32((volatile float*)&dst_block[i], result);
     }
+}
+*/
+
+static inline void block_mul(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
+    int32_t i = 0;
+    unsigned long original_mask;
+    
+    // 1. Save current mask: mova.x.m is the correct instruction to read the mask into a register
+    __asm__ volatile("mova.x.m %0" : "=r"(original_mask));
+
+    // 2. Process main blocks of 8 elements
+    if (elements >= 8) {
+        int32_t vec_end = (elements / 8) * 8;
+        // Use an immediate for 0xFF
+        __asm__ volatile("mov.m.x m0, x0, 0xFF"); 
+
+        for (; i < vec_end; i += 8) {
+            __asm__ volatile(
+                "flw.ps f10, %1\n"
+                "flw.ps f11, %2\n"
+                "fmul.ps f12, f10, f11\n"
+                "fsw.ps f12, %0\n"
+                : "=m"(*(float(*)[8])&dst_block[i])
+                : "m"(*(const float(*)[8])&src0_block[i]),
+                  "m"(*(const float(*)[8])&src1_block[i])
+                : "f10", "f11", "f12", "memory"
+            );
+        }
+    }
+
+    // 3. Handle Tail Elements (1 to 7)
+    int32_t rem = elements - i;
+    if (rem > 0) {
+        uint32_t tail_mask = (1U << rem) - 1;
+        // Correct instruction to move a register value into mask m0
+        __asm__ volatile(
+            "mov.m.x m0, %0, 0" 
+            : 
+            : "r"(tail_mask)
+        );
+
+        __asm__ volatile(
+            "flw.ps f10, %1\n"
+            "flw.ps f11, %2\n"
+            "fmul.ps f12, f10, f11\n"
+            "fsw.ps f12, %0\n"
+            : "=m"(*(float(*)[8])&dst_block[i])
+            : "m"(*(const float(*)[8])&src0_block[i]),
+              "m"(*(const float(*)[8])&src1_block[i])
+            : "f10", "f11", "f12", "memory"
+        );
+    }
+
+    // 4. Restore original mask using mov.m.x (not mova.m.x)
+    __asm__ volatile("mov.m.x m0, %0, 0" :: "r"(original_mask));
 }
 
 // static inline void block_add(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
@@ -488,6 +543,9 @@ static inline void block_mul(float* dst_block, const float* src0_block, const fl
 //         atomic_store_f32((volatile float*)&dst_block[i], result);
 //     }
 // }
+
+
+/*
 static inline void block_add(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
     int32_t vec_end = (elements / 8) * 8;
 
@@ -518,6 +576,63 @@ static inline void block_add(float* dst_block, const float* src0_block, const fl
         dst_block[i] = src0_block[i] + src1_block[i];
     }
 }
+*/
+
+static inline void block_add(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
+    int32_t i = 0;
+    unsigned long original_mask;
+    
+    // Save current mask
+    __asm__ volatile("mova.x.m %0" : "=r"(original_mask));
+
+    // 1. Process main blocks of 8 elements
+    if (elements >= 8) {
+        int32_t vec_end = (elements / 8) * 8;
+        // Use an immediate for 0xFF since it's a constant
+        __asm__ volatile("mov.m.x m0, x0, 0xFF"); 
+
+        for (; i < vec_end; i += 8) {
+            __asm__ volatile(
+                "flw.ps f10, %1\n"
+                "flw.ps f11, %2\n"
+                "fadd.ps f12, f10, f11\n"
+                "fsw.ps f12, %0\n"
+                : "=m"(*(float(*)[8])&dst_block[i])
+                : "m"(*(const float(*)[8])&src0_block[i]),
+                  "m"(*(const float(*)[8])&src1_block[i])
+                : "f10", "f11", "f12", "memory"
+            );
+        }
+    }
+
+    // 2. Handle Tail Elements (1 to 7)
+    int32_t rem = elements - i;
+    if (rem > 0) {
+        uint32_t tail_mask = (1U << rem) - 1;
+        // FIX: Move the variable tail_mask into a register (%0) 
+        // then move that register into m0.
+        __asm__ volatile(
+            "mov.m.x m0, %0, 0" 
+            : 
+            : "r"(tail_mask)
+        );
+
+        __asm__ volatile(
+            "flw.ps f10, %1\n"
+            "flw.ps f11, %2\n"
+            "fadd.ps f12, f10, f11\n"
+            "fsw.ps f12, %0\n"
+            : "=m"(*(float(*)[8])&dst_block[i])
+            : "m"(*(const float(*)[8])&src0_block[i]),
+              "m"(*(const float(*)[8])&src1_block[i])
+            : "f10", "f11", "f12", "memory"
+        );
+    }
+
+    // Restore original mask
+    __asm__ volatile("mov.m.x m0, %0, 0" :: "r"(original_mask));
+}
+
 
 static inline void block_swiglu(float* dst_block, const float* x_block, const float* g_block, int elements) {
     // Process 8 elements at a time using vector instructions
