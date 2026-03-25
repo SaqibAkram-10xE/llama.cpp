@@ -384,7 +384,8 @@ static ggml_backend_buffer_t ggml_backend_et_buffer_type_alloc_buffer(ggml_backe
 
 static size_t ggml_backend_et_buffer_type_get_alignment(ggml_backend_buffer_type_t buft) {
     GGML_UNUSED(buft);
-    return GGML_MEM_ALIGN;
+    // Align to cache line size (64 bytes) to prevent false sharing between threads
+    return 64;
 }
 
 static size_t ggml_backend_et_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
