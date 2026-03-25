@@ -1314,15 +1314,15 @@ int rope_f32_impl(struct ggml_et_rope_params* params, void* env) {
     rope_yarn_corr_dims(n_dims, rope_params->n_ctx_orig, freq_base,
                        rope_params->beta_fast, rope_params->beta_slow, corr_dims);
 
+    const int64_t total_work_units = batch * seq_len * heads;
+    int64_t units_per_thread = total_work_units / num_threads;
+    int64_t start_unit = thread_id * units_per_thread;
+    int64_t end_unit = (thread_id == num_threads - 1) ? total_work_units : start_unit + units_per_thread;
+
+    const float theta_scale = et_powf(freq_base, et_fdiv(-2.0f, (float)n_dims));
+
     if (mode & GGML_ROPE_TYPE_NEOX) {
-        const int64_t total_work_units = batch * seq_len * heads;
-        int64_t units_per_thread = total_work_units / num_threads;
-        int64_t start_unit = thread_id * units_per_thread;
-        int64_t end_unit = (thread_id == num_threads - 1) ? total_work_units : start_unit + units_per_thread;
-
-        const float theta_scale = et_powf(freq_base, et_fdiv(-2.0f, (float)n_dims));
-        const bool is_inplace = (src0_data == dst_data);
-
+        // NeoX mode: split pairs (k, k + n_dims/2)
         for (int64_t unit = start_unit; unit < end_unit; unit++) {
             int64_t h = unit % heads;
             int64_t s = (unit / heads) % seq_len;
@@ -1330,45 +1330,75 @@ int rope_f32_impl(struct ggml_et_rope_params* params, void* env) {
 
             const float* head_src = (const float*)((char*)src0_data +
                 b * src0->nb[3] + s * src0->nb[2] + h * src0->nb[1]);
-
             float* head_dst = (float*)((char*)dst_data +
                 b * dst->nb[3] + s * dst->nb[2] + h * dst->nb[1]);
 
-            const int32_t pos = src1_data[s] + rope_params->n_past;
+            const int32_t pos = src1_data[s];
 
-            const int64_t cachelines_in_head = (head_dim + CACHE_LINE_SIZE_F32 - 1) / CACHE_LINE_SIZE_F32;
-
-            for (int64_t cl = 0; cl < cachelines_in_head; cl++) {
-                float* cacheline = head_dst + cl * CACHE_LINE_SIZE_F32;
-
-                for (int64_t elem = 0; elem < CACHE_LINE_SIZE_F32 && (cl * CACHE_LINE_SIZE_F32 + elem) < head_dim; elem++) {
-                    cacheline[elem] = head_src[cl * CACHE_LINE_SIZE_F32 + elem];
+            // Copy entire head first (skip for inplace, avoids overwriting rotation results)
+            if (head_src != head_dst) {
+                for (int64_t i0 = 0; i0 < head_dim; i0++) {
+                    head_dst[i0] = head_src[i0];
                 }
+            }
 
-                for (int64_t elem = 0; elem < CACHE_LINE_SIZE_F32 && (cl * CACHE_LINE_SIZE_F32 + elem) < head_dim; elem++) {
-                    int64_t dim_idx = cl * CACHE_LINE_SIZE_F32 + elem;
+            // Apply NeoX rotations using accumulated theta
+            float theta = (float)pos;
+            for (int64_t dim_idx = 0; dim_idx < n_dims / 2; dim_idx++) {
+                const float ff = freq_factors ? freq_factors[dim_idx] : 1.0f;
 
-                    if (dim_idx < n_dims / 2) {
-                        float x0 = head_src[dim_idx];
-                        float x1 = head_src[dim_idx + n_dims/2];
+                float cos_theta, sin_theta;
+                rope_yarn(et_fdiv(theta, ff), freq_scale, corr_dims, dim_idx * 2,
+                         rope_params->ext_factor, rope_params->attn_factor,
+                         &cos_theta, &sin_theta);
 
-                        float theta = 1.0f;
-                        for (int64_t j = 0; j < dim_idx; j++) {
-                            theta *= theta_scale;
-                        }
+                const float x0 = head_src[dim_idx];
+                const float x1 = head_src[dim_idx + n_dims/2];
 
-                        const float ff = freq_factors ? freq_factors[dim_idx] : 1.0f;
-                        const float theta_base = (float)pos * theta;
+                head_dst[dim_idx]            = x0 * cos_theta - x1 * sin_theta;
+                head_dst[dim_idx + n_dims/2] = x0 * sin_theta + x1 * cos_theta;
 
-                        float cos_theta, sin_theta;
-                        rope_yarn(et_fdiv(theta_base, ff), freq_scale, corr_dims, dim_idx * 2,
-                                 rope_params->ext_factor, rope_params->attn_factor,
-                                 &cos_theta, &sin_theta);
+                theta *= theta_scale;
+            }
+        }
+    } else {
+        // Standard mode (mode=0): consecutive pairs (2k, 2k+1)
+        for (int64_t unit = start_unit; unit < end_unit; unit++) {
+            int64_t h = unit % heads;
+            int64_t s = (unit / heads) % seq_len;
+            int64_t b = unit / (heads * seq_len);
 
-                        head_dst[dim_idx] = x0 * cos_theta - x1 * sin_theta;
-                        head_dst[dim_idx + n_dims/2] = x0 * sin_theta + x1 * cos_theta;
-                    }
+            const float* head_src = (const float*)((char*)src0_data +
+                b * src0->nb[3] + s * src0->nb[2] + h * src0->nb[1]);
+            float* head_dst = (float*)((char*)dst_data +
+                b * dst->nb[3] + s * dst->nb[2] + h * dst->nb[1]);
+
+            const int32_t pos = src1_data[s];
+
+            // Copy entire head first (handles non-rotated elements beyond n_dims)
+            if (head_src != head_dst) {
+                for (int64_t i0 = 0; i0 < head_dim; i0++) {
+                    head_dst[i0] = head_src[i0];
                 }
+            }
+
+            // Apply standard rotations: consecutive pairs (2k, 2k+1)
+            float theta = (float)pos;
+            for (int64_t i0 = 0; i0 < n_dims; i0 += 2) {
+                const float ff = freq_factors ? freq_factors[i0/2] : 1.0f;
+
+                float cos_theta, sin_theta;
+                rope_yarn(et_fdiv(theta, ff), freq_scale, corr_dims, i0,
+                         rope_params->ext_factor, rope_params->attn_factor,
+                         &cos_theta, &sin_theta);
+
+                const float x0 = head_src[i0];
+                const float x1 = head_src[i0 + 1];
+
+                head_dst[i0]     = x0 * cos_theta - x1 * sin_theta;
+                head_dst[i0 + 1] = x0 * sin_theta + x1 * cos_theta;
+
+                theta *= theta_scale;
             }
         }
     }
