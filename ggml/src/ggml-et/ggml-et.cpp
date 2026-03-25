@@ -508,10 +508,8 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
     //     once = 1;
     // }
     
-    
     ggml_et_op_cg(dev_ctx, cgraph);
 
-    // printf("\n\n\n\n\n\n");
     /*for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
         // printf("Node# %d, Node->Op: %d,  %s\n", i, node->op, ggml_op_name(node->op));
@@ -549,7 +547,7 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
                 break;
 
             case GGML_OP_MUL_MAT_ID:
-                // printf("GGML_OP_MUL_MAT_ID CALLED\n");
+                printf("GGML_OP_MUL_MAT_ID CALLED\n");
                 // ggml_et_op_mul_mat_id(dev_ctx, node);
                 break;
 
@@ -558,7 +556,7 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
                 break;
 
             case GGML_OP_RMS_NORM:
-                printf("GGML_OP_RMS_NORM CALLED\n");
+                // printf("GGML_OP_RMS_NORM CALLED\n");
                 ggml_et_op_rms_norm(dev_ctx, node);
                 break;
 
@@ -590,7 +588,7 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
                 break;
 
             default:
-                GGML_LOG_ERROR("ET: Unsupported operation in graph: %s", ggml_op_name(node->op));
+                // GGML_LOG_ERROR("ET: Unsupported operation in graph: %s", ggml_op_name(node->op));
                 return GGML_STATUS_FAILED;
         }
          
