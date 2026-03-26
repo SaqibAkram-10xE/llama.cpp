@@ -1815,34 +1815,69 @@ static inline void convert_to_ggml_tensor(struct ggml_tensor * dst, struct ggml_
 
 // // static int once = 0;
 
-// /*! \fn inline uint64_t shire_barrier(uint64_t flb, uint64_t fcc, uint64_t thread_count, uint64_t minion_mask_t0, uint64_t minion_mask_t1)
-//     \brief Shire-only barrier using FLBs and FCCs
-//     \param flb FLbarrier value
-//     \param fcc  FCC value
-//     \param thread_count active thread count
-//     \param minion_mask_t0 Mask of active thread0 minions
-//     \param minion_mask_t1 Mask of active thread1 minions
-//     \return last thread to reach barrier
-//     \syncops Implementation of shire_barrier api
-// */
+// ----------------------------------------
+// Required ESR macros (copied from ET platform)
+// ----------------------------------------
+#define ESR_REGION_SHIRE_SHIFT 22
+#define ESR_SHIRE(shire, name) \
+    ((uint64_t(shire) << ESR_REGION_SHIRE_SHIFT) + uint64_t(ESR_##name))
 
-// // Please read te files:
-// //home/saqib/Documents/Prj/P1/ET_platform/et-platform/et-common-libs/include/etsoc/isa
+#define ESR_FCC_CREDINC_0 0xC0
 
-// inline uint64_t __attribute__((always_inline)) shire_barrier(uint64_t flb, uint64_t fcc,
-//     uint64_t thread_count, uint64_t minion_mask_t0, uint64_t minion_mask_t1)
-// {
-//     uint64_t last = flbarrier(flb, thread_count - 1);
+// ----------------------------------------
+// Local FCC send implementation
+// ----------------------------------------
+inline __attribute__((always_inline))
+void fcc_send(uint32_t shire, uint32_t thread, uint32_t fcc_reg, uint64_t hart_mask)
+{
+    volatile uint64_t* fcc_credinc_addr =
+        (uint64_t*)ESR_SHIRE(shire, FCC_CREDINC_0) +
+        ((thread << 1) | fcc_reg);
 
-//     if (last)
-//     {
-//         fcc_send(SHIRE_OWN, THREAD_0, fcc, minion_mask_t0);
-//         fcc_send(SHIRE_OWN, THREAD_1, fcc, minion_mask_t1);
-//     }
-//     fcc_consume(fcc);
+    *fcc_credinc_addr = hart_mask;
+}
 
-//     return last;
-// }
+// ----------------------------------------
+// Fast Local Barrier (FLB)
+// ----------------------------------------
+inline __attribute__((always_inline))
+uint64_t flbarrier(uint64_t barrier_num, uint64_t match)
+{
+    uint64_t ret;
+    uint64_t flb_arg = (match << 5) | (barrier_num & 0x1F);
+
+    __asm__ __volatile__("csrrw %0, 0x820, %1"
+                         : "=r"(ret)
+                         : "r"(flb_arg));
+
+    return ret;
+}
+
+// ----------------------------------------
+// Correct shire barrier for llama.cpp
+// ----------------------------------------
+inline __attribute__((always_inline))
+uint64_t shire_barrier(uint64_t barrier_num,
+                       uint64_t fcc_reg,
+                       uint64_t thread_count,
+                       uint64_t minion_mask_t0,
+                       uint64_t minion_mask_t1)
+{
+    uint64_t last = flbarrier(barrier_num, thread_count - 1);
+
+    if (last)
+    {
+        // Only the last hart sends FCC credits
+        fcc_send(/*shire*/ (uint32_t)-1, /*thread*/0, fcc_reg, minion_mask_t0);
+        fcc_send(/*shire*/ (uint32_t)-1, /*thread*/1, fcc_reg, minion_mask_t1);
+    }
+
+    // Wait for FCC
+    __asm__ __volatile__("csrr  x0, 0x7C0" ::: "memory");
+
+    return last;
+}
+
 #define MCACHE_CONTROL 0x7CA // Machine-mode CSR
 #define UCACHE_CONTROL 0x801 // User-mode shadow CSR
 
@@ -1876,48 +1911,46 @@ cache_invalidate(uint64_t inval_instr_cache, uint64_t inval_TLBs_and_PTW)
 }
 
 int entry_point(struct ggml_cgraph_et* cg, void* env) {
-    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
-    if (!kernel_env) return -1;
-    
     int64_t hart_id = get_hart_id();
-    // static int once = 0;
-    
+    uint64_t shire_id = hart_id >> 6;    
+    // uint64_t num_harts = 64; // assuming all harts
+    uint32_t match = num_harts - 1;
+    uint32_t barrier_num = shire_id % 32;
+    const int fcc = 0; // FCC0
+
+    // -----------------------
+    // Correct barrier setup
+    // -----------------------
+    const uint64_t mask_t0 = 0xFFFFFFFFULL; // 32 harts (thread0 of each minion)
+    const uint64_t mask_t1 = 0xFFFFFFFFULL; // 0x00000000ULL; // no thread1 used in llama kernels
+
+    uint64_t num_harts = __builtin_popcountll(mask_t0); // = 32
+    uint64_t match = num_harts - 1;                     // = 31
+    uint64_t barrier_num = shire_id % 32;               // dedicated per-shire
+    const int fcc = 0;                                  // FCC0
+
+
     // Reconstruct pointers on device side
     struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *) cg->data;
     uint8_t * node_op = (uint8_t *) (node_meta + cg->n_nodes);
-    
-    // if(once == 0){
-    //     hart_id == 0 ? et_printf("***DEV***: Hart %d starting execution\n", hart_id) : et_printf("");
-    //     hart_id == 0 ? et_printf("***DEV***: Computing graph with %d nodes\n", cg->n_nodes) : et_printf("");
-    // }
-    
     const uint8_t n_nodes = cg->n_nodes;
-    // hart_id == 0 ? et_printf("***DEV***: cgraph->nodes[0]->src[0]->type: %d\n", cgraph->nodes[0]->src[0]->type) : et_printf("");
-    // We can access cgraph->nodes[i] pointer (host memory mapped)
 
-    // if(once == 0)
-    // {
-    //     hart_id == 0 ? et_printf("***DEV***: cgraph->size: %d\n", cg->size) : et_printf("");
-    //     hart_id == 0 ? et_printf("***DEV***: cgraph->nleafs: %d\n", cg->n_leafs) : et_printf("");
-    //     hart_id == 0 ? et_printf("***DEV***: node_op[0] %d\n", node_op[0]) : et_printf("");
-    //     hart_id == 0 ? et_printf("***DEV***: n_nodes %d\n", n_nodes) : et_printf("");
-    //     once = 1;
-    // }
-
-    int num_threads = get_num_threads(kernel_env->shire_mask);
     
     for (int i = 0; i < n_nodes; i++)
     {
-        delay(100000);
+        shire_barrier(barrier_num, fcc,
+            num_harts,
+            mask_t0, mask_t1);
+
+        delay(10000);
         // cache_invalidate(1,1);
         FENCE
         // bulk_invalidate_l1();
-        // shire_barrier(0, 0, num_threads, 0xFFFFFFFF, 0xFFFFFFFF);
         
         const int node_op_val = node_op[i];
         if (node_op_val == GGML_OP_NONE) continue;
         
-        switch (node_op_val) {
+        /*switch (node_op_val) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
                 {
@@ -1932,7 +1965,6 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                         params.src1.type != GGML_TYPE_F32) {
                         break;
                     }
-                    
                     el_map_f32(&params, env);
                 }
                 break;
@@ -1964,7 +1996,6 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_MUL_MAT_ID:
                 // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_MUL_MAT_ID \n") : et_printf("");
-
                 // ggml_et_op_mul(dev_ctx, node);
                 // ggml_et_op_mul_mat_id(dev_ctx, node);
                 break;
@@ -2098,13 +2129,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     // GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
                 }
                 break; //GGML_STATUS_FAILED;
-        }
-    
-    
+        }*/
     }
-    
 
-   
-        
     return 0;
 }
