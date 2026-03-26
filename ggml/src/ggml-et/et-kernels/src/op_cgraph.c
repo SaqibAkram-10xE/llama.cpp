@@ -1868,12 +1868,12 @@ uint64_t shire_barrier(uint64_t barrier_num,
     if (last)
     {
         // Only the last hart sends FCC credits
-        fcc_send(/*shire*/ (uint32_t)-1, /*thread*/0, fcc_reg, minion_mask_t0);
-        fcc_send(/*shire*/ (uint32_t)-1, /*thread*/1, fcc_reg, minion_mask_t1);
+        fcc_send(/*shire*/ 0xFF, /*thread*/0, fcc_reg, minion_mask_t0);
+        fcc_send(/*shire*/ 0xFF, /*thread*/1, fcc_reg, minion_mask_t1);
     }
 
-    // Wait for FCC
-    __asm__ __volatile__("csrr  x0, 0x7C0" ::: "memory");
+    // Wait for FCC (consume credit - blocks until credit is available)
+    __asm__ __volatile__("csrw fcc, %0\n" : : "r"(fcc_reg));
 
     return last;
 }
@@ -1926,8 +1926,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     const uint64_t mask_t0 = 0xFFFFFFFFULL; // 32 harts (thread0 of each minion)
     const uint64_t mask_t1 = 0xFFFFFFFFULL; // 0x00000000ULL; // no thread1 used in llama kernels
 
-    uint64_t num_harts = __builtin_popcountll(mask_t0); // = 32
-    uint64_t match = num_harts - 1;                     // = 31
+    uint64_t num_harts = 64;//__builtin_popcountll(mask_t0) + __builtin_popcountll(mask_t1); // = 64 (both thread0 and thread1)
+    uint64_t match = num_harts - 1;                     // = 63
     uint64_t barrier_num = shire_id % 32;               // dedicated per-shire
     const int fcc = 0;                                  // FCC0
 
@@ -1947,9 +1947,9 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     
     for (int i = 0; i < n_nodes; i++)
     {
-        // shire_barrier(barrier_num, fcc,
-        //     num_harts,
-        //     mask_t0, mask_t1);
+        shire_barrier(barrier_num, fcc,
+            num_harts,
+            mask_t0, mask_t1);
 
         // delay(10000);
         // cache_invalidate(1,1);
