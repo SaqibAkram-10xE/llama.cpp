@@ -144,9 +144,9 @@ struct ggml_et_common_params{
 
 struct ggml_tensor_et {
     int64_t ne[4];      // dimensions
-    size_t nb[4];       // strides
+    uint64_t nb[4];     // strides (fixed-width for ABI compatibility)
     enum ggml_type type;
-    void* data;         // Device pointer if needed
+    uint64_t data;      // Device pointer (fixed-width for ABI compatibility)
 };
 
 struct ggml_node_meta_et {

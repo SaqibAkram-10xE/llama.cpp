@@ -87,10 +87,10 @@ static ggml_et_cpu_compare_config set_rows_cpu_compare_config = {
 // Helper function to fill tensor metadata
 static inline void fill_tensor_meta(struct ggml_tensor_et * dst, struct ggml_tensor * src) {
     dst->type = src->type;
-    dst->data = src->data;
+    dst->data = (uint64_t)(uintptr_t)src->data;  // Cast pointer to uint64_t for ABI compatibility
     for(int j = 0; j < 4; j++){
         dst->ne[j] = src->ne[j];
-        dst->nb[j] = src->nb[j];
+        dst->nb[j] = (uint64_t)src->nb[j];  // Cast size_t to uint64_t for ABI compatibility
     }
 }
 
@@ -113,8 +113,11 @@ bool ggml_et_op_cg(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph
     cg->n_leafs = cgraph->n_leafs;
     cg->nodes = cgraph->nodes;
     
-    // printf("***HOST***: cgraph->size: %d, n_nodes: %d, n_leafs: %d\n", 
-    //        cgraph->size, cgraph->n_nodes, cgraph->n_leafs);
+    // Verify struct sizes for ABI compatibility
+    // printf("HOST: sizeof(ggml_cgraph_et)=%zu, sizeof(ggml_node_meta_et)=%zu, sizeof(ggml_tensor_et)=%zu\n",
+    //        sizeof(struct ggml_cgraph_et), sizeof(struct ggml_node_meta_et), sizeof(struct ggml_tensor_et));
+    // printf("HOST: cgraph->size=%d, n_nodes=%d, n_leafs=%d, total_size=%zu\n", 
+    //        cgraph->size, cgraph->n_nodes, cgraph->n_leafs, total_size);
 
     // Derive pointers to data regions
     struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *) cg->data;

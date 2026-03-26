@@ -508,9 +508,9 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
     //     once = 1;
     // }
     
-    //ggml_et_op_cg(dev_ctx, cgraph);
+    ggml_et_op_cg(dev_ctx, cgraph);
 
-    for (int i = 0; i < cgraph->n_nodes; i++) {
+    /*for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
         // printf("Node# %d, Node->Op: %d,  %s\n", i, node->op, ggml_op_name(node->op));
 
@@ -525,17 +525,17 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
         
         switch (node->op) {
             case GGML_OP_MUL:
-                printf("GGML_OP_MUL\n");
+                // printf("GGML_OP_MUL\n");
                 ggml_et_op_mul(dev_ctx, node);
                 break;
 
             case GGML_OP_ADD:
-                printf("GGML_OP_ADD\n");
+                // printf("GGML_OP_ADD\n");
                 ggml_et_op_add(dev_ctx, node);
                 break;
 
             case GGML_OP_MUL_MAT:
-                printf("GGML_OP_MUL_MAT\n");
+                // printf("GGML_OP_MUL_MAT\n");
                 ggml_et_op_mul_mat(dev_ctx, node);
                 // printf("\n\n\nGGML_OP_MUL_MAT CALLED\n\n\n");
 
@@ -550,42 +550,42 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
                 break;
 
             case GGML_OP_MUL_MAT_ID:
-                printf("GGML_OP_MUL_MAT_ID\n");
+                // printf("GGML_OP_MUL_MAT_ID\n");
                 // ggml_et_op_mul_mat_id(dev_ctx, node);
                 break;
 
             case GGML_OP_ROPE:
-                printf("GGML_OP_ROPE\n");
+                // printf("GGML_OP_ROPE\n");
                 ggml_et_op_rope(dev_ctx, node);
                 break;
 
             case GGML_OP_RMS_NORM:
-                printf("GGML_OP_RMS_NORM\n");
+                // printf("GGML_OP_RMS_NORM\n");
                 ggml_et_op_rms_norm(dev_ctx, node);
                 break;
 
             case GGML_OP_GLU:
-                printf("GGML_OP_GLU\n");
+                // printf("GGML_OP_GLU\n");
                 ggml_et_op_glu(dev_ctx, node);
                 break;
 
             case GGML_OP_SOFT_MAX:
-                printf("GGML_OP_SOFT_MAX\n");
+                // printf("GGML_OP_SOFT_MAX\n");
                 ggml_et_op_softmax(dev_ctx, node);
                 break;
 
             case GGML_OP_GET_ROWS:
-                printf("GGML_OP_GET_ROWS\n");
+                // printf("GGML_OP_GET_ROWS\n");
                 ggml_et_op_get_rows(dev_ctx, node);
                 break;
 
             case GGML_OP_CONT:
-                printf("GGML_OP_CONT\n");
+                // printf("GGML_OP_CONT\n");
                 ggml_et_op_cont(dev_ctx, node);
                 break;
 
             case GGML_OP_SET_ROWS:
-                printf("GGML_OP_SET_ROWS\n");
+                // printf("GGML_OP_SET_ROWS\n");
                 ggml_et_op_set_rows(dev_ctx, node);
                 break;
 
@@ -601,7 +601,7 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
                 return GGML_STATUS_FAILED;
         }
          
-    }
+    }*/
     
 
     return GGML_STATUS_SUCCESS;
