@@ -1940,9 +1940,9 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     
     for (int i = 0; i < n_nodes; i++)
     {
-        shire_barrier(barrier_num, fcc,
-            num_harts,
-            mask_t0, mask_t1);
+        // shire_barrier(barrier_num, fcc,
+        //     num_harts,
+        //     mask_t0, mask_t1);
 
         // delay(10000);
         // cache_invalidate(1,1);
