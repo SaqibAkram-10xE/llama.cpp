@@ -1975,25 +1975,25 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     const int n_nodes = cg->n_nodes;
 
     // Verify struct sizes for ABI compatibility
-    if (hart_id == 0) {
-        et_printf("DEVICE: sizeof(ggml_cgraph_et)=%d, sizeof(ggml_node_meta_et)=%d, sizeof(ggml_tensor_et)=%d\n",
-                  (int)sizeof(struct ggml_cgraph_et), (int)sizeof(struct ggml_node_meta_et), (int)sizeof(struct ggml_tensor_et));
-        et_printf("DEVICE: n_nodes=%d, n_leafs=%d, size=%d\n", n_nodes, cg->n_leafs, cg->size);
-        for (int dbg = 0; dbg < 3 && dbg < n_nodes; dbg++) {
-            et_printf("DEV Node %d: op=%d dst.data=0x%lx dst.type=%d ne=[%ld,%ld,%ld,%ld]\n",
-                      dbg, (int)node_op[dbg],
-                      (unsigned long)node_meta[dbg].dst.data,
-                      (int)node_meta[dbg].dst.type,
-                      (long)node_meta[dbg].dst.ne[0], (long)node_meta[dbg].dst.ne[1],
-                      (long)node_meta[dbg].dst.ne[2], (long)node_meta[dbg].dst.ne[3]);
-            et_printf("DEV Node %d: src0.data=0x%lx src0.type=%d ne=[%ld,%ld,%ld,%ld]\n",
-                      dbg,
-                      (unsigned long)node_meta[dbg].src0.data,
-                      (int)node_meta[dbg].src0.type,
-                      (long)node_meta[dbg].src0.ne[0], (long)node_meta[dbg].src0.ne[1],
-                      (long)node_meta[dbg].src0.ne[2], (long)node_meta[dbg].src0.ne[3]);
-        }
-    }
+    // if (hart_id == 0) {
+    //     et_printf("DEVICE: sizeof(ggml_cgraph_et)=%d, sizeof(ggml_node_meta_et)=%d, sizeof(ggml_tensor_et)=%d\n",
+    //               (int)sizeof(struct ggml_cgraph_et), (int)sizeof(struct ggml_node_meta_et), (int)sizeof(struct ggml_tensor_et));
+    //     et_printf("DEVICE: n_nodes=%d, n_leafs=%d, size=%d\n", n_nodes, cg->n_leafs, cg->size);
+    //     for (int dbg = 0; dbg < 3 && dbg < n_nodes; dbg++) {
+    //         et_printf("DEV Node %d: op=%d dst.data=0x%lx dst.type=%d ne=[%ld,%ld,%ld,%ld]\n",
+    //                   dbg, (int)node_op[dbg],
+    //                   (unsigned long)node_meta[dbg].dst.data,
+    //                   (int)node_meta[dbg].dst.type,
+    //                   (long)node_meta[dbg].dst.ne[0], (long)node_meta[dbg].dst.ne[1],
+    //                   (long)node_meta[dbg].dst.ne[2], (long)node_meta[dbg].dst.ne[3]);
+    //         et_printf("DEV Node %d: src0.data=0x%lx src0.type=%d ne=[%ld,%ld,%ld,%ld]\n",
+    //                   dbg,
+    //                   (unsigned long)node_meta[dbg].src0.data,
+    //                   (int)node_meta[dbg].src0.type,
+    //                   (long)node_meta[dbg].src0.ne[0], (long)node_meta[dbg].src0.ne[1],
+    //                   (long)node_meta[dbg].src0.ne[2], (long)node_meta[dbg].src0.ne[3]);
+    //     }
+    // }
 
     
     const int local_hart_in_shire = get_hart_id() & 0x3F;
@@ -2003,7 +2003,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     {
         const int node_op_val = node_op[i];
         if (node_op_val == HOST_GGML_OP_NONE) continue;
-        
+        delay(1000);
         switch (node_op_val) {
             case HOST_GGML_OP_MUL:
             case HOST_GGML_OP_ADD:
@@ -2031,7 +2031,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case HOST_GGML_OP_MUL_MAT:
                 {
                     // hart_id == 0 ? et_printf("GGML_OP_MUL_MAT\n") : et_printf("");
-                    if (hart_id == 0 && i < 5) { et_printf("DEV: enter MUL_MAT\n"); }
+                    // if (hart_id == 0 && i < 5) { et_printf("DEV: enter MUL_MAT\n"); }
                     struct ggml_et_binary_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
@@ -2203,12 +2203,12 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
         // Publish this node's writes to the whole shire and wait for all harts.
         __asm__ __volatile__("fence" ::: "memory");
-        if (shire_leader) {
-            flush_shire_l1_l2();
-        }
-        shire_barrier(barrier_num, fcc,
-            num_harts,
-            mask_t0, mask_t1);
+        // if (shire_leader) {
+        //     flush_shire_l1_l2();
+        // }
+        // shire_barrier(barrier_num, fcc,
+        //     num_harts,
+        //     mask_t0, mask_t1);
     }
 
     return 0;
