@@ -1482,13 +1482,14 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     const size_t nb00 = src0->nb[0], nb01 = src0->nb[1], nb02 = src0->nb[2], nb03 = src0->nb[3];
     const size_t nb10 = src1->nb[0], nb11 = src1->nb[1], nb12 = src1->nb[2], nb13 = src1->nb[3];
 
-    // Calculate total number of rows (flatten dimensions 1,2,3)
-    const int64_t total_rows = ne1 * ne2 * ne3;
+    // Calculate total number of rows using src0's dimensions (matching CPU reference)
+    // For element-wise ops, src0 and dst have the same shape
+    const int64_t total_rows = ne02 * ne01 * ne03;
 
     // Cache line alignment: prevent false sharing between threads
     // Each cache line is 64 bytes = 16 floats
     const int64_t CACHE_LINE_BYTES = 64;
-    const int64_t row_bytes = ne0 * sizeof(float);
+    const int64_t row_bytes = ne00 * sizeof(float);
     const int64_t row_gcd = gcd_i64(row_bytes, CACHE_LINE_BYTES);
     const int64_t rows_per_cache_group = CACHE_LINE_BYTES / row_gcd;
 
@@ -1509,10 +1510,10 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     }
 
     for (int64_t ir = start_row; ir < end_row; ir++) {
-        // Convert flat row index to 3D coordinates
-        const int64_t i03 = ir / (ne2 * ne1);
-        const int64_t i02 = (ir - i03 * ne2 * ne1) / ne1;
-        const int64_t i01 = (ir - i03 * ne2 * ne1 - i02 * ne1);
+        // Convert flat row index to 3D coordinates using src0's dimensions (matching CPU reference)
+        const int64_t i03 = ir / (ne02 * ne01);
+        const int64_t i02 = (ir - i03 * ne02 * ne01) / ne01;
+        const int64_t i01 = (ir - i03 * ne02 * ne01 - i02 * ne01);
 
         // Handle broadcasting: src1 coordinates with modulo
         const int64_t i13 = i03 % ne13;
@@ -1524,8 +1525,8 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
         const float* src0_ptr = (const float*)((const char*)src0_data + i03*nb03 + i02*nb02 + i01*nb01);
         const float* src1_ptr = (const float*)((const char*)src1_data + i13*nb13 + i12*nb12 + i11*nb11);
 
-        // Broadcasting in dimension 0: src1 repeats across src0
-        const int64_t nr0 = ne0 / ne10;  // How many times src1 is repeated in dimension 0
+        // Broadcasting in dimension 0: src1 repeats across src0 (using src0's ne00)
+        const int64_t nr0 = ne00 / ne10;  // How many times src1 is repeated in dimension 0
 
         for (int64_t r = 0; r < nr0; r++) {
             // Process ne10 elements at a time using block functions
@@ -2003,7 +2004,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     {
         const int node_op_val = node_op[i];
         if (node_op_val == HOST_GGML_OP_NONE) continue;
-        delay(1000);
+        // delay(1000);
         switch (node_op_val) {
             case HOST_GGML_OP_MUL:
             case HOST_GGML_OP_ADD:
@@ -2203,12 +2204,12 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
         // Publish this node's writes to the whole shire and wait for all harts.
         __asm__ __volatile__("fence" ::: "memory");
-        // if (shire_leader) {
-        //     flush_shire_l1_l2();
-        // }
-        // shire_barrier(barrier_num, fcc,
-        //     num_harts,
-        //     mask_t0, mask_t1);
+        if (shire_leader) {
+            flush_shire_l1_l2();
+        }
+        shire_barrier(barrier_num, fcc,
+            num_harts,
+            mask_t0, mask_t1);
     }
 
     return 0;
