@@ -2009,7 +2009,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case HOST_GGML_OP_MUL:
             case HOST_GGML_OP_ADD:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_MUL/GGML_OP_ADD\n") : et_printf("");
+                    hart_id == 0 ? et_printf("GGML_OP_MUL/GGML_OP_ADD\n") : et_printf("");
 
                     struct ggml_et_elmap_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
@@ -2031,7 +2031,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_MUL_MAT:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_MUL_MAT\n") : et_printf("");
+                    hart_id == 0 ? et_printf("GGML_OP_MUL_MAT\n") : et_printf("");
                     // if (hart_id == 0 && i < 5) { et_printf("DEV: enter MUL_MAT\n"); }
                     struct ggml_et_binary_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
@@ -2057,7 +2057,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 break;
 
             case HOST_GGML_OP_MUL_MAT_ID:
-                    // hart_id == 0 ? et_printf("GGML_OP_MUL_MAT_ID\n") : et_printf("");
+                    hart_id == 0 ? et_printf("GGML_OP_MUL_MAT_ID\n") : et_printf("");
 
                 // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_MUL_MAT_ID \n") : et_printf("");
                 // ggml_et_op_mul(dev_ctx, node);
@@ -2066,7 +2066,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_RMS_NORM:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_RMS_NORM\n") : et_printf("");
+                    hart_id == 0 ? et_printf("GGML_OP_RMS_NORM\n") : et_printf("");
                     struct ggml_et_rms_norm_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_RMS_NORM);
@@ -2079,7 +2079,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_GLU:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_GLU\n") : et_printf("");
+                    hart_id == 0 ? et_printf("GGML_OP_GLU\n") : et_printf("");
                     struct ggml_et_glu_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
@@ -2095,7 +2095,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_SOFT_MAX:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_SOFT_MAX\n") : et_printf("");
+                    hart_id == 0 ? et_printf("GGML_OP_SOFT_MAX\n") : et_printf("");
                     struct ggml_et_softmax_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
@@ -2112,7 +2112,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_GET_ROWS:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_GET_ROWS\n") : et_printf("");
+                    hart_id == 0 ? et_printf("GGML_OP_GET_ROWS\n") : et_printf("");
                     struct ggml_et_get_rows_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
@@ -2126,7 +2126,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_SET_ROWS:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_SET_ROWS\n") : et_printf("");
+                    hart_id == 0 ? et_printf("GGML_OP_SET_ROWS\n") : et_printf("");
                     struct ggml_et_set_rows_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
@@ -2140,7 +2140,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_CONT:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_CONT\n") : et_printf("");
+                    hart_id == 0 ? et_printf("GGML_OP_CONT\n") : et_printf("");
                     struct ggml_et_cont_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_CONT);
@@ -2153,7 +2153,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_ROPE:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_ROPE\n") : et_printf("");
+                    hart_id == 0 ? et_printf("GGML_OP_ROPE\n") : et_printf("");
                     struct ggml_et_rope_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
@@ -2188,7 +2188,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case HOST_GGML_OP_PERMUTE:
             case HOST_GGML_OP_TRANSPOSE:
                 {
-                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_RESHAPE/VIEW/PERMUTE/TRANSPOSE \n") : et_printf("");
+                    hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_RESHAPE/VIEW/PERMUTE/TRANSPOSE \n") : et_printf("");
                     // These are metadata-only operations that require no computation
                     // GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
                 }
@@ -2196,7 +2196,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             default:
                 {
-                    // hart_id == 0 ? et_printf("***DEV***: Executed DEFAULT/UNSUPPORTED OP %d \n", node_op_val) : et_printf("");
+                    hart_id == 0 ? et_printf("***DEV***: Executed DEFAULT/UNSUPPORTED OP %d \n", node_op_val) : et_printf("");
                     // GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
                 }
                 break; //GGML_STATUS_FAILED;
@@ -2204,12 +2204,12 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
         // Publish this node's writes to the whole shire and wait for all harts.
         __asm__ __volatile__("fence" ::: "memory");
-        if (shire_leader) {
-            flush_shire_l1_l2();
-        }
-        shire_barrier(barrier_num, fcc,
-            num_harts,
-            mask_t0, mask_t1);
+        // if (shire_leader) {
+        //     flush_shire_l1_l2();
+        // }
+        // shire_barrier(barrier_num, fcc,
+        //     num_harts,
+        //     mask_t0, mask_t1);
     }
 
     return 0;
