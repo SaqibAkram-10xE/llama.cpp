@@ -10,6 +10,25 @@
 #include "ggml_tensor.h"
 #include "platform.h"
 
+// Host-side ggml op codes (ggml.h) used for serialized node_op[] in graph mode.
+// These numeric values must match the host enum, not the device-side ggml_tensor.h enum.
+#define HOST_GGML_OP_NONE      0
+#define HOST_GGML_OP_ADD       2
+#define HOST_GGML_OP_MUL       7
+#define HOST_GGML_OP_RMS_NORM  25
+#define HOST_GGML_OP_MUL_MAT   29
+#define HOST_GGML_OP_CONT      35
+#define HOST_GGML_OP_RESHAPE   36
+#define HOST_GGML_OP_VIEW      37
+#define HOST_GGML_OP_PERMUTE   38
+#define HOST_GGML_OP_TRANSPOSE 39
+#define HOST_GGML_OP_GET_ROWS  40
+#define HOST_GGML_OP_SET_ROWS  42
+#define HOST_GGML_OP_SOFT_MAX  46
+#define HOST_GGML_OP_ROPE      48
+#define HOST_GGML_OP_GLU       94
+#define HOST_GGML_OP_MUL_MAT_ID 30
+
 // #include "mul_mat_Q8_0.c"
 #include "quants.h"
 #include "math_fp.h"
@@ -130,8 +149,6 @@
 //     return GGML_OP_NAME[op];
 // }
 
-
-
 // GLU operation types (from ggml.h)
 enum ggml_glu_op {
     GGML_GLU_OP_REGLU = 0,
@@ -239,6 +256,10 @@ struct ggml_tensor_et {
     enum ggml_type type;
     uint64_t data;      // Device pointer (fixed-width for ABI compatibility)
 };
+
+static inline uint64_t tensor_bytes(const struct ggml_tensor_et * t) {
+    return (uint64_t)t->ne[3] * (uint64_t)t->nb[3];
+}
 
 struct ggml_node_meta_et {
     struct ggml_tensor_et src0;
@@ -1818,11 +1839,12 @@ static inline void convert_to_ggml_tensor(struct ggml_tensor * dst, struct ggml_
 // ----------------------------------------
 // Required ESR macros (copied from ET platform)
 // ----------------------------------------
+#define ESR_SHIRE_REGION       0x0100340000ULL  // Shire ESR base address (bit 32 = ESR region)
 #define ESR_REGION_SHIRE_SHIFT 22
 #define ESR_SHIRE(shire, name) \
-    (((uint64_t)(shire) << ESR_REGION_SHIRE_SHIFT) + (uint64_t)(ESR_##name))
+    (ESR_SHIRE_REGION | ((uint64_t)(shire) << ESR_REGION_SHIRE_SHIFT) | (uint64_t)(ESR_##name))
 
-#define ESR_FCC_CREDINC_0 0xC0
+#define ESR_FCC_CREDINC_0 0xC0  // (ESR_SHIRE_FCC_CREDINC_0_REGNO=0x18) << 3
 
 // ----------------------------------------
 // Local FCC send implementation
@@ -1851,6 +1873,20 @@ uint64_t flbarrier(uint64_t barrier_num, uint64_t match)
                          : "r"(flb_arg));
 
     return ret;
+}
+
+// ----------------------------------------
+// Evict whole shire L1+L2 via ecall syscall (SYSCALL_CACHE_OPS_EVICT_WHOLE_L1_L2 = 11)
+// One leader hart per shire issues the syscall after a node completes. This flushes all
+// private L1s and the shire cache/L2, which is stronger than per-hart L1 eviction and is
+// the right primitive for inter-node coherency across minions.
+// ----------------------------------------
+static inline void __attribute__((always_inline)) flush_shire_l1_l2(void) {
+    register uint64_t a0 __asm__("a0") = 11; // SYSCALL_CACHE_OPS_EVICT_WHOLE_L1_L2
+    register uint64_t a1 __asm__("a1") = 0;
+    register uint64_t a2 __asm__("a2") = 0;
+    register uint64_t a3 __asm__("a3") = 0;
+    __asm__ __volatile__("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3) : "memory");
 }
 
 // ----------------------------------------
@@ -1923,10 +1959,11 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     // -----------------------
     // Correct barrier setup
     // -----------------------
-    const uint64_t mask_t0 = 0xFFFFFFFFULL; // 32 harts (thread0 of each minion)
-    const uint64_t mask_t1 = 0xFFFFFFFFULL; // 0x00000000ULL; // no thread1 used in llama kernels
+    // Both thread0 and thread1 of each minion participate (64 per shire)
+    const uint64_t mask_t0 = 0xFFFFFFFFULL; // 32 minions' thread0
+    const uint64_t mask_t1 = 0xFFFFFFFFULL; // 32 minions' thread1
 
-    uint64_t num_harts = 64;//__builtin_popcountll(mask_t0) + __builtin_popcountll(mask_t1); // = 64 (both thread0 and thread1)
+    uint64_t num_harts = 64; // thread0 + thread1 of all 32 minions
     uint64_t match = num_harts - 1;                     // = 63
     uint64_t barrier_num = shire_id % 32;               // dedicated per-shire
     const int fcc = 0;                                  // FCC0
@@ -1942,33 +1979,43 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
         et_printf("DEVICE: sizeof(ggml_cgraph_et)=%d, sizeof(ggml_node_meta_et)=%d, sizeof(ggml_tensor_et)=%d\n",
                   (int)sizeof(struct ggml_cgraph_et), (int)sizeof(struct ggml_node_meta_et), (int)sizeof(struct ggml_tensor_et));
         et_printf("DEVICE: n_nodes=%d, n_leafs=%d, size=%d\n", n_nodes, cg->n_leafs, cg->size);
+        for (int dbg = 0; dbg < 3 && dbg < n_nodes; dbg++) {
+            et_printf("DEV Node %d: op=%d dst.data=0x%lx dst.type=%d ne=[%ld,%ld,%ld,%ld]\n",
+                      dbg, (int)node_op[dbg],
+                      (unsigned long)node_meta[dbg].dst.data,
+                      (int)node_meta[dbg].dst.type,
+                      (long)node_meta[dbg].dst.ne[0], (long)node_meta[dbg].dst.ne[1],
+                      (long)node_meta[dbg].dst.ne[2], (long)node_meta[dbg].dst.ne[3]);
+            et_printf("DEV Node %d: src0.data=0x%lx src0.type=%d ne=[%ld,%ld,%ld,%ld]\n",
+                      dbg,
+                      (unsigned long)node_meta[dbg].src0.data,
+                      (int)node_meta[dbg].src0.type,
+                      (long)node_meta[dbg].src0.ne[0], (long)node_meta[dbg].src0.ne[1],
+                      (long)node_meta[dbg].src0.ne[2], (long)node_meta[dbg].src0.ne[3]);
+        }
     }
 
     
+    const int local_hart_in_shire = get_hart_id() & 0x3F;
+    const int shire_leader = (local_hart_in_shire == 0);
+
     for (int i = 0; i < n_nodes; i++)
     {
-        shire_barrier(barrier_num, fcc,
-            num_harts,
-            mask_t0, mask_t1);
-
-        // delay(10000);
-        // cache_invalidate(1,1);
-        FENCE
-        // bulk_invalidate_l1();
-        
         const int node_op_val = node_op[i];
-        if (node_op_val == GGML_OP_NONE) continue;
+        if (node_op_val == HOST_GGML_OP_NONE) continue;
         
         switch (node_op_val) {
-            case GGML_OP_MUL:
-            case GGML_OP_ADD:
+            case HOST_GGML_OP_MUL:
+            case HOST_GGML_OP_ADD:
                 {
                     // hart_id == 0 ? et_printf("GGML_OP_MUL/GGML_OP_ADD\n") : et_printf("");
 
                     struct ggml_et_elmap_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, (enum ggml_op)node_op_val);
+                    // el_map_f32 selects operation by dst.op using the device-side ggml_op enum.
+                    const enum ggml_op el_op = (node_op_val == HOST_GGML_OP_MUL) ? GGML_OP_MUL : GGML_OP_ADD;
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, el_op);
 
                     // Type validation
                     if (params.dst.type != GGML_TYPE_F32 ||
@@ -1981,13 +2028,14 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 }
                 break;
 
-            case GGML_OP_MUL_MAT:
+            case HOST_GGML_OP_MUL_MAT:
                 {
                     // hart_id == 0 ? et_printf("GGML_OP_MUL_MAT\n") : et_printf("");
+                    if (hart_id == 0 && i < 5) { et_printf("DEV: enter MUL_MAT\n"); }
                     struct ggml_et_binary_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, (enum ggml_op)node_op_val);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_MUL_MAT);
 
                     if (params.dst.type == GGML_TYPE_F32 &&
                         params.src0.type == GGML_TYPE_Q8_0 &&
@@ -2007,7 +2055,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 }
                 break;
 
-            case GGML_OP_MUL_MAT_ID:
+            case HOST_GGML_OP_MUL_MAT_ID:
                     // hart_id == 0 ? et_printf("GGML_OP_MUL_MAT_ID\n") : et_printf("");
 
                 // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_MUL_MAT_ID \n") : et_printf("");
@@ -2015,12 +2063,12 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 // ggml_et_op_mul_mat_id(dev_ctx, node);
                 break;
 
-            case GGML_OP_RMS_NORM:
+            case HOST_GGML_OP_RMS_NORM:
                 {
                     // hart_id == 0 ? et_printf("GGML_OP_RMS_NORM\n") : et_printf("");
                     struct ggml_et_rms_norm_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, (enum ggml_op)node_op_val);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_RMS_NORM);
                     memcpy(&params.eps, node_meta[i].op_params, sizeof(float));
                     if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
                         rms_norm_f32_impl(&params, env);
@@ -2028,13 +2076,13 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 }
                 break;
 
-            case GGML_OP_GLU:
+            case HOST_GGML_OP_GLU:
                 {
                     // hart_id == 0 ? et_printf("GGML_OP_GLU\n") : et_printf("");
                     struct ggml_et_glu_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, (enum ggml_op)node_op_val);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GLU);
                     memcpy(&params.glu_op_type, &node_meta[i].op_params[0], sizeof(int32_t));
                     memcpy(&params.swapped, &node_meta[i].op_params[1], sizeof(int32_t));
 
@@ -2044,14 +2092,14 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 }
                 break;
 
-            case GGML_OP_SOFT_MAX:
+            case HOST_GGML_OP_SOFT_MAX:
                 {
                     // hart_id == 0 ? et_printf("GGML_OP_SOFT_MAX\n") : et_printf("");
                     struct ggml_et_softmax_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src2, &node_meta[i].src2, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, (enum ggml_op)node_op_val);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_SOFT_MAX);
                     memcpy(&params.scale, &node_meta[i].op_params[0], sizeof(float));
                     memcpy(&params.max_bias, &node_meta[i].op_params[1], sizeof(float));
 
@@ -2061,13 +2109,13 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 }
                 break;
 
-            case GGML_OP_GET_ROWS:
+            case HOST_GGML_OP_GET_ROWS:
                 {
                     // hart_id == 0 ? et_printf("GGML_OP_GET_ROWS\n") : et_printf("");
                     struct ggml_et_get_rows_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, (enum ggml_op)node_op_val);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
 
                     if (params.dst.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I32) {
                         get_rows_f32_impl(&params, env);
@@ -2075,13 +2123,13 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 }
                 break;
 
-            case GGML_OP_SET_ROWS:
+            case HOST_GGML_OP_SET_ROWS:
                 {
                     // hart_id == 0 ? et_printf("GGML_OP_SET_ROWS\n") : et_printf("");
                     struct ggml_et_set_rows_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, (enum ggml_op)node_op_val);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_SET_ROWS);
 
                     if (params.src0.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I64) {
                         set_rows_f32_impl(&params, env);
@@ -2089,12 +2137,12 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 }
                 break;
 
-            case GGML_OP_CONT:
+            case HOST_GGML_OP_CONT:
                 {
                     // hart_id == 0 ? et_printf("GGML_OP_CONT\n") : et_printf("");
                     struct ggml_et_cont_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, (enum ggml_op)node_op_val);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_CONT);
 
                     if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
                         cont_f32_impl(&params, env);
@@ -2102,14 +2150,14 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 }
                 break;
 
-            case GGML_OP_ROPE:
+            case HOST_GGML_OP_ROPE:
                 {
                     // hart_id == 0 ? et_printf("GGML_OP_ROPE\n") : et_printf("");
                     struct ggml_et_rope_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src2, &node_meta[i].src2, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, (enum ggml_op)node_op_val);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_ROPE);
                     
                     memcpy(&params.rope_params.n_past, &node_meta[i].op_params[0], sizeof(int32_t));
                     memcpy(&params.rope_params.n_dims, &node_meta[i].op_params[1], sizeof(int32_t));
@@ -2134,10 +2182,10 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 }
                 break;
 
-            case GGML_OP_RESHAPE:
-            case GGML_OP_VIEW:
-            case GGML_OP_PERMUTE:
-            case GGML_OP_TRANSPOSE:
+            case HOST_GGML_OP_RESHAPE:
+            case HOST_GGML_OP_VIEW:
+            case HOST_GGML_OP_PERMUTE:
+            case HOST_GGML_OP_TRANSPOSE:
                 {
                     // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_RESHAPE/VIEW/PERMUTE/TRANSPOSE \n") : et_printf("");
                     // These are metadata-only operations that require no computation
@@ -2152,6 +2200,15 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 }
                 break; //GGML_STATUS_FAILED;
         }
+
+        // Publish this node's writes to the whole shire and wait for all harts.
+        __asm__ __volatile__("fence" ::: "memory");
+        if (shire_leader) {
+            flush_shire_l1_l2();
+        }
+        shire_barrier(barrier_num, fcc,
+            num_harts,
+            mask_t0, mask_t1);
     }
 
     return 0;
