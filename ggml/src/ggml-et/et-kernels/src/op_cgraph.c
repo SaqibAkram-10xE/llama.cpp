@@ -2255,18 +2255,19 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
         // Publish this node's writes and wait for all harts in THIS shire.
         // Intra-shire barrier is fast and needed for correctness between operations.
-        __asm__ __volatile__("fence" ::: "memory");
-        if (shire_leader) {
-            flush_shire_l1_l2();
-        }
-        shire_barrier(barrier_num, fcc,
-            num_harts,
-            mask_t0, mask_t1);
+        // __asm__ __volatile__("fence" ::: "memory");
+        // if (shire_leader) {
+        //     flush_shire_l1_l2();
+        // }
+        // shire_barrier(barrier_num, fcc,
+        //     num_harts,
+        //     mask_t0, mask_t1);
     }
 
     // NOTE: Inter-shire barrier not needed when using single shire (0x1).
     // When multi-shire with proper work distribution is implemented, uncomment:
     // inter_shire_barrier(hart_id, num_active_shires, (barrier_num + 1) % 32, 1, 2);
+    // inter_shire_barrier(hart_id, 32, (barrier_num + 1) % 32, 1, 2);
 
     return 0;
 }
