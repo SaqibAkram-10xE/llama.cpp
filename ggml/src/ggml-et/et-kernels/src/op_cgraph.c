@@ -1947,6 +1947,57 @@ cache_invalidate(uint64_t inval_instr_cache, uint64_t inval_TLBs_and_PTW)
     __asm__ __volatile__("csrw 0x7d0, %[csr_enc]\n" : : [csr_enc] "r"(csr_enc) :);
 }
 
+// ----------------------------------------
+// Inter-shire barrier for multi-shire graph execution
+// Based on sync_up_all_minions pattern from ET programmer's reference
+// ----------------------------------------
+// This provides loose synchronization across all minions in every shire.
+// Minions in all shires block waiting for a credit. The only minions that do not block
+// and send credit to others are minions whose local_minion_id == shire_id.
+// After that each shire does an FLB synchronization.
+inline void __attribute__((always_inline))
+inter_shire_barrier(uint64_t hart_id, uint64_t num_shires, uint64_t flb_id, uint64_t fcc_sync, uint64_t fcc_local)
+{
+    uint64_t shire_id = hart_id >> 6;
+    uint64_t local_hart = hart_id & 0x3F;
+    uint64_t minion_id = local_hart >> 1;  // 0-31 within shire
+    uint64_t thread_id = local_hart & 1;   // 0 or 1
+    
+    // Only thread 0 of each minion participates in cross-shire sync
+    if (thread_id == 0) {
+        uint64_t target_min_mask = 1ULL << minion_id;
+        
+        // Minion with minion_id == shire_id sends credit to same minion_id in all other shires
+        if (minion_id == shire_id && minion_id < num_shires) {
+            for (uint64_t target_shire = 0; target_shire < num_shires; target_shire++) {
+                if (shire_id == target_shire) continue;
+                fcc_send(target_shire, 0, fcc_sync, target_min_mask);
+            }
+        } else if (minion_id < num_shires) {
+            // Wait for credit from the minion in its "home" shire
+            __asm__ __volatile__("csrw fcc, %0\n" : : "r"(fcc_sync));
+        }
+    }
+    
+    // Memory fence to ensure all cross-shire communication is visible
+    __asm__ __volatile__("fence" ::: "memory");
+    
+    // Now synchronize all harts within this shire using FLB
+    uint64_t last = flbarrier(flb_id, 63);  // 64 harts per shire
+    
+    if (last) {
+        // Last hart to reach barrier sends FCC to all other harts in shire
+        fcc_send(0xFF, 0, fcc_local, 0xFFFFFFFFULL);
+        fcc_send(0xFF, 1, fcc_local, 0xFFFFFFFFULL);
+    }
+    
+    // Wait for local FCC
+    __asm__ __volatile__("csrw fcc, %0\n" : : "r"(fcc_local));
+    
+    // Final fence
+    __asm__ __volatile__("fence" ::: "memory");
+}
+
 int entry_point(struct ggml_cgraph_et* cg, void* env) {
     int64_t hart_id = get_hart_id();
     // if(hart_id >=1){return 0;}
@@ -2202,9 +2253,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 break; //GGML_STATUS_FAILED;
         }
 
-        // Publish this node's writes to the whole shire and wait for all harts.
-        // This barrier is REQUIRED for combined ops tests (ROPE_SET_ROWS, RMS_NORM_MUL_ADD, etc.)
-        // Without it, subsequent operations may read incomplete/stale data from previous ops.
+        // Publish this node's writes and wait for all harts in THIS shire.
+        // Intra-shire barrier is fast and needed for correctness between operations.
         __asm__ __volatile__("fence" ::: "memory");
         if (shire_leader) {
             flush_shire_l1_l2();
@@ -2213,6 +2263,10 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             num_harts,
             mask_t0, mask_t1);
     }
+
+    // NOTE: Inter-shire barrier not needed when using single shire (0x1).
+    // When multi-shire with proper work distribution is implemented, uncomment:
+    // inter_shire_barrier(hart_id, num_active_shires, (barrier_num + 1) % 32, 1, 2);
 
     return 0;
 }

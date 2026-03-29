@@ -28,7 +28,7 @@ bool ggml_et_launch_kernel(ggml_backend_et_device_context* dev_ctx,
                            void* params,
                            size_t params_size,
                            uint64_t shire_mask = 0xFFFFFFFF,
-                           bool enable_print = true,
+                           bool enable_print = false,
                            bool sync_error_check = true);
 
 // Allocate graph buffer in ET device memory and copy graph structure
