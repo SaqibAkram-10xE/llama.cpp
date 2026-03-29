@@ -2203,13 +2203,15 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
         }
 
         // Publish this node's writes to the whole shire and wait for all harts.
+        // This barrier is REQUIRED for combined ops tests (ROPE_SET_ROWS, RMS_NORM_MUL_ADD, etc.)
+        // Without it, subsequent operations may read incomplete/stale data from previous ops.
         __asm__ __volatile__("fence" ::: "memory");
-        // if (shire_leader) {
-        //     flush_shire_l1_l2();
-        // }
-        // shire_barrier(barrier_num, fcc,
-        //     num_harts,
-        //     mask_t0, mask_t1);
+        if (shire_leader) {
+            flush_shire_l1_l2();
+        }
+        shire_barrier(barrier_num, fcc,
+            num_harts,
+            mask_t0, mask_t1);
     }
 
     return 0;
