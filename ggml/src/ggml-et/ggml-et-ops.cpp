@@ -169,7 +169,10 @@ bool ggml_et_op_cg(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph
     //      cg->n_nodes, total_size);
 
     // Pass single pointer to kernel
-    kernel_result = ggml_et_launch_kernel(dev_ctx, "op_cgraph", cg, total_size, 0xFFFFFFFF);
+    // Use single shire (0x1) for graph execution to ensure proper inter-operation synchronization.
+    // The intra-shire barrier only synchronizes within a shire, so multi-shire execution
+    // causes race conditions between operations (e.g., ROPE output read before write completes).
+    kernel_result = ggml_et_launch_kernel(dev_ctx, "op_cgraph", cg, total_size, 0x1);
     
     free(cg);
     return kernel_result;
