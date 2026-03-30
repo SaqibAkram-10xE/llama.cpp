@@ -1887,85 +1887,46 @@ et_global_store_hw(volatile void *addr, uint16_t val)
 }
 
 // // Convenience wrappers — float types, fire-and-forget (old value discarded).
-// static inline void atomic_store_f32(volatile float *addr, float value) {
-//     et_global_swap_w(addr, *(uint32_t *)&value);
-// }
+// ========================================================================
+// Synchronization primitives for ET multi-shire graph execution
+// Based on the proven gp-sdk sync.h barrier<Scope::device> pattern.
+// ========================================================================
 
-// static inline void atomic_add_f32(volatile float *addr, float value) {
-//     et_global_add_w(addr, *(uint32_t *)&value);
-// }
-
-// static inline void atomic_store_f16(volatile uint16_t *addr, uint16_t value) {
-//     et_global_store_hw(addr, value);
-// }
-
-/*! \fn inline void fcc_consume(uint64_t fcc_reg)
-   \brief This is a wrapper function to consume FCC
-   \param fcc_reg FCC register ID
-   \return none
-   \tensorops Implementation of fcc_consume api
-*/
+// FCC consume - blocks until a credit is available on the specified FCC register
 inline __attribute__((always_inline)) void fcc_consume(uint64_t fcc_reg)
 {
-    __asm__ __volatile__("csrw   fcc, %0\n" : : "r"(fcc_reg));
+    __asm__ __volatile__("csrw fcc, %0\n" : : "r"(fcc_reg));
 }
 
-/*! \fn inline void fcc(uint64_t fcc_reg)
-   \brief This is a wrapper function for fcc_consume
-   \param fcc_reg FCC register ID
-   \return none
-   \tensorops Implementation of fcc api
-*/
-inline __attribute__((always_inline)) void fcc(uint64_t fcc_reg)
-{
-    fcc_consume(fcc_reg);
-}
-
-// ----------------------------------------
-// Required ESR macros (copied from ET platform)
-// ----------------------------------------
-#define ESR_SHIRE_REGION       0x0100340000ULL  // Shire ESR base address (bit 32 = ESR region)
+// ESR address construction for FCC credit increment registers
+#define ESR_SHIRE_REGION       0x0100340000ULL
 #define ESR_REGION_SHIRE_SHIFT 22
 #define ESR_SHIRE(shire, name) \
     (ESR_SHIRE_REGION | ((uint64_t)(shire) << ESR_REGION_SHIRE_SHIFT) | (uint64_t)(ESR_##name))
+#define ESR_FCC_CREDINC_0 0xC0
 
-#define ESR_FCC_CREDINC_0 0xC0  // (ESR_SHIRE_FCC_CREDINC_0_REGNO=0x18) << 3
-
-// ----------------------------------------
-// Local FCC send implementation
-// ----------------------------------------
+// Send FCC credit to specified shire/thread/register targeting specific minions
 inline __attribute__((always_inline))
 void fcc_send(uint32_t shire, uint32_t thread, uint32_t fcc_reg, uint64_t hart_mask)
 {
     volatile uint64_t* fcc_credinc_addr =
         (uint64_t*)ESR_SHIRE(shire, FCC_CREDINC_0) +
         ((thread << 1) | fcc_reg);
-
     *fcc_credinc_addr = hart_mask;
 }
 
-// ----------------------------------------
-// Fast Local Barrier (FLB)
-// ----------------------------------------
+// Fast Local Barrier - per-shire hardware barrier
+// Returns 1 if this hart was the last to arrive, 0 otherwise
 inline __attribute__((always_inline))
 uint64_t flbarrier(uint64_t barrier_num, uint64_t match)
 {
     uint64_t ret;
     uint64_t flb_arg = (match << 5) | (barrier_num & 0x1F);
-
-    __asm__ __volatile__("csrrw %0, 0x820, %1"
-                         : "=r"(ret)
-                         : "r"(flb_arg));
-
+    __asm__ __volatile__("csrrw %0, 0x820, %1" : "=r"(ret) : "r"(flb_arg));
     return ret;
 }
 
-// ----------------------------------------
-// Evict whole shire L1+L2 via ecall syscall (SYSCALL_CACHE_OPS_EVICT_WHOLE_L1_L2 = 11)
-// One leader hart per shire issues the syscall after a node completes. This flushes all
-// private L1s and the shire cache/L2, which is stronger than per-hart L1 eviction and is
-// the right primitive for inter-node coherency across minions.
-// ----------------------------------------
+// Evict whole shire L1+L2 via firmware syscall
 static inline void __attribute__((always_inline)) flush_shire_l1_l2(void) {
     register uint64_t a0 __asm__("a0") = 11; // SYSCALL_CACHE_OPS_EVICT_WHOLE_L1_L2
     register uint64_t a1 __asm__("a1") = 0;
@@ -1974,422 +1935,113 @@ static inline void __attribute__((always_inline)) flush_shire_l1_l2(void) {
     __asm__ __volatile__("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3) : "memory");
 }
 
-// ----------------------------------------
-// Correct shire barrier for llama.cpp
-// ----------------------------------------
-inline __attribute__((always_inline))
-uint64_t shire_barrier(uint64_t barrier_num,
-                       uint64_t fcc_reg,
-                       uint64_t thread_count,
-                       uint64_t minion_mask_t0,
-                       uint64_t minion_mask_t1)
-{
-    uint64_t last = flbarrier(barrier_num, thread_count - 1);
-
-    if (last)
-    {
-        // Only the last hart sends FCC credits
-        fcc_send(/*shire*/ 0xFF, /*thread*/0, fcc_reg, minion_mask_t0);
-        fcc_send(/*shire*/ 0xFF, /*thread*/1, fcc_reg, minion_mask_t1);
-    }
-
-    // Wait for FCC (consume credit - blocks until credit is available)
-    __asm__ __volatile__("csrw fcc, %0\n" : : "r"(fcc_reg));
-
-    return last;
-}
-
-// Use a dedicated FCC register for global sync (e.g., FCC 1) to avoid 
-// conflicts with shire_barrier (which uses FCC 0)
-#define FCC_GLOBAL_SYNC 1
-
-// Modified fcc_send to ensure it handles the remote shire addressing correctly
-inline void fcc_send_remote(uint32_t target_shire, uint32_t thread, uint32_t fcc_reg, uint64_t hart_mask) {
-    // ESR_SHIRE macro uses the 22-bit shift for Shire ID as per manual
-    volatile uint64_t* fcc_addr = (uint64_t*)ESR_SHIRE(target_shire, FCC_CREDINC_0) + ((thread << 1) | fcc_reg);
-    *fcc_addr = hart_mask;
-}
-
-void global_barrier(uint32_t shire_id, uint32_t local_hart, uint32_t num_shires, uint32_t flb_id) {
-    // Step 1: Intra-shire sync (everyone in this shire arrived)
-    // 63 is the match value for 64 harts
-    flbarrier(flb_id, 63); 
-
-    // Step 2: Hierarchical Sync
-    if (local_hart == 0) {
-        if (shire_id == 0) {
-            // MASTER SHIRE logic:
-            // Wait for a credit from every OTHER shire's leader
-            for (uint32_t s = 1; s < num_shires; s++) {
-                __asm__ __volatile__("csrw fcc, %0" : : "r"(FCC_GLOBAL_SYNC));
-            }
-            // Once all reported, broadcast release to all shires (including itself)
-            // 0xFF in the shire field of ESR address targets "all shires" or "local" 
-            // depending on config, but explicit loop is safer for inter-shire.
-            for (uint32_t s = 0; s < num_shires; s++) {
-                // Send to Hart 0 of the target shire
-                fcc_send_remote(s, 0, FCC_GLOBAL_SYNC, 0x1ULL); 
-            }
-        } else {
-            // WORKER SHIRE logic:
-            // Send report to Master Shire (Shire 0, Hart 0)
-            fcc_send_remote(0, 0, FCC_GLOBAL_SYNC, 0x1ULL);
-            // Wait for release from Master
-            __asm__ __volatile__("csrw fcc, %0" : : "r"(FCC_GLOBAL_SYNC));
-        }
-        
-        // Step 3: Local Release
-        // The leader (Hart 0) now releases everyone else in the local shire
-        // Send to both threads (T0 mask, T1 mask)
-        fcc_send_remote(0xFF, 0, FCC_GLOBAL_SYNC, 0xFFFFFFFFULL);
-        fcc_send_remote(0xFF, 1, FCC_GLOBAL_SYNC, 0xFFFFFFFFULL);
-    } else {
-        // All other harts wait for the local release from their Shire Leader
-        __asm__ __volatile__("csrw fcc, %0" : : "r"(FCC_GLOBAL_SYNC));
-    }
-    
-    __asm__ __volatile__("fence" ::: "memory");
-}
-#define MCACHE_CONTROL 0x7CA // Machine-mode CSR
-#define UCACHE_CONTROL 0x801 // User-mode shadow CSR
-
-void bulk_invalidate_l1() {
-    // 1. Memory Fence: Ensure all previous memory ops are complete
-    __asm__ volatile ("fence" ::: "memory");
-
-    // 2. Toggle the D1Split bit (Bit 0)
-    // Switching from Shared to Split (or vice-versa) invalidates the entire L1.
-    // We read the current state, flip bit 0, and write it back.
-    unsigned long current_ctrl;
-    __asm__ volatile ("csrr %0, %1" : "=r"(current_ctrl) : "i"(UCACHE_CONTROL));
-    
-    unsigned long toggled_ctrl = current_ctrl ^ 0x1; 
-    __asm__ volatile ("csrw %0, %1" :: "i"(UCACHE_CONTROL), "r"(toggled_ctrl));
-
-    // 3. Return to original state (Optional, but usually desired)
-    __asm__ volatile ("csrw %0, %1" :: "i"(UCACHE_CONTROL), "r"(current_ctrl));
-
-    // 4. Sync: Wait for the hardware FSM to finish the invalidation/zeroing
-    // Documentation suggests a TensorWait or similar sync after cacheops
-    __asm__ volatile ("fence" ::: "memory");
-}
-
-inline void __attribute__((always_inline))
-cache_invalidate(uint64_t inval_instr_cache, uint64_t inval_TLBs_and_PTW)
-{
-    uint64_t csr_enc = (inval_TLBs_and_PTW & 1) | ((inval_instr_cache & 1) << 1);
-
-    __asm__ __volatile__("csrw 0x7d0, %[csr_enc]\n" : : [csr_enc] "r"(csr_enc) :);
-}
-#define ET_DEFAULT_SHIRE_MASK 0xFFFFFFFFULL
-
-typedef enum {
-    ET_BARRIER_MINION,  // sync both harts within each minion (FLB=minion_id, FCC 0)
-    ET_BARRIER_SHIRE,   // sync all harts across the shire   (FLB=0, FCC 1)
-    ET_BARRIER_GLOBAL,  // sync all harts across all active shires (FLB+global AMO+FCC)
-} et_barrier_scope_t;
-
-// Barrier counter cache-line aligned to avoid coherency problems
-// Must be zero-initialized (BSS).
-static uint32_t __attribute__((aligned(64)))
-et_global_barrier_count[64 / sizeof(uint32_t)] = {0};
-
-// Cross-shire barrier: all harts in num_active_shires shires synchronize.
-// Returns 1 if this hart was the globally-last to arrive, 0 otherwise.
+// ========================================================================
+// Device barrier: synchronizes ALL harts across ALL 32 compute shires.
+// Ported from gp-sdk sync.h barrier<Scope::device>.
 //
-//   num_active_shires - number of shires participating
-//                       (typically popcount(shire_mask) from kernel_environment_t)
-static inline uint64_t __attribute__((always_inline))
-et_barrier_global(uint64_t num_active_shires)
+// Protocol (hierarchical, using master shire 0 as coordinator):
+//   1. Intra-shire barrier (FLB 0 + FCC 0) — all 64 harts per shire sync
+//   2. Shire leader flushes L1/L2 so writes are globally visible
+//   3. Worker shires: minion 0 sends FCC 1 to master shire (to minion[shire_id])
+//   4. Master shire: collector minions 1-31 each consume one FCC 1, then FLB
+//   5. Last collector broadcasts FCC 1 to all master shire harts
+//   6. All master shire harts consume FCC 1
+//   7. Collector minions 1-31 each send FCC 1 to wake their assigned worker shire
+//   8. Worker shire harts consume FCC 1 and proceed
+// ========================================================================
+#define SHIRE_OWN 0xFF
+#define ALL_MINIONS_MASK 0xFFFFFFFFULL
+
+static inline void __attribute__((always_inline))
+device_barrier(uint32_t num_shires)
 {
-    uint64_t last_global = 0;
+    const uint64_t hart_id   = get_hart_id();
+    const uint32_t shire_id  = (uint32_t)(hart_id >> 6);
+    const uint32_t local_id  = (uint32_t)((hart_id >> 1) & 0x1F); // minion id within shire (0-31)
+    const uint32_t thread    = (uint32_t)(hart_id & 0x1);          // thread 0 or 1
 
-    // FLB within this shire. Elect one hart per shire.
-    // Master shire has only 16 minions (32 harts), others have 32 (64 harts).
-    uint64_t shire_id = get_shire_id();
-    uint32_t harts_in_shire = (shire_id == SHIRE_MASTER)
-        ? (SOC_MINIONS_PER_SHIRE / 2) * NUM_HARTS_PER_MINION
-        : SOC_MINIONS_PER_SHIRE * NUM_HARTS_PER_MINION;
-    uint64_t last_in_shire = flbarrier(0, harts_in_shire - 1);
+    // --- Step 1: Intra-shire barrier (FLB 0, FCC 0) ---
+    if (flbarrier(0, 63)) {
+        // Last hart: flush cache, then wake all local harts
+        flush_shire_l1_l2();
+        fcc_send(SHIRE_OWN, 0, 0, ALL_MINIONS_MASK);
+        fcc_send(SHIRE_OWN, 1, 0, ALL_MINIONS_MASK);
+    }
+    fcc_consume(0);
 
-    if (last_in_shire) {
-        // Global atomic increment. Count arriving shires
-        uint32_t prev = et_global_add_w(et_global_barrier_count, 1);
+    // --- Step 2: Cross-shire sync (FCC 1) ---
+    // Master shire = shire 0.  Uses minions 1..(num_shires-1) as collectors.
+    if (num_shires <= 1) return; // single shire, nothing to do
 
-        if (prev == num_active_shires - 1) {
-            // Last shire. reset counter and fan out FCC to all shires
-            last_global = 1;
-            et_global_swap_w(et_global_barrier_count, 0);
-
-            for (uint64_t sid = 0; sid < 33; sid++) {
-                // Send FCC 1 credit to all harts (both threads) in each shire
-                fcc_send(sid, THREAD_0, FCC_1, 0xFFFFFFFF);
-                fcc_send(sid, THREAD_1, FCC_1, 0xFFFFFFFF);
+    if (shire_id == 0) {
+        // MASTER SHIRE
+        if (local_id > 0 && local_id < num_shires) {
+            // Collector minion: wait for credit from worker shire[local_id]
+            fcc_consume(1);
+            // FLB among all collectors: (num_shires-1) minions × 2 threads
+            uint64_t flb_count = (uint64_t)((num_shires - 1) * 2 - 1);
+            if (flbarrier(0, flb_count)) {
+                // Last collector: broadcast release to entire master shire
+                fcc_send(0, 0, 1, ALL_MINIONS_MASK);
+                fcc_send(0, 1, 1, ALL_MINIONS_MASK);
             }
         }
-    }
+        // ALL master shire harts wait for release
+        fcc_consume(1);
 
-    // All harts wait for the FCC credit from the last shire
-    fcc_consume(FCC_1);
-    return last_global;
-}
-
-// Barrier with scope-derived parameters.
-// Returns 1 if this hart was the last to arrive, 0 otherwise.
-//
-// ET_BARRIER_GLOBAL uses ET_DEFAULT_SHIRE_MASK (32 shires). For a different
-// shire count, use et_barrier_global(n) directly.
-static inline uint64_t __attribute__((always_inline))
-et_barrier(et_barrier_scope_t scope)
-{
-    if (scope == ET_BARRIER_MINION) {
-        uint32_t local_minion = (get_hart_id() >> 1) & 0x1F;
-        uint32_t mask = 1u << local_minion;
-        return shire_barrier(local_minion, 0, 2, mask, mask);
-    } else if (scope == ET_BARRIER_SHIRE) {
-        uint64_t shire_id = get_shire_id();
-        uint32_t thread_count = (shire_id == SHIRE_MASTER) ? 32 : 64;
-        uint32_t mask = (shire_id == SHIRE_MASTER) ? 0xFFFF0000U : 0xFFFFFFFFU;
-        return shire_barrier(0, 1, thread_count, mask, mask);
-    } else { /* ET_BARRIER_GLOBAL */
-        return et_barrier_global(manual_popcountll(ET_DEFAULT_SHIRE_MASK));
-    }
-}
-
-// Raw barrier — caller manages FLB/FCC allocation.
-// Use when et_barrier() doesn't fit (custom thread counts, subgroups,
-// only even harts active, etc).
-//
-//   flb          - which FLB counter (0-31)
-//   fcc          - which FCC counter (0 or 1)
-//   thread_count - number of harts that will call this barrier
-//   mask_t0      - CREDINC bitmask: which minions' hart 0 gets a credit
-//   mask_t1      - CREDINC bitmask: which minions' hart 1 gets a credit
-static inline uint64_t __attribute__((always_inline))
-et_barrier_raw(uint32_t flb, uint32_t fcc, uint32_t thread_count,
-               uint32_t mask_t0, uint32_t mask_t1)
-{
-    return shire_barrier(flb, fcc, thread_count, mask_t0, mask_t1);
-}
-// ----------------------------------------
-// Inter-shire barrier for multi-shire graph execution
-// Based on sync_up_all_minions pattern from ET programmer's reference
-// ----------------------------------------
-// This provides loose synchronization across all minions in every shire.
-// Minions in all shires block waiting for a credit. The only minions that do not block
-// and send credit to others are minions whose local_minion_id == shire_id.
-// After that each shire does an FLB synchronization.
-inline void __attribute__((always_inline))
-inter_shire_barrier(uint64_t hart_id, uint64_t num_shires, uint64_t flb_id, uint64_t fcc_sync, uint64_t fcc_local)
-{
-    uint64_t shire_id = hart_id >> 6;
-    uint64_t local_hart = hart_id & 0x3F;
-    uint64_t minion_id = local_hart >> 1;  // 0-31 within shire
-    uint64_t thread_id = local_hart & 1;   // 0 or 1
-    
-    // Only thread 0 of each minion participates in cross-shire sync
-    if (thread_id == 0) {
-        uint64_t target_min_mask = 1ULL << minion_id;
-        
-        // Minion with minion_id == shire_id sends credit to same minion_id in all other shires
-        if (minion_id == shire_id && minion_id < num_shires) {
-            for (uint64_t target_shire = 0; target_shire < num_shires; target_shire++) {
-                if (shire_id == target_shire) continue;
-                fcc_send(target_shire, 0, fcc_sync, target_min_mask);
-            }
-        } else if (minion_id < num_shires) {
-            // Wait for credit from the minion in its "home" shire
-            __asm__ __volatile__("csrw fcc, %0\n" : : "r"(fcc_sync));
+        // Master shire wakes worker shires: minion[i] wakes shire[i]
+        if (local_id > 0 && local_id < num_shires) {
+            fcc_send(local_id, thread, 1, ALL_MINIONS_MASK);
         }
-    }
-    
-    // Memory fence to ensure all cross-shire communication is visible
-    __asm__ __volatile__("fence" ::: "memory");
-    
-    // Now synchronize all harts within this shire using FLB
-    uint64_t last = flbarrier(flb_id, 63);  // 64 harts per shire
-    
-    if (last) {
-        // Last hart to reach barrier sends FCC to all other harts in shire
-        fcc_send(0xFF, 0, fcc_local, 0xFFFFFFFFULL);
-        fcc_send(0xFF, 1, fcc_local, 0xFFFFFFFFULL);
-    }
-    
-    // Wait for local FCC
-    __asm__ __volatile__("csrw fcc, %0\n" : : "r"(fcc_local));
-    
-    // Final fence
-    __asm__ __volatile__("fence" ::: "memory");
-}
-
-// Use a sense-reversing barrier logic or just a strictly ordered arrival
-// Important: This MUST be in memory visible to the Memory Shire (L3)
-// static uint32_t __attribute__((aligned(64))) et_global_arrival_count = 0;
-
-// static inline uint64_t __attribute__((always_inline))
-// et_barrier_global_fixed(uint64_t num_active_shires)
-// {
-//     uint64_t shire_id = get_shire_id();
-//     uint64_t local_hart = get_hart_id() & 0x3F;
-    
-//     // 1. Local sync: Ensure everyone in THIS shire has finished their work
-//     // Shire 0 (Master) has 32 harts, others have 64
-//     uint32_t expected_local = (shire_id == 0) ? 31 : 63;
-//     uint64_t last_in_shire = flbarrier(0, expected_local);
-
-//     if (last_in_shire) {
-//         // 2. Report to Global: Only the shire leader increments the global counter
-//         // We use a global atomic add. 'aqrl' (acquire/release) is vital here.
-//         uint32_t prev = et_global_add_w(&et_global_arrival_count, 1);
-
-//         if (prev == num_active_shires - 1) {
-//             // I am the absolute last shire to arrive chip-wide.
-            
-//             // 3. Reset for the NEXT barrier use
-//             et_global_swap_w(&et_global_arrival_count, 0);
-
-//             // 4. Broadcast Release
-//             // We loop through all shires. Using 33 is a safe upper bound for 32 compute + 1 master.
-//             for (uint32_t sid = 0; sid < 33; sid++) {
-//                 fcc_send(sid, 0, 1, 0xFFFFFFFFULL); // Release Thread 0s
-//                 fcc_send(sid, 1, 1, 0xFFFFFFFFULL); // Release Thread 1s
-//             }
-//         }
-//     }
-
-//     // 5. All harts wait on FCC 1
-//     // A 'fence' is required AFTER consuming to see the memory updated by other shires
-//     __asm__ __volatile__("csrw fcc, 1" ::: "memory");
-//     __asm__ __volatile__("fence r, r" ::: "memory"); 
-
-//     return 0; // Simplified return
-// }
-// Place these in global memory (L3/DDR visible)
-static uint32_t __attribute__((aligned(64))) global_arrival_count = 0;
-
-inline uint64_t et_barrier_global_fixed(uint32_t num_active_shires) {
-    uint32_t shire_id = (uint32_t)(get_hart_id() >> 6);
-    uint32_t local_hart = (uint32_t)(get_hart_id() & 0x3F);
-    
-    // 1. Local Sync (64 harts per compute shire, 32 for Master)
-    uint32_t expected = (shire_id == 0) ? 31 : 63;
-    uint64_t last_in_shire = flbarrier(0, expected);
-
-    if (last_in_shire) {
-        // 2. CRITICAL: Flush this shire's results to global memory 
-        // before telling other shires we are done.
-        flush_shire_l1_l2(); 
-
-        // 3. Global Atomic Increment using .G variant
-        // Ensure your compiler/asm uses AMOADDG.W (Global), not AMOADDL.W (Local)
-        uint32_t prev;
-        __asm__ __volatile__ (
-            "amoaddg.w.aqrl %0, %2, (%1)" // Custom Esperanto Global Atomic
-            : "=r"(prev)
-            : "r"(&global_arrival_count), "r"(1)
-            : "memory"
-        );
-
-        if (prev == num_active_shires - 1) {
-            // I am the absolute last shire
-            // 4. Reset counter for next node
-            __asm__ __volatile__ ("amoswapg.w x0, x0, (%0)" : : "r"(&global_arrival_count));
-
-            // 5. Broadcast FCC Release to all 33 shires (FCC 1)
-            for (uint32_t sid = 0; sid < 33; sid++) {
-                fcc_send(sid, 0, 1, 0xFFFFFFFFULL); // Thread 0s
-                fcc_send(sid, 1, 1, 0xFFFFFFFFULL); // Thread 1s
-            }
+    } else if (shire_id < num_shires) {
+        // WORKER SHIRE
+        // Minion 0 sends arrival credit to master shire, targeting minion[shire_id]
+        if (local_id == 0) {
+            uint64_t target_minion = 1ULL << shire_id;
+            fcc_send(0, thread, 1, target_minion);
         }
+        // ALL worker shire harts wait for wake-up from master
+        fcc_consume(1);
     }
-
-    // 6. Wait for Release from the last shire
-    // fcc_consume(1) blocks until a credit is received
-    __asm__ __volatile__("csrw 0x821, 1" ::: "memory"); // CSR 0x821 is FCC
-    
-    // 7. Memory Fence after receiving credit to ensure visibility
-    __asm__ __volatile__("fence r, r" ::: "memory");
-
-    return 0;
 }
 
+// ========================================================================
+// Entry point — graph execution loop
+// ========================================================================
 int entry_point(struct ggml_cgraph_et* cg, void* env) {
-    // int64_t hart_id = get_hart_id();
-    // // if(hart_id >=1){return 0;}
-
-    // uint64_t shire_id = hart_id >> 6;    
-    // // uint64_t num_harts = 64; // assuming all harts
-    // // uint32_t match = num_harts - 1;
-    // // uint32_t barrier_num = shire_id % 32;
-    // // const int fcc = 0; // FCC0
-
-    // // -----------------------
-    // // Correct barrier setup
-    // // -----------------------
-    // // Both thread0 and thread1 of each minion participate (64 per shire)
-    // const uint64_t mask_t0 = 0xFFFFFFFFULL; // 32 minions' thread0
-    // const uint64_t mask_t1 = 0xFFFFFFFFULL; // 32 minions' thread1
-
-    // uint64_t num_harts = 64; // thread0 + thread1 of all 32 minions
-    // uint64_t match = num_harts - 1;                     // = 63
-    // uint64_t barrier_num = shire_id % 32;               // dedicated per-shire
-    // const int fcc = 0;                                  // FCC0
-
-
     int64_t hart_id = get_hart_id();
-    uint32_t shire_id = (uint32_t)(hart_id >> 6);
-    uint32_t local_hart = (uint32_t)(hart_id & 0x3F);
-    uint32_t num_shires = 32; // Set this to your total shire count
-
-    // const int local_hart_in_shire = get_hart_id() & 0x3F;
-    // const int shire_leader = (local_hart_in_shire == 0);
 
     // Reconstruct pointers on device side
     struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *) cg->data;
     uint8_t * node_op = (uint8_t *) (node_meta + cg->n_nodes);
     const int n_nodes = cg->n_nodes;
-    
-    
+
     for (int i = 0; i < n_nodes; i++)
     {
         const int node_op_val = node_op[i];
         if (node_op_val == HOST_GGML_OP_NONE) continue;
-        // delay(1000);
-        // shire_barrier(barrier_num, barrier_num % 8,
-        //     num_harts,
-        //     mask_t0, mask_t1);
-        et_barrier_global_fixed(32);
-        
-        // et_barrier_global(32);
 
         switch (node_op_val) {
             case HOST_GGML_OP_MUL:
             case HOST_GGML_OP_ADD:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_MUL/GGML_OP_ADD\n") : et_printf("");
-
                     struct ggml_et_elmap_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-                    // el_map_f32 selects operation by dst.op using the device-side ggml_op enum.
                     const enum ggml_op el_op = (node_op_val == HOST_GGML_OP_MUL) ? GGML_OP_MUL : GGML_OP_ADD;
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, el_op);
 
-                    // Type validation
                     if (params.dst.type != GGML_TYPE_F32 ||
                         params.src0.type != GGML_TYPE_F32 ||
                         params.src1.type != GGML_TYPE_F32) {
                         break;
                     }
-
                     el_map_f32(&params, env);
                 }
                 break;
 
             case HOST_GGML_OP_MUL_MAT:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_MUL_MAT\n") : et_printf("");
-                    // if (hart_id == 0 && i < 5) { et_printf("DEV: enter MUL_MAT\n"); }
                     struct ggml_et_binary_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
@@ -2414,16 +2066,10 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 break;
 
             case HOST_GGML_OP_MUL_MAT_ID:
-                    // hart_id == 0 ? et_printf("GGML_OP_MUL_MAT_ID\n") : et_printf("");
-
-                // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_MUL_MAT_ID \n") : et_printf("");
-                // ggml_et_op_mul(dev_ctx, node);
-                // ggml_et_op_mul_mat_id(dev_ctx, node);
                 break;
 
             case HOST_GGML_OP_RMS_NORM:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_RMS_NORM\n") : et_printf("");
                     struct ggml_et_rms_norm_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_RMS_NORM);
@@ -2436,14 +2082,12 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_GLU:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_GLU\n") : et_printf("");
                     struct ggml_et_glu_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GLU);
                     memcpy(&params.glu_op_type, &node_meta[i].op_params[0], sizeof(int32_t));
                     memcpy(&params.swapped, &node_meta[i].op_params[1], sizeof(int32_t));
-
                     if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
                         glu_f32_impl(&params, env);
                     }
@@ -2452,7 +2096,6 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_SOFT_MAX:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_SOFT_MAX\n") : et_printf("");
                     struct ggml_et_softmax_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
@@ -2460,7 +2103,6 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_SOFT_MAX);
                     memcpy(&params.scale, &node_meta[i].op_params[0], sizeof(float));
                     memcpy(&params.max_bias, &node_meta[i].op_params[1], sizeof(float));
-
                     if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
                         softmax_f32_impl(&params, env);
                     }
@@ -2469,12 +2111,10 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_GET_ROWS:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_GET_ROWS\n") : et_printf("");
                     struct ggml_et_get_rows_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
-
                     if (params.dst.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I32) {
                         get_rows_f32_impl(&params, env);
                     }
@@ -2483,12 +2123,10 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_SET_ROWS:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_SET_ROWS\n") : et_printf("");
                     struct ggml_et_set_rows_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_SET_ROWS);
-
                     if (params.src0.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I64) {
                         set_rows_f32_impl(&params, env);
                     }
@@ -2497,11 +2135,9 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_CONT:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_CONT\n") : et_printf("");
                     struct ggml_et_cont_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_CONT);
-
                     if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
                         cont_f32_impl(&params, env);
                     }
@@ -2510,13 +2146,11 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case HOST_GGML_OP_ROPE:
                 {
-                    // hart_id == 0 ? et_printf("GGML_OP_ROPE\n") : et_printf("");
                     struct ggml_et_rope_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src2, &node_meta[i].src2, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_ROPE);
-                    
                     memcpy(&params.rope_params.n_past, &node_meta[i].op_params[0], sizeof(int32_t));
                     memcpy(&params.rope_params.n_dims, &node_meta[i].op_params[1], sizeof(int32_t));
                     memcpy(&params.rope_params.mode, &node_meta[i].op_params[2], sizeof(int32_t));
@@ -2531,9 +2165,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     for (int j = 0; j < 4; j++) {
                         memcpy(&params.rope_params.sections[j], &node_meta[i].op_params[11 + j], sizeof(int32_t));
                     }
-
-                    if (params.dst.type == GGML_TYPE_F32 && 
-                        params.src0.type == GGML_TYPE_F32 && 
+                    if (params.dst.type == GGML_TYPE_F32 &&
+                        params.src0.type == GGML_TYPE_F32 &&
                         params.src1.type == GGML_TYPE_I32) {
                         rope_f32_impl(&params, env);
                     }
@@ -2544,41 +2177,17 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case HOST_GGML_OP_VIEW:
             case HOST_GGML_OP_PERMUTE:
             case HOST_GGML_OP_TRANSPOSE:
-                {
-                    // hart_id == 0 ? et_printf("***DEV***: Executed GGML_OP_RESHAPE/VIEW/PERMUTE/TRANSPOSE \n") : et_printf("");
-                    // These are metadata-only operations that require no computation
-                    // GGML_LOG_DEBUG("ET: No-op metadata operation: %s\n", ggml_op_name(node->op));
-                }
                 break;
 
             default:
-                {
-                    // hart_id == 0 ? et_printf("***DEV***: Executed DEFAULT/UNSUPPORTED OP %d \n", node_op_val) : et_printf("");
-                    // GGML_LOG_ERROR("ET: Unsupported operation in graph: %s\n", ggml_op_name(node->op));
-                }
-                break; //GGML_STATUS_FAILED;
+                break;
         }
 
-        // Publish this node's writes and wait for all harts in THIS shire.
-        // Intra-shire barrier is fast and needed for correctness between operations.
-        // __asm__ __volatile__("fence" ::: "memory");
-        // if (shire_leader) {
-        //     flush_shire_l1_l2();
-        // }
-        // shire_barrier(barrier_num, fcc,
-        //     num_harts,
-        //     mask_t0, mask_t1);
-
-        // inter_shire_barrier(hart_id, 32, (barrier_num + 1) % 32, 1, 2);
-        // FENCE
-        // global_barrier(shire_id, local_hart, num_shires, 0);
-
+        // Synchronize all harts across all shires after each graph node.
+        // This ensures operation N completes (and its writes are globally visible)
+        // before any hart starts operation N+1.
+        device_barrier(32);
     }
-
-    // NOTE: Inter-shire barrier not needed when using single shire (0x1).
-    // When multi-shire with proper work distribution is implemented, uncomment:
-    // inter_shire_barrier(hart_id, num_active_shires, (barrier_num + 1) % 32, 1, 2);
-    // inter_shire_barrier(hart_id, 32, (barrier_num + 1) % 32, 1, 2);
 
     return 0;
 }
