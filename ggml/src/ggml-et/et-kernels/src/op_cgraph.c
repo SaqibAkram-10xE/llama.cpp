@@ -1915,6 +1915,57 @@ uint64_t shire_barrier(uint64_t barrier_num,
     return last;
 }
 
+// Use a dedicated FCC register for global sync (e.g., FCC 1) to avoid 
+// conflicts with shire_barrier (which uses FCC 0)
+#define FCC_GLOBAL_SYNC 1
+
+// Modified fcc_send to ensure it handles the remote shire addressing correctly
+inline void fcc_send_remote(uint32_t target_shire, uint32_t thread, uint32_t fcc_reg, uint64_t hart_mask) {
+    // ESR_SHIRE macro uses the 22-bit shift for Shire ID as per manual
+    volatile uint64_t* fcc_addr = (uint64_t*)ESR_SHIRE(target_shire, FCC_CREDINC_0) + ((thread << 1) | fcc_reg);
+    *fcc_addr = hart_mask;
+}
+
+void global_barrier(uint32_t shire_id, uint32_t local_hart, uint32_t num_shires, uint32_t flb_id) {
+    // Step 1: Intra-shire sync (everyone in this shire arrived)
+    // 63 is the match value for 64 harts
+    flbarrier(flb_id, 63); 
+
+    // Step 2: Hierarchical Sync
+    if (local_hart == 0) {
+        if (shire_id == 0) {
+            // MASTER SHIRE logic:
+            // Wait for a credit from every OTHER shire's leader
+            for (uint32_t s = 1; s < num_shires; s++) {
+                __asm__ __volatile__("csrw fcc, %0" : : "r"(FCC_GLOBAL_SYNC));
+            }
+            // Once all reported, broadcast release to all shires (including itself)
+            // 0xFF in the shire field of ESR address targets "all shires" or "local" 
+            // depending on config, but explicit loop is safer for inter-shire.
+            for (uint32_t s = 0; s < num_shires; s++) {
+                // Send to Hart 0 of the target shire
+                fcc_send_remote(s, 0, FCC_GLOBAL_SYNC, 0x1ULL); 
+            }
+        } else {
+            // WORKER SHIRE logic:
+            // Send report to Master Shire (Shire 0, Hart 0)
+            fcc_send_remote(0, 0, FCC_GLOBAL_SYNC, 0x1ULL);
+            // Wait for release from Master
+            __asm__ __volatile__("csrw fcc, %0" : : "r"(FCC_GLOBAL_SYNC));
+        }
+        
+        // Step 3: Local Release
+        // The leader (Hart 0) now releases everyone else in the local shire
+        // Send to both threads (T0 mask, T1 mask)
+        fcc_send_remote(0xFF, 0, FCC_GLOBAL_SYNC, 0xFFFFFFFFULL);
+        fcc_send_remote(0xFF, 1, FCC_GLOBAL_SYNC, 0xFFFFFFFFULL);
+    } else {
+        // All other harts wait for the local release from their Shire Leader
+        __asm__ __volatile__("csrw fcc, %0" : : "r"(FCC_GLOBAL_SYNC));
+    }
+    
+    __asm__ __volatile__("fence" ::: "memory");
+}
 #define MCACHE_CONTROL 0x7CA // Machine-mode CSR
 #define UCACHE_CONTROL 0x801 // User-mode shadow CSR
 
@@ -1999,54 +2050,37 @@ inter_shire_barrier(uint64_t hart_id, uint64_t num_shires, uint64_t flb_id, uint
 }
 
 int entry_point(struct ggml_cgraph_et* cg, void* env) {
+    // int64_t hart_id = get_hart_id();
+    // // if(hart_id >=1){return 0;}
+
+    // uint64_t shire_id = hart_id >> 6;    
+    // // uint64_t num_harts = 64; // assuming all harts
+    // // uint32_t match = num_harts - 1;
+    // // uint32_t barrier_num = shire_id % 32;
+    // // const int fcc = 0; // FCC0
+
+    // // -----------------------
+    // // Correct barrier setup
+    // // -----------------------
+    // // Both thread0 and thread1 of each minion participate (64 per shire)
+    // const uint64_t mask_t0 = 0xFFFFFFFFULL; // 32 minions' thread0
+    // const uint64_t mask_t1 = 0xFFFFFFFFULL; // 32 minions' thread1
+
+    // uint64_t num_harts = 64; // thread0 + thread1 of all 32 minions
+    // uint64_t match = num_harts - 1;                     // = 63
+    // uint64_t barrier_num = shire_id % 32;               // dedicated per-shire
+    // const int fcc = 0;                                  // FCC0
+
+
     int64_t hart_id = get_hart_id();
-    // if(hart_id >=1){return 0;}
-
-    uint64_t shire_id = hart_id >> 6;    
-    // uint64_t num_harts = 64; // assuming all harts
-    // uint32_t match = num_harts - 1;
-    // uint32_t barrier_num = shire_id % 32;
-    // const int fcc = 0; // FCC0
-
-    // -----------------------
-    // Correct barrier setup
-    // -----------------------
-    // Both thread0 and thread1 of each minion participate (64 per shire)
-    const uint64_t mask_t0 = 0xFFFFFFFFULL; // 32 minions' thread0
-    const uint64_t mask_t1 = 0xFFFFFFFFULL; // 32 minions' thread1
-
-    uint64_t num_harts = 64; // thread0 + thread1 of all 32 minions
-    uint64_t match = num_harts - 1;                     // = 63
-    uint64_t barrier_num = shire_id % 32;               // dedicated per-shire
-    const int fcc = 0;                                  // FCC0
-
+    uint32_t shire_id = (uint32_t)(hart_id >> 6);
+    uint32_t local_hart = (uint32_t)(hart_id & 0x3F);
+    uint32_t num_shires = 32; // Set this to your total shire count
 
     // Reconstruct pointers on device side
     struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *) cg->data;
     uint8_t * node_op = (uint8_t *) (node_meta + cg->n_nodes);
     const int n_nodes = cg->n_nodes;
-
-    // Verify struct sizes for ABI compatibility
-    // if (hart_id == 0) {
-    //     et_printf("DEVICE: sizeof(ggml_cgraph_et)=%d, sizeof(ggml_node_meta_et)=%d, sizeof(ggml_tensor_et)=%d\n",
-    //               (int)sizeof(struct ggml_cgraph_et), (int)sizeof(struct ggml_node_meta_et), (int)sizeof(struct ggml_tensor_et));
-    //     et_printf("DEVICE: n_nodes=%d, n_leafs=%d, size=%d\n", n_nodes, cg->n_leafs, cg->size);
-    //     for (int dbg = 0; dbg < 3 && dbg < n_nodes; dbg++) {
-    //         et_printf("DEV Node %d: op=%d dst.data=0x%lx dst.type=%d ne=[%ld,%ld,%ld,%ld]\n",
-    //                   dbg, (int)node_op[dbg],
-    //                   (unsigned long)node_meta[dbg].dst.data,
-    //                   (int)node_meta[dbg].dst.type,
-    //                   (long)node_meta[dbg].dst.ne[0], (long)node_meta[dbg].dst.ne[1],
-    //                   (long)node_meta[dbg].dst.ne[2], (long)node_meta[dbg].dst.ne[3]);
-    //         et_printf("DEV Node %d: src0.data=0x%lx src0.type=%d ne=[%ld,%ld,%ld,%ld]\n",
-    //                   dbg,
-    //                   (unsigned long)node_meta[dbg].src0.data,
-    //                   (int)node_meta[dbg].src0.type,
-    //                   (long)node_meta[dbg].src0.ne[0], (long)node_meta[dbg].src0.ne[1],
-    //                   (long)node_meta[dbg].src0.ne[2], (long)node_meta[dbg].src0.ne[3]);
-    //     }
-    // }
-
     
     const int local_hart_in_shire = get_hart_id() & 0x3F;
     const int shire_leader = (local_hart_in_shire == 0);
@@ -2056,10 +2090,10 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
         const int node_op_val = node_op[i];
         if (node_op_val == HOST_GGML_OP_NONE) continue;
         // delay(1000);
-        shire_barrier(barrier_num, barrier_num % 8,
-            num_harts,
-            mask_t0, mask_t1);
-
+        // shire_barrier(barrier_num, barrier_num % 8,
+        //     num_harts,
+        //     mask_t0, mask_t1);
+        
         switch (node_op_val) {
             case HOST_GGML_OP_MUL:
             case HOST_GGML_OP_ADD:
@@ -2268,6 +2302,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
         //     mask_t0, mask_t1);
 
         // inter_shire_barrier(hart_id, 32, (barrier_num + 1) % 32, 1, 2);
+        FENCE
+        global_barrier(shire_id, local_hart, num_shires, 0);
 
     }
 
