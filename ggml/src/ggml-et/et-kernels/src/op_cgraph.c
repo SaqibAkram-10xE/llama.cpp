@@ -1963,7 +1963,7 @@ device_barrier(uint32_t num_shires)
     // --- Step 1: Intra-shire barrier (FLB 0, FCC 0) ---
     if (flbarrier(0, 63)) {
         // Last hart: flush cache, then wake all local harts
-        flush_shire_l1_l2();
+        // flush_shire_l1_l2();
         fcc_send(SHIRE_OWN, 0, 0, ALL_MINIONS_MASK);
         fcc_send(SHIRE_OWN, 1, 0, ALL_MINIONS_MASK);
     }
