@@ -1928,7 +1928,7 @@ uint64_t flbarrier(uint64_t barrier_num, uint64_t match)
 
 // Evict whole shire L1+L2 via firmware syscall
 static inline void __attribute__((always_inline)) flush_shire_l1_l2(void) {
-    register uint64_t a0 __asm__("a0") = 11; // SYSCALL_CACHE_OPS_EVICT_WHOLE_L1_L2
+    register uint64_t a0 __asm__("a0") = 11; // SYSCALL_CACHE_OPS_EVICT_WHOLE_L1_L2 11
     register uint64_t a1 __asm__("a1") = 0;
     register uint64_t a2 __asm__("a2") = 0;
     register uint64_t a3 __asm__("a3") = 0;
@@ -1963,7 +1963,7 @@ device_barrier(uint32_t num_shires)
     // --- Step 1: Intra-shire barrier (FLB 0, FCC 0) ---
     if (flbarrier(0, 63)) {
         // Last hart: flush cache, then wake all local harts
-        // flush_shire_l1_l2();
+        flush_shire_l1_l2();
         fcc_send(SHIRE_OWN, 0, 0, ALL_MINIONS_MASK);
         fcc_send(SHIRE_OWN, 1, 0, ALL_MINIONS_MASK);
     }
@@ -2003,6 +2003,73 @@ device_barrier(uint32_t num_shires)
         // ALL worker shire harts wait for wake-up from master
         fcc_consume(1);
     }
+
+
+}
+
+
+// ========================================================================
+// Refined device barrier — overlaps worker→master FCC send with local wake-up
+// to reduce latency. Uses FLB 1 for the master-shire collector gather
+// (FLB 0 was used by intra-shire step).
+// ========================================================================
+static inline void __attribute__((always_inline))
+device_barrier_refined(uint32_t num_shires)
+{
+    const uint64_t hart_id   = get_hart_id();
+    const uint32_t shire_id  = (uint32_t)(hart_id >> 6);
+    const uint32_t local_id  = (uint32_t)((hart_id >> 1) & 0x1F);
+    const uint32_t thread    = (uint32_t)(hart_id & 0x1);
+
+    // 1. Intra-shire: Everyone syncs via FLB 0.
+    uint64_t last_in_shire = flbarrier(0, 63);
+
+    if (last_in_shire) {
+        // Only the leader flushes.
+        flush_shire_l1_l2();
+
+        // Signal local completion to Master Shire immediately after flush
+        if (shire_id > 0 && shire_id < num_shires) {
+            // Worker Leader: Send arrival to your specific collector in Shire 0
+            fcc_send(0, 0, 1, 1ULL << shire_id);
+        }
+
+        // Wake up local harts (FCC 0)
+        fcc_send(SHIRE_OWN, 0, 0, ALL_MINIONS_MASK);
+        fcc_send(SHIRE_OWN, 1, 0, ALL_MINIONS_MASK);
+    }
+    fcc_consume(0);
+
+    // 2. Global Coordination (FCC 1)
+    if (num_shires <= 1) return;
+
+    if (shire_id == 0) {
+        // MASTER SHIRE:
+        // Minions 1-31 are the "Collectors"
+        if (local_id > 0 && local_id < num_shires) {
+            fcc_consume(1); // Wait for your assigned worker
+        }
+
+        // Everyone in Shire 0 waits here.
+        // By including everyone in this FLB, we ensure the whole shire is ready.
+        if (flbarrier(1, 63)) {
+            // The absolute last hart in the Master Shire now triggers the fan-out
+            fcc_send(SHIRE_OWN, 0, 1, ALL_MINIONS_MASK);
+            fcc_send(SHIRE_OWN, 1, 1, ALL_MINIONS_MASK);
+        }
+        fcc_consume(1);
+
+        // Parallel Release: Collectors wake their respective workers
+        if (local_id > 0 && local_id < num_shires) {
+            fcc_send(local_id, thread, 1, ALL_MINIONS_MASK);
+        }
+    } else {
+        // WORKER SHIRE:
+        // All threads just wait for the Master's parallel release
+        fcc_consume(1);
+    }
+
+    __asm__ __volatile__("fence r, r" ::: "memory");
 }
 
 // ========================================================================
@@ -2183,10 +2250,18 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 break;
         }
 
-        // Synchronize all harts across all shires after each graph node.
-        // This ensures operation N completes (and its writes are globally visible)
-        // before any hart starts operation N+1.
-        device_barrier(32);
+        // Synchronize all harts across all shires after each compute node.
+        // Skip barrier for metadata-only ops (RESHAPE/VIEW/PERMUTE/TRANSPOSE)
+        // since they don't touch data.
+        if (node_op_val != HOST_GGML_OP_RESHAPE &&
+            node_op_val != HOST_GGML_OP_VIEW &&
+            node_op_val != HOST_GGML_OP_PERMUTE &&
+            node_op_val != HOST_GGML_OP_TRANSPOSE &&
+            node_op_val != HOST_GGML_OP_NONE) {
+            // device_barrier_refined(32);
+            device_barrier(32);
+            
+        }
     }
 
     return 0;
