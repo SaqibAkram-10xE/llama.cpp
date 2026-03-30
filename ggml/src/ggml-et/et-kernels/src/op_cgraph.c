@@ -1750,13 +1750,8 @@ int mul_mat_f32(struct ggml_et_binary_params* params, void* env) {
 }
 
 int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
-    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
-    if (!kernel_env) return -1;
-       
-    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    int num_threads = get_num_threads(kernel_env->shire_mask);
-    
-    if (thread_id < 0) return 0;
+    uint64_t hart_id = get_hart_id();
+    const int64_t stride_m = 2048;
 
     // Matrix dimensions
     const int64_t K    = params->src0.ne[0];
@@ -1771,11 +1766,11 @@ int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
     const size_t nb01 = params->src0.nb[1];
     const size_t nb02 = params->src0.nb[2];
     const size_t nb03 = params->src0.nb[3];
-    
+
     const size_t nb11 = params->src1.nb[1];
     const size_t nb12 = params->src1.nb[2];
     const size_t nb13 = params->src1.nb[3];
-    
+
     const size_t nbd1 = params->dst.nb[1];
     const size_t nbd2 = params->dst.nb[2];
     const size_t nbd3 = params->dst.nb[3];
@@ -1803,7 +1798,7 @@ int mul_mat_Q8_0(struct ggml_et_binary_params* params, void* env) {
                 // src1 is F32, so column pointer moves by nb11
                 const float* b_col_base = (const float*)(src1_ptr2 + n * nb11);
 
-                for (int64_t m = thread_id; m < M; m += num_threads) {
+                for (int64_t m = hart_id; m < M; m += stride_m) {
                     // src0 is Q8_0 blocks, row pointer moves by nb01
                     const block_q8_0* q_row = (const block_q8_0*)(src0_ptr2 + m * nb01);
                     float sum = 0.0f;
@@ -2008,69 +2003,6 @@ device_barrier(uint32_t num_shires)
 }
 
 
-// ========================================================================
-// Refined device barrier — overlaps worker→master FCC send with local wake-up
-// to reduce latency. Uses FLB 1 for the master-shire collector gather
-// (FLB 0 was used by intra-shire step).
-// ========================================================================
-static inline void __attribute__((always_inline))
-device_barrier_refined(uint32_t num_shires)
-{
-    const uint64_t hart_id   = get_hart_id();
-    const uint32_t shire_id  = (uint32_t)(hart_id >> 6);
-    const uint32_t local_id  = (uint32_t)((hart_id >> 1) & 0x1F);
-    const uint32_t thread    = (uint32_t)(hart_id & 0x1);
-
-    // 1. Intra-shire: Everyone syncs via FLB 0.
-    uint64_t last_in_shire = flbarrier(0, 63);
-
-    if (last_in_shire) {
-        // Only the leader flushes.
-        flush_shire_l1_l2();
-
-        // Signal local completion to Master Shire immediately after flush
-        if (shire_id > 0 && shire_id < num_shires) {
-            // Worker Leader: Send arrival to your specific collector in Shire 0
-            fcc_send(0, 0, 1, 1ULL << shire_id);
-        }
-
-        // Wake up local harts (FCC 0)
-        fcc_send(SHIRE_OWN, 0, 0, ALL_MINIONS_MASK);
-        fcc_send(SHIRE_OWN, 1, 0, ALL_MINIONS_MASK);
-    }
-    fcc_consume(0);
-
-    // 2. Global Coordination (FCC 1)
-    if (num_shires <= 1) return;
-
-    if (shire_id == 0) {
-        // MASTER SHIRE:
-        // Minions 1-31 are the "Collectors"
-        if (local_id > 0 && local_id < num_shires) {
-            fcc_consume(1); // Wait for your assigned worker
-        }
-
-        // Everyone in Shire 0 waits here.
-        // By including everyone in this FLB, we ensure the whole shire is ready.
-        if (flbarrier(1, 63)) {
-            // The absolute last hart in the Master Shire now triggers the fan-out
-            fcc_send(SHIRE_OWN, 0, 1, ALL_MINIONS_MASK);
-            fcc_send(SHIRE_OWN, 1, 1, ALL_MINIONS_MASK);
-        }
-        fcc_consume(1);
-
-        // Parallel Release: Collectors wake their respective workers
-        if (local_id > 0 && local_id < num_shires) {
-            fcc_send(local_id, thread, 1, ALL_MINIONS_MASK);
-        }
-    } else {
-        // WORKER SHIRE:
-        // All threads just wait for the Master's parallel release
-        fcc_consume(1);
-    }
-
-    __asm__ __volatile__("fence r, r" ::: "memory");
-}
 
 // ========================================================================
 // Entry point — graph execution loop
