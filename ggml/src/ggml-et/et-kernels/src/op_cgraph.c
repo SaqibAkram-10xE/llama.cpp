@@ -2433,11 +2433,32 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     const size_t nb00 = src0->nb[0], nb01 = src0->nb[1], nb02 = src0->nb[2], nb03 = src0->nb[3];
     const size_t nb10 = src1->nb[0], nb11 = src1->nb[1], nb12 = src1->nb[2], nb13 = src1->nb[3];
 
-    // Calculate total number of rows (flatten dimensions 1,2,3)
-    const int64_t total_rows = ne1 * ne2 * ne3;
+    // Calculate total number of rows using src0's dimensions (matching CPU reference)
+    // For element-wise ops, src0 and dst have the same shape
+    const int64_t total_rows = ne02 * ne01 * ne03;
+    // const int64_t total_rows = ne1 * ne2 * ne3;
 
-    // Distribute rows across threads using ceiling division to handle remainder
-    const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
+    // Cache line alignment: prevent false sharing between threads
+    // Each cache line is 64 bytes = 16 floats
+    const int64_t CACHE_LINE_BYTES = 64;
+    const int64_t row_bytes = ne00 * sizeof(float);
+    const int64_t row_gcd = gcd_i64(row_bytes, CACHE_LINE_BYTES);
+    const int64_t rows_per_cache_group = CACHE_LINE_BYTES / row_gcd;
+
+    // Distribute rows across threads, rounding up to cache line boundaries
+    int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
+    
+    // Round rows_per_thread up to nearest multiple of rows_per_cache_group
+    // This ensures each thread's memory region starts at a cache line boundary
+    if (rows_per_cache_group > 1) {
+        rows_per_thread = ((rows_per_thread + rows_per_cache_group - 1) / rows_per_cache_group) * rows_per_cache_group;
+    }
+
+    // // Calculate total number of rows (flatten dimensions 1,2,3)
+    // const int64_t total_rows = ne1 * ne2 * ne3;
+
+    // // Distribute rows across threads using ceiling division to handle remainder
+    // const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
     const int64_t start_row = thread_id * rows_per_thread;
     const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
@@ -2476,12 +2497,15 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
 
             switch (operation) {
                 case GGML_OP_MUL:
-                    block_mul_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
+                    block_mul(dst_block, src0_block, src1_ptr, (int)ne10);
+                    // block_mul_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
                     break;
                 case GGML_OP_ADD:
-                    block_add_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
+                    block_add(dst_block, src0_block, src1_ptr, (int)ne10);
+                    // block_add_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
                     break;
                 case GGML_OP_SUB:
+                    // block_sub(dst_block, src0_block, src1_ptr, (int)ne10);
                     block_sub_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
                     break;
                 default:
