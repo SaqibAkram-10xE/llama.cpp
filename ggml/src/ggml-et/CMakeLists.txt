@@ -67,6 +67,7 @@ set(KERNELS
     ssm_conv_f32
     ssm_scan_f32
     memops
+    op_cgraph
 )
 
 # Build ET kernels (cross-compiled in subdirectory scope)

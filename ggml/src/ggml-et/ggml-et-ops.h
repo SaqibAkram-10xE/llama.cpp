@@ -293,6 +293,30 @@ struct ggml_et_scale_params {
     float bias;           // Bias (additive offset)
 };
 
+struct ggml_tensor_et {
+    int64_t ne[4];      // dimensions
+    uint64_t nb[4];     // strides (fixed-width for ABI compatibility)
+    enum ggml_type type;
+    uint64_t data;      // Device pointer (fixed-width for ABI compatibility)
+};
+
+struct ggml_node_meta_et {
+    struct ggml_tensor_et src0;
+    struct ggml_tensor_et src1;
+    struct ggml_tensor_et src2;
+    struct ggml_tensor_et dst;
+    int32_t op_params[16];
+};
+
+struct ggml_cgraph_et {
+    int size;
+    int n_nodes;
+    int n_leafs;
+    struct ggml_tensor ** nodes;
+
+    uint8_t data[];   // flexible array at end
+};
+
 bool ggml_et_op_cumsum(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
 bool ggml_et_op_sqr(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
 bool ggml_et_op_unary(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* node);
@@ -331,3 +355,4 @@ bool ggml_et_op_ssm_scan(ggml_backend_et_device_context* dev_ctx, const ggml_ten
 bool ggml_et_op_rms_norm_mul(ggml_backend_et_device_context* dev_ctx,
                              const ggml_tensor* rms_norm_node,
                              const ggml_tensor* mul_node);
+bool ggml_et_op_cg(ggml_backend_et_device_context* dev_ctx, ggml_cgraph* cgraph);

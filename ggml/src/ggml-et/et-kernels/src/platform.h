@@ -98,6 +98,94 @@ static inline int get_num_threads(uint64_t shire_mask) {
 }
 
 //******************************************************************************
+// Cache Operatons
+//******************************************************************************
+
+// Prefetch nlines cache lines into L2 starting at addr, with stride bytes
+// between each line.  Uses PrefetchVA (CSR 0x81F) with dest=L2 (bits 59:58=01).
+//
+// The hardware fetches nlines consecutive cache-line-sized (64B) blocks from
+// DRAM/L3 into L2, starting at addr and advancing by stride bytes per line.
+// This is asynchronous — use WAIT_PREFETCH_0 or WAIT_PREFETCH_1 if the hart
+// must stall until the prefetch completes.
+//
+// NOTE: nlines is encoded in a 4-bit field (max 16). Passing nlines > 16
+// silently truncates. DO NOT pass nlines > 16.
+static inline void __attribute__((always_inline))
+l2_prefetch(const void *addr, uint64_t nlines, uint64_t stride)
+{
+    uint64_t csr_val = (0x1ULL << 58) |
+                       ((uint64_t)addr & 0xFFFFFFFFFFC0ULL) |
+                       ((nlines - 1) & 0xF);
+
+    __asm__ __volatile__ (
+        "mv    x31, %[stride]\n"
+        "csrw  0x81f, %[val]\n"
+        :
+        : [stride] "r" (stride & 0xFFFFFFFFFFC0ULL),
+          [val] "r" (csr_val)
+        : "x31", "memory"
+    );
+}
+
+// Flush nlines cache lines at stride apart starting at addr from L1 to L2.
+// Uses FlushVA (CSR 0x8BF).  Caller must FENCE before (to drain stores to L1)
+// and WAIT_CACHEOPS after (to ensure flush completes before tensor loads).
+//
+// NOTE: nlines is encoded in a 4-bit field (max 16). Passing nlines > 16
+// silently truncates. DO NOT pass nlines > 16.
+static inline void __attribute__((always_inline))
+flush_to_l2(const void *addr, uint64_t nlines, uint64_t stride)
+{
+    // dest=01 (L2) in bits 59:58, VA in bits 47:6, numlines-1 in bits 3:0
+    uint64_t csr_val = (0x1ULL << 58) |
+                       ((uint64_t)addr & 0xFFFFFFFFFFC0ULL) |
+                       ((nlines - 1) & 0xF);
+    uint64_t x31_val = stride & 0xFFFFFFFFFFC0ULL;
+
+    __asm__ __volatile__(
+        "mv x31, %[x31]\n"
+        "csrw 0x8BF, %[val]\n"
+        :
+        : [x31] "r"(x31_val), [val] "r"(csr_val)
+        : "x31", "memory"
+    );
+}
+
+// Evict nlines cache lines at stride apart starting at addr from L1 to L2.
+// Uses EvictVA (CSR 0x89F).  Unlike flush_to_l2, this guarantees the line is
+// NOT present in L1 after the operation - subsequent loads will miss and go
+// to L2/SCP. Caller must FENCE before and WAIT_CACHEOPS after.
+//
+// NOTE: nlines is encoded in a 4-bit field (max 16). DO NOT pass nlines > 16.
+static inline void __attribute__((always_inline))
+evict_to_l2(const void *addr, uint64_t nlines, uint64_t stride)
+{
+    // dest=01 (L2) in bits 59:58, VA in bits 47:6, numlines-1 in bits 3:0
+    uint64_t csr_val = (0x1ULL << 58) |
+                       ((uint64_t)addr & 0xFFFFFFFFFFC0ULL) |
+                       ((nlines - 1) & 0xF);
+    uint64_t x31_val = stride & 0xFFFFFFFFFFC0ULL;
+
+    __asm__ __volatile__(
+        "mv x31, %[x31]\n"
+        "csrw 0x89F, %[val]\n"
+        :
+        : [x31] "r"(x31_val), [val] "r"(csr_val)
+        : "x31", "memory"
+    );
+}
+
+// Evict whole shire L1+L2 via firmware syscall
+static inline void __attribute__((always_inline)) flush_shire_l1_l2(void) {
+    register uint64_t a0 __asm__("a0") = 11; // SYSCALL_CACHE_OPS_EVICT_WHOLE_L1_L2 11
+    register uint64_t a1 __asm__("a1") = 0;
+    register uint64_t a2 __asm__("a2") = 0;
+    register uint64_t a3 __asm__("a3") = 0;
+    __asm__ __volatile__("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3) : "memory");
+}
+
+//******************************************************************************
 // Synchronization Primitives
 //******************************************************************************
 
@@ -287,6 +375,76 @@ et_barrier_raw(uint32_t flb, uint32_t fcc, uint32_t thread_count,
     return shire_barrier(flb, fcc, thread_count, mask_t0, mask_t1);
 }
 
+// ========================================================================
+// Device barrier: synchronizes ALL harts across ALL 32 compute shires.
+// Ported from gp-sdk sync.h barrier<Scope::device>.
+//
+// Protocol (hierarchical, using master shire 0 as coordinator):
+//   1. Intra-shire barrier (FLB 0 + FCC 0) — all 64 harts per shire sync
+//   2. Shire leader flushes L1/L2 so writes are globally visible
+//   3. Worker shires: minion 0 sends FCC 1 to master shire (to minion[shire_id])
+//   4. Master shire: collector minions 1-31 each consume one FCC 1, then FLB
+//   5. Last collector broadcasts FCC 1 to all master shire harts
+//   6. All master shire harts consume FCC 1
+//   7. Collector minions 1-31 each send FCC 1 to wake their assigned worker shire
+//   8. Worker shire harts consume FCC 1 and proceed
+// ========================================================================
+#define SHIRE_OWN 0xFF
+#define ALL_MINIONS_MASK 0xFFFFFFFFULL
+
+static inline void __attribute__((always_inline))
+device_barrier(uint32_t num_shires)
+{
+    const uint64_t hart_id   = get_hart_id();
+    const uint32_t shire_id  = (uint32_t)(hart_id >> 6);
+    const uint32_t local_id  = (uint32_t)((hart_id >> 1) & 0x1F); // minion id within shire (0-31)
+    const uint32_t thread    = (uint32_t)(hart_id & 0x1);          // thread 0 or 1
+
+    // --- Step 1: Intra-shire barrier (FLB 0, FCC 0) ---
+    if (flbarrier(0, 63)) {
+        // Last hart: flush cache, then wake all local harts
+        flush_shire_l1_l2();
+        fcc_send(SHIRE_OWN, 0, 0, ALL_MINIONS_MASK);
+        fcc_send(SHIRE_OWN, 1, 0, ALL_MINIONS_MASK);
+    }
+    fcc_consume(0);
+
+    // --- Step 2: Cross-shire sync (FCC 1) ---
+    // Master shire = shire 0.  Uses minions 1..(num_shires-1) as collectors.
+    if (num_shires <= 1) return; // single shire, nothing to do
+
+    if (shire_id == 0) {
+        // MASTER SHIRE
+        if (local_id > 0 && local_id < num_shires) {
+            // Collector minion: wait for credit from worker shire[local_id]
+            fcc_consume(1);
+            // FLB among all collectors: (num_shires-1) minions × 2 threads
+            uint64_t flb_count = (uint64_t)((num_shires - 1) * 2 - 1);
+            if (flbarrier(0, flb_count)) {
+                // Last collector: broadcast release to entire master shire
+                fcc_send(0, 0, 1, ALL_MINIONS_MASK);
+                fcc_send(0, 1, 1, ALL_MINIONS_MASK);
+            }
+        }
+        // ALL master shire harts wait for release
+        fcc_consume(1);
+
+        // Master shire wakes worker shires: minion[i] wakes shire[i]
+        if (local_id > 0 && local_id < num_shires) {
+            fcc_send(local_id, thread, 1, ALL_MINIONS_MASK);
+        }
+    } else if (shire_id < num_shires) {
+        // WORKER SHIRE
+        // Minion 0 sends arrival credit to master shire, targeting minion[shire_id]
+        if (local_id == 0) {
+            uint64_t target_minion = 1ULL << shire_id;
+            fcc_send(0, thread, 1, target_minion);
+        }
+        // ALL worker shire harts wait for wake-up from master
+        fcc_consume(1);
+    }
+}
+
 //******************************************************************************
 // Tensor Engine Wait & Error Macros
 //
@@ -424,85 +582,6 @@ et_global_l2scp(uint64_t offset)
     return (void *)(L2SCP_BASE
                     | (1ULL << 30)
                     | (offset & 0x3FFFFFFF));
-}
-
-//******************************************************************************
-// Cache Operatons
-//******************************************************************************
-
-// Prefetch nlines cache lines into L2 starting at addr, with stride bytes
-// between each line.  Uses PrefetchVA (CSR 0x81F) with dest=L2 (bits 59:58=01).
-//
-// The hardware fetches nlines consecutive cache-line-sized (64B) blocks from
-// DRAM/L3 into L2, starting at addr and advancing by stride bytes per line.
-// This is asynchronous — use WAIT_PREFETCH_0 or WAIT_PREFETCH_1 if the hart
-// must stall until the prefetch completes.
-//
-// NOTE: nlines is encoded in a 4-bit field (max 16). Passing nlines > 16
-// silently truncates. DO NOT pass nlines > 16.
-static inline void __attribute__((always_inline))
-l2_prefetch(const void *addr, uint64_t nlines, uint64_t stride)
-{
-    uint64_t csr_val = (0x1ULL << 58) |
-                       ((uint64_t)addr & 0xFFFFFFFFFFC0ULL) |
-                       ((nlines - 1) & 0xF);
-
-    __asm__ __volatile__ (
-        "mv    x31, %[stride]\n"
-        "csrw  0x81f, %[val]\n"
-        :
-        : [stride] "r" (stride & 0xFFFFFFFFFFC0ULL),
-          [val] "r" (csr_val)
-        : "x31", "memory"
-    );
-}
-
-// Flush nlines cache lines at stride apart starting at addr from L1 to L2.
-// Uses FlushVA (CSR 0x8BF).  Caller must FENCE before (to drain stores to L1)
-// and WAIT_CACHEOPS after (to ensure flush completes before tensor loads).
-//
-// NOTE: nlines is encoded in a 4-bit field (max 16). Passing nlines > 16
-// silently truncates. DO NOT pass nlines > 16.
-static inline void __attribute__((always_inline))
-flush_to_l2(const void *addr, uint64_t nlines, uint64_t stride)
-{
-    // dest=01 (L2) in bits 59:58, VA in bits 47:6, numlines-1 in bits 3:0
-    uint64_t csr_val = (0x1ULL << 58) |
-                       ((uint64_t)addr & 0xFFFFFFFFFFC0ULL) |
-                       ((nlines - 1) & 0xF);
-    uint64_t x31_val = stride & 0xFFFFFFFFFFC0ULL;
-
-    __asm__ __volatile__(
-        "mv x31, %[x31]\n"
-        "csrw 0x8BF, %[val]\n"
-        :
-        : [x31] "r"(x31_val), [val] "r"(csr_val)
-        : "x31", "memory"
-    );
-}
-
-// Evict nlines cache lines at stride apart starting at addr from L1 to L2.
-// Uses EvictVA (CSR 0x89F).  Unlike flush_to_l2, this guarantees the line is
-// NOT present in L1 after the operation - subsequent loads will miss and go
-// to L2/SCP. Caller must FENCE before and WAIT_CACHEOPS after.
-//
-// NOTE: nlines is encoded in a 4-bit field (max 16). DO NOT pass nlines > 16.
-static inline void __attribute__((always_inline))
-evict_to_l2(const void *addr, uint64_t nlines, uint64_t stride)
-{
-    // dest=01 (L2) in bits 59:58, VA in bits 47:6, numlines-1 in bits 3:0
-    uint64_t csr_val = (0x1ULL << 58) |
-                       ((uint64_t)addr & 0xFFFFFFFFFFC0ULL) |
-                       ((nlines - 1) & 0xF);
-    uint64_t x31_val = stride & 0xFFFFFFFFFFC0ULL;
-
-    __asm__ __volatile__(
-        "mv x31, %[x31]\n"
-        "csrw 0x89F, %[val]\n"
-        :
-        : [x31] "r"(x31_val), [val] "r"(csr_val)
-        : "x31", "memory"
-    );
 }
 
 #endif // PLATFORM_H
