@@ -362,6 +362,14 @@ static inline float silu_f32(float x) {
     }
 }
 
+static inline float gelu_f32(float x) {
+    const float coef_a_const = 0.044715f;
+    const float sqrt2pi_const = 0.79788456080286535587989211986876f;
+    const float z = sqrt2pi_const * x * (1.0f + coef_a_const * x * x);
+    const float exp_2z = et_expf(2.0f * z);
+    return x * (1.0f - et_fdiv(1.0f, exp_2z + 1.0f));
+}
+
 static void copy_f32_row(float* dst, const float* src, int64_t num_elements) {
     for (int64_t i = 0; i < num_elements; i++) {
         dst[i] = src[i];
@@ -492,7 +500,7 @@ static void copy_q4_0_row_cache_aligned(float* dst, const block_q4_0* src_blocks
 
     uint64_t temp_mask;
     __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));
-    __asm__ volatile ("mov.m.x m0, x0, 0xFF");
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");
 
     __asm__ volatile (
         "flq2        f4, 0(%0)    \n\t"
@@ -752,48 +760,6 @@ static inline void rope_yarn(float theta_extrap, float freq_scale, const float c
     *cos_theta = et_cosf(theta) * mscale;
     *sin_theta = et_sinf(theta) * mscale;
 }
-/*
-// Block operation implementations using ET vector instructions
-static inline void block_mul(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
-    // Process 8 elements at a time using vector multiplication
-    int32_t vec_end = (elements / 8) * 8;
-
-    // Set mask register to enable all 8 vector elements
-    unsigned long temp_mask;
-    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
-    __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
-
-    for (int32_t i = 0; i < vec_end; i += 8) {
-        // Compute results into temporary buffer
-        float temp_result[8];
-        __asm__ volatile(
-            "flw.ps f10, %[src0_vec]\n"        // Load 8 src0 values
-            "flw.ps f11, %[src1_vec]\n"        // Load 8 src1 values
-            "fmul.ps f12, f10, f11\n"          // dst = src0 * src1 (8-wide)
-            "fsw.ps f12, %[dst_vec]\n"         // Store 8 results to temp buffer
-
-            : [dst_vec] "=m"(*(float(*)[8])temp_result)
-            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
-              [src1_vec] "m"(*(const float(*)[8])&src1_block[i])
-            : "f10", "f11", "f12"
-        );
-
-        // Use atomic stores to write results to global memory
-        for (int32_t j = 0; j < 8; j++) {
-            atomic_store_f32((volatile float*)&dst_block[i + j], temp_result[j]);
-        }
-    }
-
-    // Restore original mask
-    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
-
-    // Handle remaining elements (< 8) with scalar operations and atomic stores
-    for (int32_t i = vec_end; i < elements; i++) {
-        float result = src0_block[i] * src1_block[i];
-        atomic_store_f32((volatile float*)&dst_block[i], result);
-    }
-}
-*/
 
 static inline void block_mul(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
     int32_t i = 0;
@@ -849,80 +815,6 @@ static inline void block_mul(float* dst_block, const float* src0_block, const fl
     __asm__ volatile("mov.m.x m0, %0, 0" :: "r"(original_mask));
 }
 
-// static inline void block_add(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
-//     // Process 8 elements at a time using vector addition
-//     int32_t vec_end = (elements / 8) * 8;
-
-//     // Set mask register to enable all 8 vector elements
-//     unsigned long temp_mask;
-//     __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
-//     __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
-
-//     for (int32_t i = 0; i < vec_end; i += 8) {
-//         // Compute results into temporary buffer
-//         float temp_result[8];
-//         __asm__ volatile(
-//             "flw.ps f10, %[src0_vec]\n"        // Load 8 src0 values
-//             "flw.ps f11, %[src1_vec]\n"        // Load 8 src1 values
-//             "fadd.ps f12, f10, f11\n"          // dst = src0 + src1 (8-wide)
-//             "fsw.ps f12, %[dst_vec]\n"         // Store 8 results to temp buffer
-
-//             : [dst_vec] "=m"(*(float(*)[8])temp_result)
-//             : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
-//               [src1_vec] "m"(*(const float(*)[8])&src1_block[i])
-//             : "f10", "f11", "f12"
-//         );
-
-//         // Use atomic stores to write results to global memory
-//         for (int32_t j = 0; j < 8; j++) {
-//             atomic_store_f32((volatile float*)&dst_block[i + j], temp_result[j]);
-//         }
-//     }
-
-//     // Restore original mask
-//     __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
-
-//     // Handle remaining elements (< 8) with scalar operations and atomic stores
-//     for (int32_t i = vec_end; i < elements; i++) {
-//         float result = src0_block[i] + src1_block[i];
-//         atomic_store_f32((volatile float*)&dst_block[i], result);
-//     }
-// }
-
-
-/*
-static inline void block_add(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
-    int32_t vec_end = (elements / 8) * 8;
-
-    // Set mask register to enable all 8 vector elements (m0 is the mask register)
-    unsigned long temp_mask;
-    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  
-    __asm__ volatile("mov.m.x m0, x0, 0xFF");           
-
-    for (int32_t i = 0; i < vec_end; i += 8) {
-        // Direct vector addition and ordinary store to global memory
-        __asm__ volatile(
-            "flw.ps f10, %1\n"        // Load 8 src0 values
-            "flw.ps f11, %2\n"        // Load 8 src1 values
-            "fadd.ps f12, f10, f11\n" // dst = src0 + src1 (8-wide)
-            "fsw.ps f12, %0\n"        // Ordinary store of 8 results to dst_block
-            : "=m"(*(float(*)[8])&dst_block[i])
-            : "m"(*(const float(*)[8])&src0_block[i]),
-              "m"(*(const float(*)[8])&src1_block[i])
-            : "f10", "f11", "f12", "memory"
-        );
-    }
-
-    // Restore original mask
-    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
-
-    // Handle remaining elements (< 8) with standard scalar stores
-    for (int32_t i = vec_end; i < elements; i++) {
-        dst_block[i] = src0_block[i] + src1_block[i];
-    }
-}
-*/
-
 static inline void block_add(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
     int32_t i = 0;
     unsigned long original_mask;
@@ -933,7 +825,7 @@ static inline void block_add(float* dst_block, const float* src0_block, const fl
     // 1. Process main blocks of 8 elements
     if (elements >= 8) {
         int32_t vec_end = (elements / 8) * 8;
-        // Use an immediate for 0xFF since it's a constant
+        // Use an immediate for 0xFF
         __asm__ volatile("mov.m.x m0, x0, 0xFF"); 
 
         for (; i < vec_end; i += 8) {
@@ -954,8 +846,7 @@ static inline void block_add(float* dst_block, const float* src0_block, const fl
     int32_t rem = elements - i;
     if (rem > 0) {
         uint32_t tail_mask = (1U << rem) - 1;
-        // FIX: Move the variable tail_mask into a register (%0) 
-        // then move that register into m0.
+        // Correct instruction to move a register value into mask m0
         __asm__ volatile(
             "mov.m.x m0, %0, 0" 
             : 
@@ -978,6 +869,55 @@ static inline void block_add(float* dst_block, const float* src0_block, const fl
     __asm__ volatile("mov.m.x m0, %0, 0" :: "r"(original_mask));
 }
 
+static inline void block_geglu(float* dst_block, const float* x_block, const float* g_block, int elements) {
+    int32_t vec_end = (elements / 8) * 8;
+    unsigned long temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");
+
+    float one_const = 1.0f;
+    float coef_a_const = 0.044715f;
+    float sqrt2pi_const = 0.79788456080286535587989211986876f;
+    float two_log2e_const = 2.8853900817779268f;
+
+    for (int32_t i = 0; i < vec_end; i += 8) {
+        __asm__ volatile(
+            "flw.ps f10, %[x_vec]\n"
+            "flw.ps f11, %[g_vec]\n"
+            "fbc.ps f20, %[one_ptr]\n"
+            "fbc.ps f22, %[coef_ptr]\n"
+            "fbc.ps f23, %[sqrt2pi_ptr]\n"
+            "fbc.ps f24, %[two_log2e_ptr]\n"
+            "fmul.ps f12, f10, f10\n"
+            "fmadd.ps f13, f22, f12, f20\n"
+            "fmul.ps f14, f23, f10\n"
+            "fmul.ps f14, f14, f13\n"
+            "fmul.ps f15, f14, f24\n"
+            "fexp.ps f15, f15\n"
+            "fadd.ps f16, f15, f20\n"
+            "frcp.ps f16, f16\n"
+            "fsub.ps f16, f20, f16\n"
+            "fmul.ps f16, f10, f16\n"
+            "fmul.ps f18, f16, f11\n"
+            "fsw.ps f18, %[dst_out]\n"
+            : [dst_out] "=m"(*(float(*)[8])&dst_block[i])
+            : [x_vec] "m"(*(const float(*)[8])&x_block[i]),
+              [g_vec] "m"(*(const float(*)[8])&g_block[i]),
+              [one_ptr] "m"(one_const),
+              [coef_ptr] "m"(coef_a_const),
+              [sqrt2pi_ptr] "m"(sqrt2pi_const),
+              [two_log2e_ptr] "m"(two_log2e_const)
+            : "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f18",
+              "f20", "f22", "f23", "f24", "memory"
+        );
+    }
+
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+
+    for (int32_t i = vec_end; i < elements; i++) {
+        dst_block[i] = gelu_f32(x_block[i]) * g_block[i];
+    }
+}
 
 static inline void block_swiglu(float* dst_block, const float* x_block, const float* g_block, int elements) {
     // Process 8 elements at a time using vector instructions
@@ -1153,7 +1093,8 @@ int glu_f32_impl(struct ggml_et_glu_params* params, void* env) {
     if (thread_id != 0) return 0; // Single-threaded for now
 
     if (params == 0 || ((uint64_t)params & 0x7) != 0) return -1;
-    if (params->glu_op_type != GGML_GLU_OP_SWIGLU) return -1;
+    if (params->glu_op_type != GGML_GLU_OP_SWIGLU &&
+        params->glu_op_type != GGML_GLU_OP_GEGLU) return -1;
 
     struct ggml_tensor* src0 = &params->src0;
     struct ggml_tensor* src1 = &params->src1;
@@ -1227,7 +1168,11 @@ int glu_f32_impl(struct ggml_et_glu_params* params, void* env) {
                 }
             }
 
-            block_swiglu(dst_ptr, x_ptr, g_ptr, (int)elements_to_process);
+            if (params->glu_op_type == GGML_GLU_OP_GEGLU) {
+                block_geglu(dst_ptr, x_ptr, g_ptr, (int)elements_to_process);
+            } else {
+                block_swiglu(dst_ptr, x_ptr, g_ptr, (int)elements_to_process);
+            }
 
             elements_processed += elements_to_process;
             col += elements_to_process;
@@ -2517,7 +2462,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GLU);
                     memcpy(&params.glu_op_type, &node_meta[i].op_params[0], sizeof(int32_t));
                     memcpy(&params.swapped, &node_meta[i].op_params[1], sizeof(int32_t));
-                    if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
+                    if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32 &&
+                        (params.glu_op_type == GGML_GLU_OP_SWIGLU || params.glu_op_type == GGML_GLU_OP_GEGLU)) {
                         glu_f32_impl(&params, env);
                     }
                 }

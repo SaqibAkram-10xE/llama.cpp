@@ -626,7 +626,7 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
                 ggml_is_contiguous(op->src[1])) {
                 // Check GLU variant - only support SWIGLU for now
                 ggml_glu_op glu_type = ggml_get_glu_op(op);
-                supported = (glu_type == GGML_GLU_OP_SWIGLU);
+                supported = (glu_type == GGML_GLU_OP_SWIGLU || glu_type == GGML_GLU_OP_GEGLU);
             } else {
                 supported = false;
             }

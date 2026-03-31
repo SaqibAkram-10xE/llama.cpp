@@ -272,8 +272,8 @@ bool ggml_et_op_glu(ggml_backend_et_device_context* dev_ctx, const ggml_tensor* 
     int32_t swapped = ggml_get_op_params_i32(node, 1);      // Whether gate/value are swapped
 
     // Only support SWIGLU for now
-    if (glu_op_type != GGML_GLU_OP_SWIGLU) {
-        GGML_LOG_ERROR("ET: GLU operation with unsupported variant: %s (only SWIGLU supported)\n",
+    if (glu_op_type != GGML_GLU_OP_SWIGLU && glu_op_type != GGML_GLU_OP_GEGLU) {
+        GGML_LOG_ERROR("ET: GLU operation with unsupported variant: %s (only SWIGLU and GEGLU supported)\n",
                        ggml_glu_op_name((ggml_glu_op)glu_op_type));
         return false;
     }
