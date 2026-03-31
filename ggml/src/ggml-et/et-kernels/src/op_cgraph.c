@@ -384,6 +384,330 @@ static void copy_q8_0_row(float* dst, const block_q8_0* src_blocks, int64_t num_
     }
 }
 
+static void copy_q4_0_row(float* dst, const block_q4_0* src_blocks, int64_t num_elements) {
+    const int64_t num_blocks = (num_elements + QK4_0 - 1) / QK4_0;
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const int64_t elements_in_block = (block_idx == num_blocks - 1) ?
+            (num_elements - block_idx * QK4_0) : QK4_0;
+
+        float temp_buffer[QK4_0];
+        dequantize_q4_0_block(&src_blocks[block_idx], temp_buffer);
+
+        for (int64_t i = 0; i < elements_in_block; i++) {
+            dst[block_idx * QK4_0 + i] = temp_buffer[i];
+        }
+    }
+}
+
+static void copy_q4_K_row(float* dst, const block_q4_K* src_blocks, int64_t num_elements) {
+    const int64_t num_blocks = (num_elements + QK_K - 1) / QK_K;
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const int64_t elements_in_block = (block_idx == num_blocks - 1) ?
+            (num_elements - block_idx * QK_K) : QK_K;
+
+        float temp_buffer[QK_K];
+        dequantize_q4_K_block(&src_blocks[block_idx], temp_buffer);
+
+        for (int64_t i = 0; i < elements_in_block; i++) {
+            dst[block_idx * QK_K + i] = temp_buffer[i];
+        }
+    }
+}
+
+static void copy_row_cache_align(float* dst, const float* src, int64_t n_bytes) {
+    int num_f32_elem = n_bytes / sizeof(float);
+
+    __asm__ volatile (
+        "1: \n\t"
+        "flq2 f0, 0(%[src]) \n\t"
+        "flq2 f1, 32(%[src]) \n\t"
+        "fsq2 f0, 0(%[dst]) \n\t"
+        "fsq2 f1, 32(%[dst]) \n\t"
+        "addi %[src], %[src], 64 \n\t"
+        "addi %[dst], %[dst], 64 \n\t"
+        "addi %[n], %[n], -16 \n\t"
+        "bge %[n], %[stride_count], 1b \n\t"
+        : [dst] "+r" (dst), [src] "+r" (src), [n] "+r" (num_f32_elem)
+        : [stride_count] "r" (16L)
+        : "f0", "f1", "memory"
+    );
+}
+
+static void dequantize_q8_0_block_cache_aligned(const block_q8_0* block, float* dst) {
+    const int8_t* qs_ptr = block->qs;
+
+    uint64_t temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");
+
+    const int32_t __attribute__((aligned(32))) vec_indices[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    float scale = fp16_to_fp32(block->d);
+    __asm__ volatile (
+        "fbcx.ps     f0, %0       \n\t"
+        "flq2        f1, 0(%1)    \n\t"
+        :: "r"(scale), "r"(vec_indices)
+        : "f0", "f1"
+    );
+
+    for (int i = 0; i < 4; i++) {
+        __asm__ volatile (
+            "fgb.ps      f2, f1(%0)   \n\t"
+            "fcvt.ps.pw  f2, f2, rne  \n\t"
+            "fmul.ps     f2, f2, f0   \n\t"
+            "fsq2        f2, 0(%1)    \n\t"
+            :: "r"(qs_ptr), "r"(dst)
+            : "f2", "memory"
+        );
+        qs_ptr += 8;
+        dst += 8;
+    }
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+}
+
+static void copy_q8_0_row_cache_aligned(float* dst, const block_q8_0* src_blocks, int64_t num_elements) {
+    const int64_t num_blocks = (num_elements + QK8_0 - 1) / QK8_0;
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const int64_t elements_in_block = (block_idx == num_blocks - 1) ?
+            (num_elements - block_idx * QK8_0) : QK8_0;
+
+        float temp_buffer[QK8_0];
+        dequantize_q8_0_block_cache_aligned(&src_blocks[block_idx], temp_buffer);
+
+        for (int64_t i = 0; i < elements_in_block; i++) {
+            dst[block_idx * QK8_0 + i] = temp_buffer[i];
+        }
+    }
+}
+
+static void copy_q4_0_row_cache_aligned(float* dst, const block_q4_0* src_blocks, int64_t num_elements) {
+    const int64_t num_blocks = (num_elements + QK4_0 - 1) / QK4_0;
+
+    const int32_t __attribute__((aligned(32))) scatter_offsets[8] = {
+        0*4, 16*4, 1*4, 17*4, 2*4, 18*4, 3*4, 19*4
+    };
+    const int32_t __attribute__((aligned(32))) gather_indices[8] = {0, 0, 1, 1, 2, 2, 3, 3};
+
+    uint64_t temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));
+    __asm__ volatile ("mov.m.x m0, x0, 0xFF");
+
+    __asm__ volatile (
+        "flq2        f4, 0(%0)    \n\t"
+        "flq2        f1, 0(%1)    \n\t"
+        :: "r"(scatter_offsets), "r"(gather_indices)
+        : "f1", "f4"
+    );
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const block_q4_0* block = &src_blocks[block_idx];
+        const uint8_t* qs = block->qs;
+        float* block_dst = dst + block_idx * QK4_0;
+
+        float scale = fp16_to_fp32(block->d);
+        float bias = -8.0f * scale;
+
+        __asm__ volatile (
+            "fbcx.ps     f0, %0       \n\t"
+            "fbcx.ps     f3, %1       \n\t"
+            :: "r"(scale), "r"(bias)
+            : "f0", "f3"
+        );
+
+        for (int i = 0; i < 4; i++) {
+            __asm__ volatile (
+                "fgb.ps      f2, f1(%0)    \n\t"
+                "mov.m.x     m0, x0, 0xAA  \n\t"
+                "fsrli.pi    f2, f2, 4     \n\t"
+                "mov.m.x     m0, x0, 0xFF  \n\t"
+                "fslli.pi    f2, f2, 28    \n\t"
+                "fsrli.pi    f2, f2, 28    \n\t"
+                "fcvt.ps.pw  f2, f2, rne   \n\t"
+                "fmul.ps     f2, f2, f0    \n\t"
+                "fadd.ps     f2, f2, f3    \n\t"
+                "fscw.ps     f2, f4(%1)    \n\t"
+                :: "r"(qs), "r"(block_dst)
+                : "f2", "memory"
+            );
+            qs += 4;
+            block_dst += 4;
+        }
+    }
+
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+}
+
+static void copy_q4_K_row_cache_aligned(float* dst, const block_q4_K* src_blocks, int64_t num_elements) {
+    const int64_t num_blocks = (num_elements + QK_K - 1) / QK_K;
+
+    const int32_t __attribute__((aligned(32))) gather_indices[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+
+    uint64_t temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");
+
+    __asm__ volatile (
+        "flq2        f1, 0(%0)    \n\t"
+        :: "r"(gather_indices)
+        : "f1"
+    );
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const block_q4_K* block = &src_blocks[block_idx];
+        const uint8_t* qs = block->qs;
+        float* block_dst = dst + block_idx * QK_K;
+
+        const float d   = fp16_to_fp32(block->d);
+        const float min = fp16_to_fp32(block->dmin);
+
+        int is = 0;
+        for (int j = 0; j < QK_K; j += 64) {
+            uint8_t sc, m;
+            get_scale_min_k4(is + 0, block->scales, &sc, &m);
+            const float d1 = d * sc;
+            const float neg_m1 = -(min * m);
+            get_scale_min_k4(is + 1, block->scales, &sc, &m);
+            const float d2 = d * sc;
+            const float neg_m2 = -(min * m);
+
+            __asm__ volatile (
+                "fbcx.ps     f0, %0       \n\t"
+                "fbcx.ps     f3, %1       \n\t"
+                :: "r"(d1), "r"(neg_m1)
+                : "f0", "f3"
+            );
+
+            const uint8_t* qs_lo = qs;
+            float* dst_lo = block_dst + j;
+            for (int k = 0; k < 4; k++) {
+                __asm__ volatile (
+                    "fgb.ps      f2, f1(%0)   \n\t"
+                    "fandi.pi    f2, f2, 0xF   \n\t"
+                    "fcvt.ps.pw  f2, f2, rne   \n\t"
+                    "fmadd.ps    f2, f2, f0, f3\n\t"
+                    "fsq2        f2, 0(%1)     \n\t"
+                    :: "r"(qs_lo), "r"(dst_lo)
+                    : "f2", "memory"
+                );
+                qs_lo += 8;
+                dst_lo += 8;
+            }
+
+            __asm__ volatile (
+                "fbcx.ps     f0, %0       \n\t"
+                "fbcx.ps     f3, %1       \n\t"
+                :: "r"(d2), "r"(neg_m2)
+                : "f0", "f3"
+            );
+
+            const uint8_t* qs_hi = qs;
+            float* dst_hi = block_dst + j + 32;
+            for (int k = 0; k < 4; k++) {
+                __asm__ volatile (
+                    "fgb.ps      f2, f1(%0)   \n\t"
+                    "fsrli.pi    f2, f2, 4     \n\t"
+                    "fandi.pi    f2, f2, 0xF   \n\t"
+                    "fcvt.ps.pw  f2, f2, rne   \n\t"
+                    "fmadd.ps    f2, f2, f0, f3\n\t"
+                    "fsq2        f2, 0(%1)     \n\t"
+                    :: "r"(qs_hi), "r"(dst_hi)
+                    : "f2", "memory"
+                );
+                qs_hi += 8;
+                dst_hi += 8;
+            }
+
+            qs += 32;
+            is += 2;
+        }
+    }
+
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+}
+
+static int get_row_f32_mc_row_cache_aligned(struct ggml_et_get_rows_params* params, void* env)
+{
+    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
+    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+    int num_threads = get_num_threads(kernel_env->shire_mask);
+
+    struct ggml_tensor* src0 = &params->src0;
+    struct ggml_tensor* src1 = &params->src1;
+    struct ggml_tensor* dst = &params->dst;
+
+    const int64_t ne00 = src0->ne[0];
+    const int64_t ne01 = src0->ne[1];
+    const int64_t ne02 = src0->ne[2];
+    const int64_t ne03 = src0->ne[3];
+
+    const int64_t ne10 = src1->ne[0];
+    const int64_t ne11 = src1->ne[1];
+    const int64_t ne12 = src1->ne[2];
+    const int64_t ne13 = src1->ne[3];
+
+    const int64_t total_rows_to_extract = ne10 * ne11 * ne12 * ne13;
+
+    for (int64_t i = thread_id; i < total_rows_to_extract; i+=num_threads) {
+        const int64_t i13_idx = i / (ne12 * ne11 * ne10);
+        const int64_t i12_idx = (i - i13_idx * ne12 * ne11 * ne10) / (ne11 * ne10);
+        const int64_t i11_idx = (i - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10) / ne10;
+        const int64_t i10_idx = i - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10 - i11_idx * ne10;
+
+        void* src0_data = src0->data;
+        int32_t* src1_data = (int32_t*)src1->data;
+        float* dst_data = (float*)dst->data;
+        const int64_t index_offset = i13_idx * ne12 * ne11 * ne10 +
+                                    i12_idx * ne11 * ne10 +
+                                    i11_idx * ne10 +
+                                    i10_idx;
+        const int32_t row_index = src1_data[index_offset];
+
+        if (row_index < 0 || row_index >= ne01) {
+            return -1;
+        }
+
+        const int64_t batch_offset = i11_idx * ne01 * ne00 +
+                                     i12_idx * ne02 * ne01 * ne00 +
+                                     i13_idx * ne03 * ne02 * ne01 * ne00;
+
+        const int64_t dst_offset = i;
+
+        if (src0->type == GGML_TYPE_F32) {
+            const float* src_row = (const float*)src0_data + row_index * ne00 + batch_offset;
+            float* dst_row = dst_data + dst_offset * ne00;
+            copy_row_cache_align(dst_row, src_row, ne00 * sizeof(float));
+        }
+        else if (src0->type == GGML_TYPE_Q8_0) {
+            const int64_t blocks_per_row = (ne00 + QK8_0 - 1) / QK8_0;
+            const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                           (batch_offset / ne00) * blocks_per_row;
+            const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset;
+            float* dst_row = dst_data + dst_offset * ne00;
+            copy_q8_0_row_cache_aligned(dst_row, src_blocks, ne00);
+        }
+        else if (src0->type == GGML_TYPE_Q4_0) {
+            const int64_t blocks_per_row = (ne00 + QK4_0 - 1) / QK4_0;
+            const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                           (batch_offset / ne00) * blocks_per_row;
+            const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset;
+            float* dst_row = dst_data + dst_offset * ne00;
+            copy_q4_0_row_cache_aligned(dst_row, src_blocks, ne00);
+        }
+        else if (src0->type == GGML_TYPE_Q4_K) {
+            const int64_t blocks_per_row = (ne00 + QK_K - 1) / QK_K;
+            const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                           (batch_offset / ne00) * blocks_per_row;
+            const block_q4_K* src_blocks = (const block_q4_K*)src0_data + src_block_offset;
+            float* dst_row = dst_data + dst_offset * ne00;
+            copy_q4_K_row_cache_aligned(dst_row, src_blocks, ne00);
+        }
+    }
+
+    return 0;
+}
+
 static void copy_f32_to_f16_row(uint16_t* dst, const float* src, int64_t num_elements) {
     for (int64_t i = 0; i < num_elements; i++) {
         dst[i] = fp32_to_fp16(src[i]);
@@ -1041,18 +1365,24 @@ int get_rows_f32_impl(struct ggml_et_get_rows_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
     if (!kernel_env) return -1;
 
+    struct ggml_tensor* src0 = &params->src0;
+    struct ggml_tensor* src1 = &params->src1;
+    struct ggml_tensor* dst = &params->dst;
+
+    // Fast path - we know how to deal with them multi-core
+    if ((src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_Q8_0 || src0->type == GGML_TYPE_Q4_0 || src0->type == GGML_TYPE_Q4_K) && src1->type == GGML_TYPE_I32 && dst->type == GGML_TYPE_F32
+        && dst->ne[0] % (64 / sizeof(float)) == 0) {
+        return get_row_f32_mc_row_cache_aligned(params, env);
+    }
+
     int thread_id = get_relative_thread_id(kernel_env->shire_mask);
     if (thread_id < 0) return 0;
     if (thread_id != 0) return 0; // Single-threaded for now
 
     if (params == 0 || ((uint64_t)params & 0x7) != 0) return -1;
 
-    struct ggml_tensor* src0 = &params->src0;
-    struct ggml_tensor* src1 = &params->src1;
-    struct ggml_tensor* dst = &params->dst;
-
     if (dst->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_I32) return -1;
-    if (src0->type != GGML_TYPE_F32 && src0->type != GGML_TYPE_Q8_0) return -1;
+    if (src0->type != GGML_TYPE_F32 && src0->type != GGML_TYPE_Q8_0 && src0->type != GGML_TYPE_Q4_0 && src0->type != GGML_TYPE_Q4_K) return -1;
 
     void* src0_data = src0->data;
     int32_t* src1_data = (int32_t*)src1->data;
@@ -1072,6 +1402,8 @@ int get_rows_f32_impl(struct ggml_et_get_rows_params* params, void* env) {
 
     const int64_t total_rows_to_extract = ne10 * ne11 * ne12 * ne13;
 
+    // Naive single-threaded implementation - process all rows sequentially
+    // XXX: Do we really need a single-threaded implementation?
     for (int64_t i = 0; i < total_rows_to_extract; i++) {
         const int64_t i13_idx = i / (ne12 * ne11 * ne10);
         const int64_t i12_idx = (i - i13_idx * ne12 * ne11 * ne10) / (ne11 * ne10);
@@ -1103,6 +1435,20 @@ int get_rows_f32_impl(struct ggml_et_get_rows_params* params, void* env) {
             const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset;
             float* dst_row = dst_data + dst_offset * ne00;
             copy_q8_0_row(dst_row, src_blocks, ne00);
+        } else if (src0->type == GGML_TYPE_Q4_0) {
+            const int64_t blocks_per_row = (ne00 + QK4_0 - 1) / QK4_0;
+            const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                           (batch_offset / ne00) * blocks_per_row;
+            const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset;
+            float* dst_row = dst_data + dst_offset * ne00;
+            copy_q4_0_row(dst_row, src_blocks, ne00);
+        } else if (src0->type == GGML_TYPE_Q4_K) {
+            const int64_t blocks_per_row = (ne00 + QK_K - 1) / QK_K;
+            const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                           (batch_offset / ne00) * blocks_per_row;
+            const block_q4_K* src_blocks = (const block_q4_K*)src0_data + src_block_offset;
+            float* dst_row = dst_data + dst_offset * ne00;
+            copy_q4_K_row(dst_row, src_blocks, ne00);
         }
     }
 
@@ -2198,7 +2544,9 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
-                    if (params.dst.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I32) {
+                    if (params.dst.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I32 &&
+                        (params.src0.type == GGML_TYPE_F32 || params.src0.type == GGML_TYPE_Q8_0 ||
+                         params.src0.type == GGML_TYPE_Q4_0 || params.src0.type == GGML_TYPE_Q4_K)) {
                         get_rows_f32_impl(&params, env);
                     }
                 }
