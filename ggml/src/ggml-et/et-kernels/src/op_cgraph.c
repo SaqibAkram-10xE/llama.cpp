@@ -1437,9 +1437,98 @@ static inline int64_t gcd_i64(int64_t a, int64_t b) {
     return a;
 }
 
+// Block operation implementations using ET vector instructions
+static inline void block_mul_cache_aligned(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
+    // Process 8 elements at a time using vector multiplication
+    int32_t vec_end = (elements / 8) * 8;
+
+    // Set mask register to enable all 8 vector elements
+    unsigned long temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
+
+    for (int32_t i = 0; i < vec_end; i += 8) {
+        // Compute results into temporary buffer
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"        // Load 8 src0 values
+            "flw.ps f11, %[src1_vec]\n"        // Load 8 src1 values
+            "fmul.ps f12, f10, f11\n"          // dst = src0 * src1 (8-wide)
+            "fsw.ps f12, %[dst_vec]\n"         // Store 8 results to temp buffer
+
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [src1_vec] "m"(*(const float(*)[8])&src1_block[i])
+            : "f10", "f11", "f12"
+        );
+    }
+
+    // Restore original mask
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+}
+
+static inline void block_add_cache_aligned(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
+    // Process 8 elements at a time using vector addition
+    int32_t vec_end = (elements / 8) * 8;
+
+    // Set mask register to enable all 8 vector elements
+    unsigned long temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
+
+    for (int32_t i = 0; i < vec_end; i += 8) {
+        // Compute results into temporary buffer
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"        // Load 8 src0 values
+            "flw.ps f11, %[src1_vec]\n"        // Load 8 src1 values
+            "fadd.ps f12, f10, f11\n"          // dst = src0 + src1 (8-wide)
+            "fsw.ps f12, %[dst_vec]\n"         // Store 8 results to temp buffer
+
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [src1_vec] "m"(*(const float(*)[8])&src1_block[i])
+            : "f10", "f11", "f12"
+        );
+    }
+
+    // Restore original mask
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+}
+
+static inline void block_sub_cache_aligned(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
+    // Process 8 elements at a time using vector addition
+    int32_t vec_end = (elements / 8) * 8;
+
+    // Set mask register to enable all 8 vector elements
+    unsigned long temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
+
+    for (int32_t i = 0; i < vec_end; i += 8) {
+        // Compute results into temporary buffer
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"        // Load 8 src0 values
+            "flw.ps f11, %[src1_vec]\n"        // Load 8 src1 values
+            "fsub.ps f12, f10, f11\n"          // dst = src0 + src1 (8-wide)
+            "fsw.ps f12, %[dst_vec]\n"         // Store 8 results to temp buffer
+
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [src1_vec] "m"(*(const float(*)[8])&src1_block[i])
+            : "f10", "f11", "f12"
+        );
+    }
+
+    // Restore original mask
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+}
+
+
 int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
-    if (!kernel_env) return -1;
+
+    if (!kernel_env) {
+        return -1;
+    }
 
     int thread_id = get_relative_thread_id(kernel_env->shire_mask);
     int num_threads = get_num_threads(kernel_env->shire_mask);
@@ -1454,7 +1543,7 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
 
     struct ggml_tensor* src0 = &params->src0;
     struct ggml_tensor* src1 = &params->src1;
-    struct ggml_tensor* dst  = &params->dst;
+    struct ggml_tensor* dst = &params->dst;
 
     if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
         return -1; // Unsupported type combination
@@ -1470,7 +1559,7 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
 
     enum ggml_op operation = dst->op;
 
-    if (operation != GGML_OP_MUL && operation != GGML_OP_ADD) {
+    if (operation != GGML_OP_MUL && operation != GGML_OP_ADD && operation != GGML_OP_SUB) {
         return -1; // Unsupported operation
     }
 
@@ -1482,26 +1571,11 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     const size_t nb00 = src0->nb[0], nb01 = src0->nb[1], nb02 = src0->nb[2], nb03 = src0->nb[3];
     const size_t nb10 = src1->nb[0], nb11 = src1->nb[1], nb12 = src1->nb[2], nb13 = src1->nb[3];
 
-    // Calculate total number of rows using src0's dimensions (matching CPU reference)
-    // For element-wise ops, src0 and dst have the same shape
-    const int64_t total_rows = ne02 * ne01 * ne03;
+    // Calculate total number of rows (flatten dimensions 1,2,3)
+    const int64_t total_rows = ne1 * ne2 * ne3;
 
-    // Cache line alignment: prevent false sharing between threads
-    // Each cache line is 64 bytes = 16 floats
-    const int64_t CACHE_LINE_BYTES = 64;
-    const int64_t row_bytes = ne00 * sizeof(float);
-    const int64_t row_gcd = gcd_i64(row_bytes, CACHE_LINE_BYTES);
-    const int64_t rows_per_cache_group = CACHE_LINE_BYTES / row_gcd;
-
-    // Distribute rows across threads, rounding up to cache line boundaries
-    int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
-    
-    // Round rows_per_thread up to nearest multiple of rows_per_cache_group
-    // This ensures each thread's memory region starts at a cache line boundary
-    if (rows_per_cache_group > 1) {
-        rows_per_thread = ((rows_per_thread + rows_per_cache_group - 1) / rows_per_cache_group) * rows_per_cache_group;
-    }
-
+    // Distribute rows across threads using ceiling division to handle remainder
+    const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
     const int64_t start_row = thread_id * rows_per_thread;
     const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
@@ -1509,11 +1583,16 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
         return 0;
     }
 
+    bool cache_aligned = (dst->ne[0] % 16 == 0);
+    if(!cache_aligned) {
+        return 1;
+    }
+
     for (int64_t ir = start_row; ir < end_row; ir++) {
-        // Convert flat row index to 3D coordinates using src0's dimensions (matching CPU reference)
-        const int64_t i03 = ir / (ne02 * ne01);
-        const int64_t i02 = (ir - i03 * ne02 * ne01) / ne01;
-        const int64_t i01 = (ir - i03 * ne02 * ne01 - i02 * ne01);
+        // Convert flat row index to 3D coordinates
+        const int64_t i03 = ir / (ne2 * ne1);
+        const int64_t i02 = (ir - i03 * ne2 * ne1) / ne1;
+        const int64_t i01 = (ir - i03 * ne2 * ne1 - i02 * ne1);
 
         // Handle broadcasting: src1 coordinates with modulo
         const int64_t i13 = i03 % ne13;
@@ -1525,8 +1604,8 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
         const float* src0_ptr = (const float*)((const char*)src0_data + i03*nb03 + i02*nb02 + i01*nb01);
         const float* src1_ptr = (const float*)((const char*)src1_data + i13*nb13 + i12*nb12 + i11*nb11);
 
-        // Broadcasting in dimension 0: src1 repeats across src0 (using src0's ne00)
-        const int64_t nr0 = ne00 / ne10;  // How many times src1 is repeated in dimension 0
+        // Broadcasting in dimension 0: src1 repeats across src0
+        const int64_t nr0 = ne0 / ne10;  // How many times src1 is repeated in dimension 0
 
         for (int64_t r = 0; r < nr0; r++) {
             // Process ne10 elements at a time using block functions
@@ -1535,11 +1614,16 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
 
             switch (operation) {
                 case GGML_OP_MUL:
-                    block_mul(dst_block, src0_block, src1_ptr, (int)ne10);
+                    block_mul_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
                     break;
                 case GGML_OP_ADD:
-                    block_add(dst_block, src0_block, src1_ptr, (int)ne10);
+                    block_add_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
                     break;
+                case GGML_OP_SUB:
+                    block_sub_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
+                    break;
+                default:
+                    return 1;
             }
         }
     }
