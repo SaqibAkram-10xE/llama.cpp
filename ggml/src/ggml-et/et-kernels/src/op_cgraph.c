@@ -7,7 +7,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
-#include <math.h>
 #include "ggml_tensor.h"
 #include "platform.h"
 
@@ -244,16 +243,6 @@ struct ggml_et_rope_params {
 // ROPE constants (matching GGML definitions)
 #define GGML_ROPE_TYPE_NEOX 2
 #define CACHE_LINE_SIZE_F32 16
-#define CACHE_LINE_SIZE_BYTES 64
-#define CACHE_LINE_F32_ELEMS 16
-#define CACHE_LINE_F16_ELEMS 32
-#define LOG2E_F 1.4426950408889634f
-#define MAX_ROPE_HALF_DIMS 128
-#define ROPE_VEC_WIDTH 8
-#define ROPE_PI 3.14159265358979323846f
-#define ROPE_TWO_PI 6.28318530717958647693f
-#define ROPE_PI_OVER_2 1.57079632679489661923f
-#define ROPE_INV_TWO_PI 0.15915494309189533577f
 
 // struct ggml_et_binary_params {
 //     struct ggml_tensor src0;
@@ -297,310 +286,66 @@ void delay(unsigned long count) {
 }
 #define FENCE __asm__ __volatile__ ("fence\n");
 
-typedef struct {
-    float max_val;
-    float sum_val;
-    uint32_t valid_mask;
-} softmax_params_t;
-
-static inline bool softmax_lane_is_valid(float x) {
-    return (x == x) && (x != -INFINITY) && (x != INFINITY);
-}
-
-static inline softmax_params_t softmax_params_empty(void) {
-    softmax_params_t p;
-    p.max_val = -INFINITY;
-    p.sum_val = 0.0f;
-    p.valid_mask = 0;
-    return p;
-}
-
-static inline void softmax_update_scalar(softmax_params_t * params, float x) {
-    if (!softmax_lane_is_valid(x)) {
-        return;
-    }
-
-    if (!params->valid_mask) {
-        params->max_val = x;
-        params->sum_val = 1.0f;
-        params->valid_mask = 1;
-        return;
-    }
-
-    if (x > params->max_val) {
-        params->sum_val = params->sum_val * et_expf(params->max_val - x) + 1.0f;
-        params->max_val = x;
-    } else {
-        params->sum_val += et_expf(x - params->max_val);
-    }
-}
-
-static inline void chunk_transform_ps_8_branchless_mask(float * tmp8, const float * src, const float * mask, float scale, float slope) {
-    unsigned long ms;
-    const float zero = 0.0f;
-    const unsigned long mask_load_m0 = (mask != NULL) ? 0xFFul : 0x00ul;
-    const float * mp = (mask != NULL) ? mask : &zero;
-
-    __asm__ volatile (
-        "mova.x.m  %[ms]                \n\t"
-        "mov.m.x   m0, x0, 0xFF         \n\t"
-        "fbc.ps    f10, 0(%[p_scale])   \n\t"
-        "fbc.ps    f11, 0(%[p_slope])   \n\t"
-        "fbc.ps    f1, 0(%[p_zero])     \n\t"
-        "mov.m.x   m0, %[maskm0], 0     \n\t"
-        "flw.ps    f1, 0(%[mp])         \n\t"
-        "mov.m.x   m0, x0, 0xFF         \n\t"
-        "flw.ps    f0, 0(%[sp])         \n\t"
-        "fmul.ps   f0, f0, f10          \n\t"
-        "fmul.ps   f1, f1, f11          \n\t"
-        "fadd.ps   f0, f0, f1, rne      \n\t"
-        "fsw.ps    f0, 0(%[tp])         \n\t"
-        "mova.m.x  %[ms]                \n\t"
-        : [ms] "=&r"(ms)
-        : [tp]      "r"(tmp8),
-          [sp]      "r"(src),
-          [mp]      "r"(mp),
-          [p_zero]  "r"(&zero),
-          [p_scale] "r"(&scale),
-          [p_slope] "r"(&slope),
-          [maskm0]  "r"(mask_load_m0)
-        : "f0", "f1", "f10", "f11", "memory"
-    );
-}
-
-static inline softmax_params_t softmax_pass1_range(const float * src, const float * mask, int begin, int end, float scale, float slope) {
-    __attribute__((aligned(32))) float lane_max[8];
-    __attribute__((aligned(32))) float lane_sum[8];
-    __attribute__((aligned(32))) float tmp[8];
-    uint8_t valid_mask = 0;
-    const float one_f = 1.0f;
-    const float zero_f = 0.0f;
-    const float neg_inf = -INFINITY;
-    const float log2e = LOG2E_F;
-    unsigned long ms;
-
-    __asm__ volatile (
-        "mova.x.m  %[ms]                \n\t"
-        "mov.m.x   m0, x0, 0xFF         \n\t"
-        "fbc.ps    f20, 0(%[p_ninf])    \n\t"
-        "fbc.ps    f21, 0(%[p_zero])    \n\t"
-        "fbc.ps    f22, 0(%[p_one])     \n\t"
-        "fbc.ps    f23, 0(%[p_log2e])   \n\t"
-        : [ms] "=&r"(ms)
-        : [p_ninf]  "r"(&neg_inf),
-          [p_zero]  "r"(&zero_f),
-          [p_one]   "r"(&one_f),
-          [p_log2e] "r"(&log2e)
-        : "f20", "f21", "f22", "f23"
-    );
-
-    int i = begin;
-    for (; i + 8 <= end; i += 8) {
-        chunk_transform_ps_8_branchless_mask(tmp, src + i, mask ? (mask + i) : NULL, scale, slope);
-
-        uint8_t cur_mask = 0;
-        for (int j = 0; j < 8; ++j) {
-            if (softmax_lane_is_valid(tmp[j])) {
-                cur_mask |= (uint8_t)(1u << j);
-            }
-        }
-
-        const uint8_t init_mask = (uint8_t)(cur_mask & ~valid_mask);
-        const uint8_t upd_mask = (uint8_t)(cur_mask & valid_mask);
-
-        if (init_mask || upd_mask) {
-            __asm__ volatile (
-                "flw.ps    f0, 0(%[p_tmp])       \n\t"
-                "mov.m.x   m0, %[initm], 0       \n\t"
-                "fcmovm.ps f20, f0,  f20         \n\t"
-                "fcmovm.ps f21, f22, f21         \n\t"
-                "mov.m.x   m0, %[updm], 0        \n\t"
-                "fmax.ps   f1, f20, f0           \n\t"
-                "fsub.ps   f2, f20, f1, rne      \n\t"
-                "fmul.ps   f2, f2,  f23          \n\t"
-                "fexp.ps   f2, f2                \n\t"
-                "fsub.ps   f3, f0,  f1, rne      \n\t"
-                "fmul.ps   f3, f3,  f23          \n\t"
-                "fexp.ps   f3, f3                \n\t"
-                "fmul.ps   f21, f21, f2          \n\t"
-                "fadd.ps   f21, f21, f3, rne     \n\t"
-                "fcmovm.ps f20, f1,  f20         \n\t"
-                "mov.m.x   m0, x0, 0xFF          \n\t"
-                :
-                : [p_tmp] "r"(tmp),
-                  [initm] "r"((unsigned long)init_mask),
-                  [updm]  "r"((unsigned long)upd_mask)
-                : "f0", "f1", "f2", "f3", "memory"
-            );
-
-            valid_mask |= cur_mask;
+static float find_max_f32(const float* x, int n) {
+    float max_val = x[0];
+    for (int i = 1; i < n; i++) {
+        if (x[i] > max_val) {
+            max_val = x[i];
         }
     }
-
-    __asm__ volatile (
-        "mov.m.x   m0, x0, 0xFF         \n\t"
-        "fsw.ps    f20, 0(%[p_lmax])    \n\t"
-        "fsw.ps    f21, 0(%[p_lsum])    \n\t"
-        "mova.m.x  %[ms]                \n\t"
-        :
-        : [p_lmax] "r"(lane_max),
-          [p_lsum] "r"(lane_sum),
-          [ms]     "r"(ms)
-        : "memory"
-    );
-
-    softmax_params_t out = softmax_params_empty();
-    out.valid_mask = valid_mask;
-
-    for (int k = 0; k < 8; ++k) {
-        if ((valid_mask & (1u << k)) && (out.max_val == -INFINITY || lane_max[k] > out.max_val)) {
-            out.max_val = lane_max[k];
-        }
-    }
-
-    if (out.max_val != -INFINITY) {
-        const float neg_max_l2 = -out.max_val * LOG2E_F;
-        __attribute__((aligned(32))) float corr[8];
-        __asm__ volatile (
-            "mova.x.m  %[ms]              \n\t"
-            "mov.m.x   m0, x0, 0xFF       \n\t"
-            "fbc.ps    f0, 0(%[p_nml2])   \n\t"
-            "fbc.ps    f2, 0(%[p_l2e])    \n\t"
-            "flw.ps    f1, 0(%[p_lmax])   \n\t"
-            "fmadd.ps  f0, f1, f2, f0     \n\t"
-            "fexp.ps   f0, f0             \n\t"
-            "fsw.ps    f0, 0(%[p_corr])   \n\t"
-            "mova.m.x  %[ms]              \n\t"
-            :
-            : [p_nml2] "r"(&neg_max_l2),
-              [p_l2e]  "r"(&log2e),
-              [p_lmax] "r"(lane_max),
-              [p_corr] "r"(corr),
-              [ms]     "r"(ms)
-            : "f0", "f1", "f2", "memory"
-        );
-        for (int k = 0; k < 8; ++k) {
-            if (valid_mask & (1u << k)) {
-                out.sum_val += lane_sum[k] * corr[k];
-            }
-        }
-    }
-
-    for (; i < end; ++i) {
-        float x = src[i] * scale;
-        if (mask != NULL) {
-            x += mask[i] * slope;
-        }
-        softmax_update_scalar(&out, x);
-    }
-
-    return out;
+    return max_val;
 }
 
-static inline void softmax_pass2_range(float * dst, const float * src, const float * mask, int begin, int end, float scale, float slope, softmax_params_t params) {
-    const float s2 = scale * LOG2E_F;
-    const float sl2 = slope * LOG2E_F;
-    const float neg_ml2 = -params.max_val * LOG2E_F;
-    const float inv_sum = et_fdiv(1.0f, params.sum_val);
-    unsigned long ms;
+static void compute_softmax_row(
+    float* dst,           // Output row
+    const float* src,     // Input row
+    const float* mask,    // Mask row (can be NULL)
+    int ne00,             // Input row length
+    int ne10,             // Mask row length (guaranteed equal to ne00 in ggml)
+    float scale,          // Scale factor
+    float slope,          // ALiBi slope factor
+    float sink_value,     // Sink value for this head (or -INFINITY if no sinks)
+    bool use_sinks)       // Whether sinks are enabled
+{
+    // Step 1: Apply scaling and masking/bias to input
+    for (int i = 0; i < ne00; i++) {
+        dst[i] = src[i] * scale;
+    }
 
-    __asm__ volatile (
-        "mova.x.m  %[ms]                \n\t"
-        "mov.m.x   m0, x0, 0xFF         \n\t"
-        "fbc.ps    f10, 0(%[p_s2])      \n\t"
-        "fbc.ps    f12, 0(%[p_nml2])    \n\t"
-        "fbc.ps    f13, 0(%[p_inv])     \n\t"
-        : [ms] "=&r"(ms)
-        : [p_s2]   "r"(&s2),
-          [p_nml2] "r"(&neg_ml2),
-          [p_inv]  "r"(&inv_sum)
-        : "f10", "f12", "f13"
-    );
-
-    int c = begin;
+    // Add mask/bias if present
     if (mask != NULL) {
-        __asm__ volatile (
-            "fbc.ps    f11, 0(%[p_sl2]) \n\t"
-            :
-            : [p_sl2] "r"(&sl2)
-            : "f11"
-        );
-
-        for (; c + 8 <= end; c += 8) {
-            __asm__ volatile (
-                "flw.ps    f0, 0(%[sp])           \n\t"
-                "flw.ps    f1, 0(%[mp])           \n\t"
-                "fmadd.ps  f0, f0, f10, f12       \n\t"
-                "fmadd.ps  f0, f1, f11, f0        \n\t"
-                "fexp.ps   f0, f0                 \n\t"
-                "fmul.ps   f0, f0, f13            \n\t"
-                "fsw.ps    f0, 0(%[dp])           \n\t"
-                :
-                : [sp] "r"(src + c), [mp] "r"(mask + c), [dp] "r"(dst + c)
-                : "f0", "f1", "memory"
-            );
-        }
-    } else {
-        for (; c + 8 <= end; c += 8) {
-            __asm__ volatile (
-                "flw.ps    f0, 0(%[sp])           \n\t"
-                "fmadd.ps  f0, f0, f10, f12       \n\t"
-                "fexp.ps   f0, f0                 \n\t"
-                "fmul.ps   f0, f0, f13            \n\t"
-                "fsw.ps    f0, 0(%[dp])           \n\t"
-                :
-                : [sp] "r"(src + c), [dp] "r"(dst + c)
-                : "f0", "memory"
-            );
+        for (int i = 0; i < ne00; i++) {
+            dst[i] += slope * mask[i];
         }
     }
 
-    __asm__ volatile (
-        "mova.m.x  %[ms] \n\t"
-        :: [ms] "r"(ms)
-    );
-
-    for (; c < end; ++c) {
-        float x = src[c] * scale - params.max_val;
-        if (mask != NULL) {
-            x += mask[c] * slope;
-        }
-        dst[c] = et_expf(x) * inv_sum;
-    }
-}
-
-static void compute_softmax_row(float * dst, const float * src, const float * mask, int cols, float scale, float slope, float sink_value, bool use_sinks) {
-    softmax_params_t params = softmax_pass1_range(src, mask, 0, cols, scale, slope);
+    // Step 2: Find maximum for numerical stability
+    float max_val = find_max_f32(dst, ne00);
 
     if (use_sinks) {
-        float max_val = params.max_val;
         if (sink_value > max_val) {
             max_val = sink_value;
         }
+    }
 
-        float sum = 0.0f;
-        for (int i = 0; i < cols; ++i) {
-            float x = src[i] * scale;
-            if (mask != NULL) {
-                x += mask[i] * slope;
-            }
-            sum += et_expf(x - max_val);
-        }
+    // Step 3: Compute exponentials and sum
+    float sum = 0.0f;
+    for (int i = 0; i < ne00; i++) {
+        float exp_val = et_expf(dst[i] - max_val);
+        dst[i] = exp_val;
+        sum += exp_val;
+    }
+
+    if (use_sinks) {
         sum += et_expf(sink_value - max_val);
+    }
 
+    // Step 4: Normalize by sum to get probabilities
+    if (sum > 0.0f) {
         float inv_sum = et_fdiv(1.0f, sum);
-        for (int i = 0; i < cols; ++i) {
-            float x = src[i] * scale;
-            if (mask != NULL) {
-                x += mask[i] * slope;
-            }
-            dst[i] = et_expf(x - max_val) * inv_sum;
+        for (int i = 0; i < ne00; i++) {
+            dst[i] *= inv_sum;
         }
-    } else {
-        if (!params.valid_mask) {
-            return;
-        }
-        softmax_pass2_range(dst, src, mask, 0, cols, scale, slope, params);
     }
 }
 
@@ -977,53 +722,6 @@ static void copy_f32_to_f16_row(uint16_t* dst, const float* src, int64_t num_ele
     }
 }
 
-static void copy_cache_aligned_f32(float* dst, const float* src) {
-    __asm__ volatile (
-        "flq2 f0, 0(%[src]) \n\t"
-        "flq2 f1, 32(%[src]) \n\t"
-        "fsq2 f0, 0(%[dst]) \n\t"
-        "fsq2 f1, 32(%[dst]) \n\t"
-        :
-        : [src] "r"(src), [dst] "r"(dst)
-        : "f0", "f1", "memory"
-    );
-}
-
-static void copy_cache_aligned_f16(uint16_t* dst, const float* src) {
-    unsigned long mask_temp;
-    float offset_vec_storage[8];
-    uint32_t* offsets = (uint32_t*)offset_vec_storage;
-    for (int j = 0; j < 8; j++) {
-        offsets[j] = j * 2;
-    }
-
-    __asm__ volatile (
-        "mova.x.m  %[mask_temp]         \n\t"
-        "mov.m.x   m0, x0, 0xFF         \n\t"
-        "flw.ps    f1, 0(%[offsets])    \n\t"
-        : [mask_temp] "=&r"(mask_temp)
-        : [offsets] "r"(offset_vec_storage)
-        : "f1"
-    );
-
-    for (int i = 0; i < 32; i += 8) {
-        __asm__ volatile (
-            "flw.ps    f2, 0(%[src_ptr])    \n\t"
-            "fcvt.f16.ps f3, f2             \n\t"
-            "fsch.ps   f3, f1(%[dst_ptr])   \n\t"
-            :
-            : [src_ptr] "r"(src + i), [dst_ptr] "r"(dst + i)
-            : "f2", "f3", "memory"
-        );
-    }
-
-    __asm__ volatile (
-        "mova.m.x  %[mask_temp]         \n\t"
-        :
-        : [mask_temp] "r"(mask_temp)
-    );
-}
-
 // YaRN helper functions
 static inline float rope_yarn_ramp(const float low, const float high, const int i0) {
     float denom = high - low;
@@ -1047,230 +745,20 @@ static inline void rope_yarn_corr_dims(int n_dims, int n_ctx_orig, float freq_ba
     dims[1] = end < (float)(n_dims - 1) ? end : (float)(n_dims - 1);
 }
 
-static const float rope_ps_one[ROPE_VEC_WIDTH] __attribute__((aligned(32))) = {
-    1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f, 1.f
-};
-
-static const float rope_ps_c3[ROPE_VEC_WIDTH] __attribute__((aligned(32))) = {
-    1.0f/6.0f, 1.0f/6.0f, 1.0f/6.0f, 1.0f/6.0f, 1.0f/6.0f, 1.0f/6.0f, 1.0f/6.0f, 1.0f/6.0f
-};
-
-static const float rope_ps_c5[ROPE_VEC_WIDTH] __attribute__((aligned(32))) = {
-    1.0f/120.0f, 1.0f/120.0f, 1.0f/120.0f, 1.0f/120.0f, 1.0f/120.0f, 1.0f/120.0f, 1.0f/120.0f, 1.0f/120.0f
-};
-
-static const float rope_ps_c7[ROPE_VEC_WIDTH] __attribute__((aligned(32))) = {
-    1.0f/5040.0f, 1.0f/5040.0f, 1.0f/5040.0f, 1.0f/5040.0f, 1.0f/5040.0f, 1.0f/5040.0f, 1.0f/5040.0f, 1.0f/5040.0f
-};
-
-static const float rope_ps_c9[ROPE_VEC_WIDTH] __attribute__((aligned(32))) = {
-    1.0f/362880.0f, 1.0f/362880.0f, 1.0f/362880.0f, 1.0f/362880.0f, 1.0f/362880.0f, 1.0f/362880.0f, 1.0f/362880.0f, 1.0f/362880.0f
-};
-
-static const float rope_ps_c11[ROPE_VEC_WIDTH] __attribute__((aligned(32))) = {
-    1.0f/39916800.0f, 1.0f/39916800.0f, 1.0f/39916800.0f, 1.0f/39916800.0f,
-    1.0f/39916800.0f, 1.0f/39916800.0f, 1.0f/39916800.0f, 1.0f/39916800.0f
-};
-
-static inline uint64_t rope_ps_enter_fullmask(void) {
-    uint64_t old_mask;
-    __asm__ volatile("mova.x.m %0" : "=r"(old_mask));
-    __asm__ volatile("mov.m.x m0, x0, 0xFF");
-    return old_mask;
-}
-
-static inline void rope_ps_leave_fullmask(uint64_t old_mask) {
-    __asm__ volatile("mova.m.x %0" :: "r"(old_mask) : "memory");
-}
-
-static inline void rope_poly_sin_block8(float * out, const float * x) {
-    __asm__ volatile(
-        "flw.ps    f0,  %[x]           \n\t"
-        "fmul.ps   f1,  f0,  f0        \n\t"
-        "flw.ps    f2,  %[c11]         \n\t"
-        "flw.ps    f3,  %[c9]          \n\t"
-        "fnmsub.ps f2,  f1,  f2,  f3   \n\t"
-        "flw.ps    f3,  %[c7]          \n\t"
-        "fnmsub.ps f2,  f1,  f2,  f3   \n\t"
-        "flw.ps    f3,  %[c5]          \n\t"
-        "fnmsub.ps f2,  f1,  f2,  f3   \n\t"
-        "flw.ps    f3,  %[c3]          \n\t"
-        "fnmsub.ps f2,  f1,  f2,  f3   \n\t"
-        "flw.ps    f3,  %[one]         \n\t"
-        "fnmsub.ps f2,  f1,  f2,  f3   \n\t"
-        "fmul.ps   f4,  f0,  f2        \n\t"
-        "fsw.ps    f4,  %[out]         \n\t"
-        : [out] "=m"(*(float (*)[ROPE_VEC_WIDTH])out)
-        : [x]   "m"(*(const float (*)[ROPE_VEC_WIDTH])x),
-          [one] "m"(*(const float (*)[ROPE_VEC_WIDTH])rope_ps_one),
-          [c3]  "m"(*(const float (*)[ROPE_VEC_WIDTH])rope_ps_c3),
-          [c5]  "m"(*(const float (*)[ROPE_VEC_WIDTH])rope_ps_c5),
-          [c7]  "m"(*(const float (*)[ROPE_VEC_WIDTH])rope_ps_c7),
-          [c9]  "m"(*(const float (*)[ROPE_VEC_WIDTH])rope_ps_c9),
-          [c11] "m"(*(const float (*)[ROPE_VEC_WIDTH])rope_ps_c11)
-        : "f0", "f1", "f2", "f3", "f4", "memory"
-    );
-}
-
-static inline void rope_sincos_block8(float * sin8, float * cos8, const float * theta8) {
-    float sin_fold[ROPE_VEC_WIDTH] __attribute__((aligned(32)));
-    float cos_fold[ROPE_VEC_WIDTH] __attribute__((aligned(32)));
-    float sin_sign[ROPE_VEC_WIDTH] __attribute__((aligned(32)));
-    float cos_sign[ROPE_VEC_WIDTH] __attribute__((aligned(32)));
-
-    for (int i = 0; i < ROPE_VEC_WIDTH; ++i) {
-        float x = theta8[i];
-
-        if (x > ROPE_PI || x < -ROPE_PI) {
-            float cycles = x * ROPE_INV_TWO_PI;
-            int n = (int)cycles;
-            if (x < 0.0f) {
-                n--;
-            }
-            x = x - (float)n * ROPE_TWO_PI;
-        }
-
-        {
-            float y = x;
-            float s = 1.0f;
-            if (y > ROPE_PI_OVER_2) {
-                y = ROPE_PI - y;
-            } else if (y < -ROPE_PI_OVER_2) {
-                y = -ROPE_PI - y;
-                s = -1.0f;
-            }
-            sin_fold[i] = y;
-            sin_sign[i] = s;
-        }
-
-        {
-            float y = x + ROPE_PI_OVER_2;
-            if (y > ROPE_PI || y < -ROPE_PI) {
-                float cycles = y * ROPE_INV_TWO_PI;
-                int n = (int)cycles;
-                if (y < 0.0f) {
-                    n--;
-                }
-                y = y - (float)n * ROPE_TWO_PI;
-            }
-
-            float s = 1.0f;
-            if (y > ROPE_PI_OVER_2) {
-                y = ROPE_PI - y;
-            } else if (y < -ROPE_PI_OVER_2) {
-                y = -ROPE_PI - y;
-                s = -1.0f;
-            }
-            cos_fold[i] = y;
-            cos_sign[i] = s;
-        }
-    }
-
-    {
-        const uint64_t saved_mask = rope_ps_enter_fullmask();
-
-        rope_poly_sin_block8(sin8, sin_fold);
-        rope_poly_sin_block8(cos8, cos_fold);
-
-        __asm__ volatile(
-            "flw.ps    f0, %[sinv]         \n\t"
-            "flw.ps    f1, %[sinsgn]       \n\t"
-            "fmul.ps   f2, f0, f1          \n\t"
-            "fsw.ps    f2, %[sout]         \n\t"
-            "flw.ps    f3, %[cosv]         \n\t"
-            "flw.ps    f4, %[cossgn]       \n\t"
-            "fmul.ps   f5, f3, f4          \n\t"
-            "fsw.ps    f5, %[cout]         \n\t"
-            : [sout] "=m"(*(float (*)[ROPE_VEC_WIDTH])sin8),
-              [cout] "=m"(*(float (*)[ROPE_VEC_WIDTH])cos8)
-            : [sinv]   "m"(*(const float (*)[ROPE_VEC_WIDTH])sin8),
-              [sinsgn] "m"(*(const float (*)[ROPE_VEC_WIDTH])sin_sign),
-              [cosv]   "m"(*(const float (*)[ROPE_VEC_WIDTH])cos8),
-              [cossgn] "m"(*(const float (*)[ROPE_VEC_WIDTH])cos_sign)
-            : "f0", "f1", "f2", "f3", "f4", "f5", "memory"
-        );
-
-        rope_ps_leave_fullmask(saved_mask);
-    }
-}
-
-static inline void rope_yarn_scalar(float theta_extrap, float freq_scale, const float corr_dims[2],
-                                    int64_t i0, float ext_factor, float mscale,
-                                    float * cos_theta, float * sin_theta) {
+static inline void rope_yarn(float theta_extrap, float freq_scale, const float corr_dims[2],
+                             int64_t i0, float ext_factor, float mscale,
+                             float* cos_theta, float* sin_theta) {
     float theta_interp = freq_scale * theta_extrap;
     float theta = theta_interp;
 
     if (ext_factor != 0.0f) {
-        float ramp_mix = rope_yarn_ramp(corr_dims[0], corr_dims[1], (int)i0) * ext_factor;
+        float ramp_mix = rope_yarn_ramp(corr_dims[0], corr_dims[1], i0) * ext_factor;
         theta = theta_interp * (1.0f - ramp_mix) + theta_extrap * ramp_mix;
         mscale *= 1.0f + 0.1f * et_logf(et_fdiv(1.0f, freq_scale));
     }
 
     *cos_theta = et_cosf(theta) * mscale;
     *sin_theta = et_sinf(theta) * mscale;
-}
-
-static inline void compute_rope_cache(float * cos_cache, float * sin_cache,
-                                      int32_t n_dims, float theta_scale, int32_t pos,
-                                      const float * freq_factors, float freq_scale,
-                                      const float corr_dims[2], float ext_factor, float attn_factor) {
-    const int32_t half_dims = n_dims / 2;
-    float theta = 1.0f;
-    int32_t dim_idx = 0;
-
-    for (; dim_idx + ROPE_VEC_WIDTH <= half_dims; dim_idx += ROPE_VEC_WIDTH) {
-        float theta_block[ROPE_VEC_WIDTH] __attribute__((aligned(32)));
-        float theta_local = theta;
-        float mscale = attn_factor;
-
-        if (ext_factor != 0.0f) {
-            mscale *= 1.0f + 0.1f * et_logf(et_fdiv(1.0f, freq_scale));
-        }
-
-        for (int i = 0; i < ROPE_VEC_WIDTH; ++i) {
-            const int32_t pair_idx = dim_idx + i;
-            const float ff = freq_factors ? freq_factors[pair_idx] : 1.0f;
-            const float theta_base = (float)pos * theta_local;
-            const float theta_extrap = et_fdiv(theta_base, ff);
-            float theta_interp = freq_scale * theta_extrap;
-            float theta_mix = theta_interp;
-
-            if (ext_factor != 0.0f) {
-                float ramp_mix = rope_yarn_ramp(corr_dims[0], corr_dims[1], pair_idx * 2) * ext_factor;
-                theta_mix = theta_interp * (1.0f - ramp_mix) + theta_extrap * ramp_mix;
-            }
-
-            theta_block[i] = theta_mix;
-            theta_local *= theta_scale;
-        }
-
-        rope_sincos_block8(&sin_cache[dim_idx], &cos_cache[dim_idx], theta_block);
-
-        for (int i = 0; i < ROPE_VEC_WIDTH; ++i) {
-            sin_cache[dim_idx + i] *= mscale;
-            cos_cache[dim_idx + i] *= mscale;
-        }
-
-        theta = theta_local;
-    }
-
-    for (; dim_idx < half_dims; ++dim_idx) {
-        const float ff = freq_factors ? freq_factors[dim_idx] : 1.0f;
-        const float theta_base = (float)pos * theta;
-
-        rope_yarn_scalar(
-            et_fdiv(theta_base, ff),
-            freq_scale,
-            corr_dims,
-            dim_idx * 2,
-            ext_factor,
-            attn_factor,
-            &cos_cache[dim_idx],
-            &sin_cache[dim_idx]
-        );
-
-        theta *= theta_scale;
-    }
 }
 
 static inline void block_mul(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
@@ -1541,33 +1029,26 @@ int rms_norm_f32_impl(struct ggml_et_rms_norm_params* params, void* env) {
 
                 float sum = 0.0f;
                 int32_t vec_end = (int32_t)((ne0 / 8) * 8);
-
+                
                 if (vec_end > 0) {
-                    float zero = 0.0f;
-                    __asm__ volatile("fbc.ps f10, %[z]\n" : : [z] "m"(zero) : "f10");
+                    float acc_vec[8] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
 
                     for (int32_t i0 = 0; i0 < vec_end; i0 += 8) {
                         __asm__ volatile(
+                            "flw.ps f10, %[acc]\n"
                             "flw.ps f11, %[x_vec]\n"
                             "fmadd.ps f10, f11, f11, f10\n"
-                            :
-                            : [x_vec] "m"(*(const float(*)[8])&src_ptr[i0])
+                            "fsw.ps f10, %[result]\n"
+                            : [result] "=m"(*(float(*)[8])acc_vec)
+                            : [acc] "m"(*(const float(*)[8])acc_vec),
+                              [x_vec] "m"(*(const float(*)[8])&src_ptr[i0])
                             : "f10", "f11"
                         );
                     }
 
-                    __asm__ __volatile__(
-                        "fswizz.ps f1, f10, 0xB1 \n\t"
-                        "fadd.ps   f2, f10, f1, rne \n\t"
-                        "fswizz.ps f3, f2, 0x4E \n\t"
-                        "fadd.ps   f4, f2, f3, rne \n\t"
-                        "fmvz.x.ps t0, f4, 4 \n\t"
-                        "fbcx.ps   f5, t0 \n\t"
-                        "fadd.ps   %[vout], f4, f5, rne \n\t"
-                        : [vout] "=f" (sum)
-                        :
-                        : "t0", "f1", "f2", "f3", "f4", "f5"
-                    );
+                    for (int i = 0; i < 8; i++) {
+                        sum += acc_vec[i];
+                    }
                 }
 
                 for (int32_t i0 = vec_end; i0 < (int32_t)ne0; i0++) {
@@ -1711,8 +1192,8 @@ int softmax_f32_impl(struct ggml_et_softmax_params* params, void* env) {
     if (!kernel_env) return -1;
 
     int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    int num_threads = get_num_threads(kernel_env->shire_mask);
     if (thread_id < 0) return 0;
+    if (thread_id != 0) return 0; // Single-threaded for now
 
     if (params == 0 || ((uint64_t)params & 0x7) != 0) return -1;
 
@@ -1772,58 +1253,54 @@ int softmax_f32_impl(struct ggml_et_softmax_params* params, void* env) {
         m1 = et_expf(-max_bias * 0.69314718f * inv_n_head_log2 * 0.5f);
     }
 
-    const int64_t rows_per_i03 = ne02 * ne01;
-    const int64_t total_rows = ne03 * rows_per_i03;
-
-    for (int64_t row = thread_id; row < total_rows; row += num_threads) {
-        const int64_t i03 = row / rows_per_i03;
-        const int64_t rem = row % rows_per_i03;
-        const int64_t i02 = rem / ne01;
-        const int64_t i01 = rem % ne01;
-
-        float slope = 1.0f;
-        if (max_bias > 0.0f) {
-            const uint32_t h = (uint32_t)i02;
-            if (h < n_head_log2) {
-                slope = m0;
-                for (uint32_t i = 0; i < h; i++) {
-                    slope *= m0;
-                }
-            } else {
-                const uint32_t exp = 2 * (h - n_head_log2) + 1;
-                slope = m1;
-                for (uint32_t i = 1; i < exp; i++) {
-                    slope *= m1;
+    for (int64_t i03 = 0; i03 < ne03; i03++) {
+        for (int64_t i02 = 0; i02 < ne02; i02++) {
+            float slope = 1.0f;
+            if (max_bias > 0.0f) {
+                const uint32_t h = (uint32_t)i02;
+                if (h < n_head_log2) {
+                    slope = m0;
+                    for (uint32_t i = 0; i < h; i++) {
+                        slope *= m0;
+                    }
+                } else {
+                    const uint32_t exp = 2 * (h - n_head_log2) + 1;
+                    slope = m1;
+                    for (uint32_t i = 1; i < exp; i++) {
+                        slope *= m1;
+                    }
                 }
             }
+
+            float sink_value = 0.0f;
+            if (use_sinks && sinks_data) {
+                sink_value = sinks_data[i02];
+            }
+
+            for (int64_t i01 = 0; i01 < ne01; i01++) {
+                const int64_t src_offset = i03 * ne02 * ne01 * ne00 +
+                                          i02 * ne01 * ne00 +
+                                          i01 * ne00;
+
+                const float* src_row = src0_data + src_offset;
+                float* dst_row = dst_data + src_offset;
+                const float* mask_row = NULL;
+
+                if (use_mask && mask_data) {
+                    const int64_t mask_i03 = (ne13 > 0) ? i03 % ne13 : 0;
+                    const int64_t mask_i02 = (ne12 > 0) ? i02 % ne12 : 0;
+                    const int64_t mask_i01 = i01;
+
+                    const int64_t mask_offset = mask_i03 * ne12 * ne11 * ne10 +
+                                               mask_i02 * ne11 * ne10 +
+                                               mask_i01 * ne10;
+
+                    mask_row = mask_data + mask_offset;
+                }
+
+                compute_softmax_row(dst_row, src_row, mask_row, (int)ne00, (int)ne10, scale, slope, sink_value, use_sinks);
+            }
         }
-
-        float sink_value = 0.0f;
-        if (use_sinks && sinks_data) {
-            sink_value = sinks_data[i02];
-        }
-
-        const int64_t src_offset = i03 * ne02 * ne01 * ne00 +
-                                  i02 * ne01 * ne00 +
-                                  i01 * ne00;
-
-        const float* src_row = src0_data + src_offset;
-        float* dst_row = dst_data + src_offset;
-        const float* mask_row = NULL;
-
-        if (use_mask && mask_data) {
-            const int64_t mask_i03 = (ne13 > 0) ? i03 % ne13 : 0;
-            const int64_t mask_i02 = (ne12 > 0) ? i02 % ne12 : 0;
-            const int64_t mask_i01 = i01;
-
-            const int64_t mask_offset = mask_i03 * ne12 * ne11 * ne10 +
-                                       mask_i02 * ne11 * ne10 +
-                                       mask_i01 * ne10;
-
-            mask_row = mask_data + mask_offset;
-        }
-
-        compute_softmax_row(dst_row, src_row, mask_row, (int)ne00, scale, slope, sink_value, use_sinks);
     }
 
     return 0;
@@ -1928,8 +1405,8 @@ int set_rows_f32_impl(struct ggml_et_set_rows_params* params, void* env) {
     if (!kernel_env) return -1;
 
     int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    int num_threads = get_num_threads(kernel_env->shire_mask);
     if (thread_id < 0) return 0;
+    if (thread_id != 0) return 0; // Single-threaded for now
 
     if (params == 0 || ((uint64_t)params & 0x7) != 0) return -1;
 
@@ -1970,76 +1447,29 @@ int set_rows_f32_impl(struct ggml_et_set_rows_params* params, void* env) {
 
     if (ne10 != ne01) return -1;
 
-    const int64_t total_rows = ne01 * ne02 * ne03;
-    const int64_t dst_cl_elems = (dst->type == GGML_TYPE_F16) ? CACHE_LINE_F16_ELEMS : CACHE_LINE_F32_ELEMS;
-    const bool row_cache_aligned = (ne00 >= dst_cl_elems) && (ne00 % dst_cl_elems == 0);
+    for (int64_t i03 = 0; i03 < ne03; i03++) {
+        for (int64_t i02 = 0; i02 < ne02; i02++) {
+            for (int64_t i01 = 0; i01 < ne01; i01++) {
+                const int64_t i12 = i03 % ne12;
+                const int64_t i11 = i02 % ne11;
+                const int64_t i10 = i01;
 
-    if (row_cache_aligned) {
-        const int64_t cls_per_row = ne00 / dst_cl_elems;
-        const int64_t total_cls = total_rows * cls_per_row;
-        const int64_t cls_per_thread = (total_cls + num_threads - 1) / num_threads;
-        const int64_t my_start = thread_id * cls_per_thread;
-        int64_t my_end = my_start + cls_per_thread;
-        if (my_end > total_cls) my_end = total_cls;
-        if (my_start >= total_cls) return 0;
+                const int64_t index_byte_offset = i10*nb10 + i11*nb11 + i12*nb12;
+                const int64_t dst_row_index = *(int64_t*)((char*)src1_data + index_byte_offset);
 
-        for (int64_t cl = my_start; cl < my_end; cl++) {
-            const int64_t row_flat = cl / cls_per_row;
-            const int64_t cl_in_row = cl % cls_per_row;
-            const int64_t i01 = row_flat % ne01;
-            const int64_t tmp = row_flat / ne01;
-            const int64_t i02 = tmp % ne02;
-            const int64_t i03 = tmp / ne02;
-            const int64_t i12 = i03 % ne12;
-            const int64_t i11 = i02 % ne11;
-            const int64_t i10 = i01;
-            const int64_t index_byte_offset = i10*nb10 + i11*nb11 + i12*nb12;
-            const int64_t dst_row_index = *(int64_t*)((char*)src1_data + index_byte_offset);
+                if (dst_row_index < 0 || dst_row_index >= ne_dst1) return -1;
 
-            if (dst_row_index < 0 || dst_row_index >= ne_dst1) {
-                return -1;
-            }
+                const char* src_row_ptr = (char*)src0_data + i01*nb01 + i02*nb02 + i03*nb03;
+                const float* src_row = (const float*)src_row_ptr;
 
-            const int64_t elem_offset = cl_in_row * dst_cl_elems;
-            const float* src_ptr = (const float*)((char*)src0_data + i01*nb01 + i02*nb02 + i03*nb03) + elem_offset;
-            char* dst_row_base = (char*)dst_data + dst_row_index*nb1 + i02*nb2 + i03*nb3;
+                char* dst_row_ptr = (char*)dst_data + dst_row_index*nb1 + i02*nb2 + i03*nb3;
 
-            if (dst->type == GGML_TYPE_F32) {
-                float* dst_ptr = (float*)dst_row_base + elem_offset;
-                copy_cache_aligned_f32(dst_ptr, src_ptr);
-            } else {
-                uint16_t* dst_ptr = (uint16_t*)dst_row_base + elem_offset;
-                copy_cache_aligned_f16(dst_ptr, src_ptr);
-            }
-        }
-    } else {
-        for (int64_t row_flat = thread_id; row_flat < total_rows; row_flat += num_threads) {
-            const int64_t i01 = row_flat % ne01;
-            const int64_t tmp = row_flat / ne01;
-            const int64_t i02 = tmp % ne02;
-            const int64_t i03 = tmp / ne02;
-            const int64_t i12 = i03 % ne12;
-            const int64_t i11 = i02 % ne11;
-            const int64_t i10 = i01;
-            const int64_t index_byte_offset = i10*nb10 + i11*nb11 + i12*nb12;
-            const int64_t dst_row_index = *(int64_t*)((char*)src1_data + index_byte_offset);
-
-            if (dst_row_index < 0 || dst_row_index >= ne_dst1) {
-                return -1;
-            }
-
-            const float* src_row = (const float*)((char*)src0_data + i01*nb01 + i02*nb02 + i03*nb03);
-            char* dst_row_base = (char*)dst_data + dst_row_index*nb1 + i02*nb2 + i03*nb3;
-
-            if (dst->type == GGML_TYPE_F32) {
-                volatile float* dst_row = (volatile float*)dst_row_base;
-                for (int64_t i = 0; i < ne00; i++) {
-                    atomic_store_f32(dst_row + i, src_row[i]);
-                }
-            } else {
-                volatile uint16_t* dst_row = (volatile uint16_t*)dst_row_base;
-                for (int64_t i = 0; i < ne00; i++) {
-                    atomic_store_f16(dst_row + i, fp32_to_fp16(src_row[i]));
+                if (dst->type == GGML_TYPE_F32) {
+                    float* dst_row = (float*)dst_row_ptr;
+                    copy_f32_row(dst_row, src_row, ne00);
+                } else if (dst->type == GGML_TYPE_F16) {
+                    uint16_t* dst_row = (uint16_t*)dst_row_ptr;
+                    copy_f32_to_f16_row(dst_row, src_row, ne00);
                 }
             }
         }
@@ -2192,96 +1622,95 @@ int rope_f32_impl(struct ggml_et_rope_params* params, void* env) {
 
     if (n_dims <= 0 || n_dims > head_dim || n_dims % 2 != 0) return -1;
 
-    if (n_dims / 2 > MAX_ROPE_HALF_DIMS) return -1;
-
-    float cos_cache[MAX_ROPE_HALF_DIMS];
-    float sin_cache[MAX_ROPE_HALF_DIMS];
-
     float corr_dims[2];
     rope_yarn_corr_dims(n_dims, rope_params->n_ctx_orig, freq_base,
                        rope_params->beta_fast, rope_params->beta_slow, corr_dims);
 
-    const int64_t total_heads = batch * seq_len * heads;
-    const int64_t start_wu = (total_heads * thread_id) / num_threads;
-    const int64_t end_wu = (total_heads * (thread_id + 1)) / num_threads;
-
-    if (start_wu >= end_wu) return 0;
+    const int64_t total_work_units = batch * seq_len * heads;
+    int64_t units_per_thread = total_work_units / num_threads;
+    int64_t start_unit = thread_id * units_per_thread;
+    int64_t end_unit = (thread_id == num_threads - 1) ? total_work_units : start_unit + units_per_thread;
 
     const float theta_scale = et_powf(freq_base, et_fdiv(-2.0f, (float)n_dims));
-    const int32_t half_dims = n_dims / 2;
-    const int is_neox = (mode & GGML_ROPE_TYPE_NEOX) != 0;
-    int32_t last_pos = -1;
 
-    for (int64_t wu = start_wu; wu < end_wu; ++wu) {
-        const int64_t h = wu % heads;
-        const int64_t s = (wu / heads) % seq_len;
-        const int64_t b = wu / (heads * seq_len);
-        const int32_t pos = src1_data[s] + rope_params->n_past;
+    if (mode & GGML_ROPE_TYPE_NEOX) {
+        // NeoX mode: split pairs (k, k + n_dims/2)
+        for (int64_t unit = start_unit; unit < end_unit; unit++) {
+            int64_t h = unit % heads;
+            int64_t s = (unit / heads) % seq_len;
+            int64_t b = unit / (heads * seq_len);
 
-        if (pos != last_pos) {
-            compute_rope_cache(
-                cos_cache, sin_cache,
-                n_dims, theta_scale, pos,
-                freq_factors, freq_scale,
-                corr_dims, rope_params->ext_factor, rope_params->attn_factor
-            );
-            last_pos = pos;
-        }
+            const float* head_src = (const float*)((char*)src0_data +
+                b * src0->nb[3] + s * src0->nb[2] + h * src0->nb[1]);
+            float* head_dst = (float*)((char*)dst_data +
+                b * dst->nb[3] + s * dst->nb[2] + h * dst->nb[1]);
 
-        const float* head_src = (const float*)((const char*)src0_data +
-            b * src0->nb[3] + s * src0->nb[2] + h * src0->nb[1]);
+            const int32_t pos = src1_data[s];
 
-        float* head_dst = (float*)((char*)dst_data +
-            b * dst->nb[3] + s * dst->nb[2] + h * dst->nb[1]);
-
-        for (int64_t d = n_dims; d < head_dim; ++d) {
-            head_dst[d] = head_src[d];
-        }
-
-        if (is_neox) {
-            uint64_t temp_mask;
-            __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));
-            __asm__ volatile("mov.m.x m0, x0, 0xFF");
-
-            int32_t dim_idx = 0;
-            for (; dim_idx + 8 <= half_dims; dim_idx += 8) {
-                __asm__ volatile(
-                    "flw.ps f0, %[x0_src]       \n\t"
-                    "flw.ps f1, %[x1_src]       \n\t"
-                    "flw.ps f2, %[sin_cache]    \n\t"
-                    "flw.ps f3, %[cos_cache]    \n\t"
-                    "fmul.ps f4, f0, f3         \n\t"
-                    "fmul.ps f5, f0, f2         \n\t"
-                    "fnmsub.ps f4, f1, f2, f4   \n\t"
-                    "fmadd.ps f5, f1, f3, f5    \n\t"
-                    "fsw.ps f4, %[x0_dst]       \n\t"
-                    "fsw.ps f5, %[x1_dst]       \n\t"
-                    : [x0_dst] "=m"(*(float(*)[8])&head_dst[dim_idx]),
-                      [x1_dst] "=m"(*(float(*)[8])&head_dst[dim_idx + half_dims])
-                    : [x0_src] "m"(*(const float(*)[8])&head_src[dim_idx]),
-                      [x1_src] "m"(*(const float(*)[8])&head_src[dim_idx + half_dims]),
-                      [sin_cache] "m"(*(const float(*)[8])&sin_cache[dim_idx]),
-                      [cos_cache] "m"(*(const float(*)[8])&cos_cache[dim_idx])
-                    : "f0", "f1", "f2", "f3", "f4", "f5", "memory"
-                );
+            // Copy entire head first (skip for inplace, avoids overwriting rotation results)
+            if (head_src != head_dst) {
+                for (int64_t i0 = 0; i0 < head_dim; i0++) {
+                    head_dst[i0] = head_src[i0];
+                }
             }
 
-            __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+            // Apply NeoX rotations using accumulated theta
+            float theta = (float)pos;
+            for (int64_t dim_idx = 0; dim_idx < n_dims / 2; dim_idx++) {
+                const float ff = freq_factors ? freq_factors[dim_idx] : 1.0f;
 
-            for (; dim_idx < half_dims; ++dim_idx) {
+                float cos_theta, sin_theta;
+                rope_yarn(et_fdiv(theta, ff), freq_scale, corr_dims, dim_idx * 2,
+                         rope_params->ext_factor, rope_params->attn_factor,
+                         &cos_theta, &sin_theta);
+
                 const float x0 = head_src[dim_idx];
-                const float x1 = head_src[dim_idx + half_dims];
-                head_dst[dim_idx] = x0 * cos_cache[dim_idx] - x1 * sin_cache[dim_idx];
-                head_dst[dim_idx + half_dims] = x0 * sin_cache[dim_idx] + x1 * cos_cache[dim_idx];
-            }
-        } else {
-            for (int32_t pair_idx = 0; pair_idx < half_dims; ++pair_idx) {
-                const int32_t dim_in_head = pair_idx * 2;
-                const float x0 = head_src[dim_in_head];
-                const float x1 = head_src[dim_in_head + 1];
+                const float x1 = head_src[dim_idx + n_dims/2];
 
-                head_dst[dim_in_head] = x0 * cos_cache[pair_idx] - x1 * sin_cache[pair_idx];
-                head_dst[dim_in_head + 1] = x0 * sin_cache[pair_idx] + x1 * cos_cache[pair_idx];
+                head_dst[dim_idx]            = x0 * cos_theta - x1 * sin_theta;
+                head_dst[dim_idx + n_dims/2] = x0 * sin_theta + x1 * cos_theta;
+
+                theta *= theta_scale;
+            }
+        }
+    } else {
+        // Standard mode (mode=0): consecutive pairs (2k, 2k+1)
+        for (int64_t unit = start_unit; unit < end_unit; unit++) {
+            int64_t h = unit % heads;
+            int64_t s = (unit / heads) % seq_len;
+            int64_t b = unit / (heads * seq_len);
+
+            const float* head_src = (const float*)((char*)src0_data +
+                b * src0->nb[3] + s * src0->nb[2] + h * src0->nb[1]);
+            float* head_dst = (float*)((char*)dst_data +
+                b * dst->nb[3] + s * dst->nb[2] + h * dst->nb[1]);
+
+            const int32_t pos = src1_data[s];
+
+            // Copy entire head first (handles non-rotated elements beyond n_dims)
+            if (head_src != head_dst) {
+                for (int64_t i0 = 0; i0 < head_dim; i0++) {
+                    head_dst[i0] = head_src[i0];
+                }
+            }
+
+            // Apply standard rotations: consecutive pairs (2k, 2k+1)
+            float theta = (float)pos;
+            for (int64_t i0 = 0; i0 < n_dims; i0 += 2) {
+                const float ff = freq_factors ? freq_factors[i0/2] : 1.0f;
+
+                float cos_theta, sin_theta;
+                rope_yarn(et_fdiv(theta, ff), freq_scale, corr_dims, i0,
+                         rope_params->ext_factor, rope_params->attn_factor,
+                         &cos_theta, &sin_theta);
+
+                const float x0 = head_src[i0];
+                const float x1 = head_src[i0 + 1];
+
+                head_dst[i0]     = x0 * cos_theta - x1 * sin_theta;
+                head_dst[i0 + 1] = x0 * sin_theta + x1 * cos_theta;
+
+                theta *= theta_scale;
             }
         }
     }
@@ -3099,8 +2528,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_SET_ROWS);
-                    if (params.src0.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I64 &&
-                        (params.dst.type == GGML_TYPE_F32 || params.dst.type == GGML_TYPE_F16)) {
+                    if (params.src0.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I64) {
                         set_rows_f32_impl(&params, env);
                     }
                 }
