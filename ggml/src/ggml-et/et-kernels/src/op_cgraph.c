@@ -979,6 +979,51 @@ static inline void block_add(float* dst_block, const float* src0_block, const fl
 }
 
 
+static inline void block_geglu(float* dst_block, const float* x_block, const float* g_block, int elements) {
+    unsigned long temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");
+
+    float one_const       = 1.0f;
+    float coef_a_const    = 0.044715f;
+    float sqrt2pi_const   = 0.79788456080286535587989211986876f;
+    float two_log2e_const = 2.8853900817779268f;
+
+    for (int32_t i = 0; i < elements; i += 8) {
+        __asm__ volatile(
+            "flw.ps f10, %[x_vec]\n"
+            "flw.ps f11, %[g_vec]\n"
+            "fbc.ps f20, %[one_ptr]\n"
+            "fbc.ps f22, %[coef_ptr]\n"
+            "fbc.ps f23, %[sqrt2pi_ptr]\n"
+            "fbc.ps f24, %[two_log2e_ptr]\n"
+            "fmul.ps f12, f10, f10\n"
+            "fmadd.ps f13, f22, f12, f20\n"
+            "fmul.ps f14, f23, f10\n"
+            "fmul.ps f14, f14, f13\n"
+            "fmul.ps f15, f14, f24\n"
+            "fexp.ps f15, f15\n"
+            "fadd.ps f16, f15, f20\n"
+            "frcp.ps f16, f16\n"
+            "fsub.ps f16, f20, f16\n"
+            "fmul.ps f16, f10, f16\n"
+            "fmul.ps f18, f16, f11\n"
+            "fsw.ps f18, %[dst_out]\n"
+            : [dst_out] "=m"(*(float(*)[8])&dst_block[i])
+            : [x_vec] "m"(*(const float(*)[8])&x_block[i]),
+              [g_vec] "m"(*(const float(*)[8])&g_block[i]),
+              [one_ptr] "m"(one_const),
+              [coef_ptr] "m"(coef_a_const),
+              [sqrt2pi_ptr] "m"(sqrt2pi_const),
+              [two_log2e_ptr] "m"(two_log2e_const)
+            : "f10", "f11", "f12", "f13", "f14", "f15", "f16", "f18",
+              "f20", "f22", "f23", "f24"
+        );
+    }
+
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+}
+
 static inline void block_swiglu(float* dst_block, const float* x_block, const float* g_block, int elements) {
     // Process 8 elements at a time using vector instructions
     int32_t vec_end = (elements / 8) * 8;
@@ -1149,11 +1194,12 @@ int glu_f32_impl(struct ggml_et_glu_params* params, void* env) {
     if (!kernel_env) return -1;
 
     int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+    int num_threads = get_num_threads(kernel_env->shire_mask);
     if (thread_id < 0) return 0;
-    if (thread_id != 0) return 0; // Single-threaded for now
 
     if (params == 0 || ((uint64_t)params & 0x7) != 0) return -1;
-    if (params->glu_op_type != GGML_GLU_OP_SWIGLU) return -1;
+    if (params->glu_op_type != GGML_GLU_OP_SWIGLU &&
+        params->glu_op_type != GGML_GLU_OP_GEGLU) return -1;
 
     struct ggml_tensor* src0 = &params->src0;
     struct ggml_tensor* src1 = &params->src1;
@@ -1186,15 +1232,26 @@ int glu_f32_impl(struct ggml_et_glu_params* params, void* env) {
     const int64_t total_elements = nr * nc;
     const int64_t total_cachelines = (total_elements + elements_per_cacheline - 1) / elements_per_cacheline;
 
-    int64_t start_cacheline = 0;
-    int64_t end_cacheline = total_cachelines;
+    int64_t cachelines_per_thread = (total_cachelines + num_threads - 1) / num_threads;
+    int64_t start_cacheline = thread_id * cachelines_per_thread;
+    int64_t end_cacheline = start_cacheline + cachelines_per_thread;
+
+    if (end_cacheline > total_cachelines) {
+        end_cacheline = total_cachelines;
+    }
+
+    if (start_cacheline >= total_cachelines) {
+        return 0;
+    }
 
     for (int64_t cl = start_cacheline; cl < end_cacheline; cl++) {
         int64_t global_element_start = cl * elements_per_cacheline;
         int64_t row = global_element_start / nc;
         int64_t col = global_element_start % nc;
 
-        if (global_element_start >= total_elements) break;
+        if (global_element_start >= total_elements) {
+            break;
+        }
 
         int64_t elements_remaining = total_elements - global_element_start;
         int elements_this_block = (int)((elements_remaining < elements_per_cacheline) ?
@@ -1227,7 +1284,11 @@ int glu_f32_impl(struct ggml_et_glu_params* params, void* env) {
                 }
             }
 
-            block_swiglu(dst_ptr, x_ptr, g_ptr, (int)elements_to_process);
+            if (params->glu_op_type == GGML_GLU_OP_GEGLU) {
+                block_geglu(dst_ptr, x_ptr, g_ptr, (int)elements_to_process);
+            } else {
+                block_swiglu(dst_ptr, x_ptr, g_ptr, (int)elements_to_process);
+            }
 
             elements_processed += elements_to_process;
             col += elements_to_process;
@@ -2517,7 +2578,10 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GLU);
                     memcpy(&params.glu_op_type, &node_meta[i].op_params[0], sizeof(int32_t));
                     memcpy(&params.swapped, &node_meta[i].op_params[1], sizeof(int32_t));
-                    if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
+                    if (params.dst.type == GGML_TYPE_F32 &&
+                        params.src0.type == GGML_TYPE_F32 &&
+                        params.src1.type == GGML_TYPE_F32 &&
+                        (params.glu_op_type == GGML_GLU_OP_SWIGLU || params.glu_op_type == GGML_GLU_OP_GEGLU)) {
                         glu_f32_impl(&params, env);
                     }
                 }
