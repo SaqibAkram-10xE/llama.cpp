@@ -1833,7 +1833,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
     uint8_t * node_op = (uint8_t *)(node_meta + cg->n_nodes);
     const int n_nodes = cg->n_nodes;
 
-    device_barrier(32);
+    // device_barrier(32);
 
     for (int i = 0; i < n_nodes; i++) {
         const int op = node_op[i];
@@ -1842,15 +1842,15 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             continue;
         }
 
-        // Fusion: RMS_NORM + MUL -> fused RMS_NORM_MUL
-        if (op == GGML_OP_RMS_NORM &&
-            ggml_et_can_fuse(cg, i, node_op, n_nodes,
-                             (enum ggml_op[]){ GGML_OP_RMS_NORM, GGML_OP_MUL }, 2)) {
-            ggml_et_op_rms_norm_mul(env, &node_meta[i], &node_meta[i + 1]);
-            i++;
-            device_barrier(32);
-            continue;
-        }
+        // // Fusion: RMS_NORM + MUL -> fused RMS_NORM_MUL
+        // if (op == GGML_OP_RMS_NORM &&
+        //     ggml_et_can_fuse(cg, i, node_op, n_nodes,
+        //                      (enum ggml_op[]){ GGML_OP_RMS_NORM, GGML_OP_MUL }, 2)) {
+        //     ggml_et_op_rms_norm_mul(env, &node_meta[i], &node_meta[i + 1]);
+        //     i++;
+        //     device_barrier(32);
+        //     continue;
+        // }
 
         switch (op) {
             case GGML_OP_SQR:            ggml_et_op_sqr(env, &node_meta[i]); break;

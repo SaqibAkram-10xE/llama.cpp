@@ -585,7 +585,7 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
 
     ggml_et_op_cg(dev_ctx, cgraph);
 
-    for (int i = 0; i < cgraph->n_nodes; i++) {
+    /*for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
 
         if (node->op == GGML_OP_NONE) {
@@ -747,7 +747,7 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
                 GGML_LOG_ERROR("ET: Unsupported operation in graph: %s", ggml_op_name(node->op));
                 return GGML_STATUS_FAILED;
         }
-    }
+    }*/
 
     return GGML_STATUS_SUCCESS;
 }
