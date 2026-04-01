@@ -419,114 +419,137 @@ static void ggml_et_op_cumsum(void * env, struct ggml_node_meta_et * m) {
 // ========================================================================
 // OP: MUL / ADD / SUB  —  element-wise binary with broadcasting
 // ========================================================================
-static void ggml_et_op_elmap(void * env, struct ggml_node_meta_et * m,
-                              enum ggml_op operation) {
-    int tid, nth;
-    if (cg_thread_setup(env, &tid, &nth)) return;
 
-    float * src0 = (float *)(uintptr_t)m->src0.data;
-    float * src1 = (float *)(uintptr_t)m->src1.data;
-    float * dst  = (float *)(uintptr_t)m->dst.data;
-    if (!src0 || !src1 || !dst) return;
+// Block operation implementations using ET vector instructions
+static inline void block_mul_cache_aligned(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
+    // Process 8 elements at a time using vector multiplication
+    int32_t vec_end = (elements / 8) * 8;
 
-    const int64_t ne0 = m->dst.ne[0], ne1 = m->dst.ne[1];
-    const int64_t ne2 = m->dst.ne[2], ne3 = m->dst.ne[3];
-    const int64_t ne10 = m->src1.ne[0], ne11 = m->src1.ne[1];
-    const int64_t ne12 = m->src1.ne[2], ne13 = m->src1.ne[3];
+    // Set mask register to enable all 8 vector elements
+    unsigned long temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
 
-    const size_t nb0 = (size_t)m->dst.nb[0], nb1 = (size_t)m->dst.nb[1];
-    const size_t nb2 = (size_t)m->dst.nb[2], nb3 = (size_t)m->dst.nb[3];
-    const size_t nb00 = (size_t)m->src0.nb[0], nb01 = (size_t)m->src0.nb[1];
-    const size_t nb02 = (size_t)m->src0.nb[2], nb03 = (size_t)m->src0.nb[3];
-    const size_t nb10 = (size_t)m->src1.nb[0], nb11 = (size_t)m->src1.nb[1];
-    const size_t nb12 = (size_t)m->src1.nb[2], nb13 = (size_t)m->src1.nb[3];
+    for (int32_t i = 0; i < vec_end; i += 8) {
+        // Compute results into temporary buffer
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"        // Load 8 src0 values
+            "flw.ps f11, %[src1_vec]\n"        // Load 8 src1 values
+            "fmul.ps f12, f10, f11\n"          // dst = src0 * src1 (8-wide)
+            "fsw.ps f12, %[dst_vec]\n"         // Store 8 results to temp buffer
 
-    // Fast path: no broadcasting, contiguous
-    const bool no_bcast = (ne10 == ne0 && ne11 == ne1 && ne12 == ne2 && ne13 == ne3);
-    const bool all_contig = (nb0 == 4 && nb00 == 4 && nb10 == 4 &&
-                             nb1 == ne0*4 && nb01 == ne0*4 && nb11 == ne0*4);
-
-    if (no_bcast && all_contig && (ne0 % 16 == 0)) {
-        const int64_t total = ne0 * ne1 * ne2 * ne3;
-        const int64_t elems_per_cl = 16;
-        const int64_t total_cl = (total + elems_per_cl - 1) / elems_per_cl;
-        const int64_t cl_per_t = (total_cl + nth - 1) / nth;
-        const int64_t cl_s = tid * cl_per_t;
-        int64_t cl_e = cl_s + cl_per_t;
-        if (cl_e > total_cl) cl_e = total_cl;
-        if (cl_s >= total_cl) return;
-        const int64_t es = cl_s * elems_per_cl;
-        int64_t ee = cl_e * elems_per_cl;
-        if (ee > total) ee = total;
-
-        for (int64_t i = es; i < ee; i += 8) {
-            if (operation == GGML_OP_MUL) {
-                __asm__ volatile(
-                    "flw.ps f10, %[a]\n" "flw.ps f11, %[b]\n"
-                    "fmul.ps f12, f10, f11\n" "fsw.ps f12, %[d]\n"
-                    : [d] "=m"(*(float(*)[8])&dst[i])
-                    : [a] "m"(*(const float(*)[8])&src0[i]),
-                      [b] "m"(*(const float(*)[8])&src1[i])
-                    : "f10","f11","f12");
-            } else if (operation == GGML_OP_ADD) {
-                __asm__ volatile(
-                    "flw.ps f10, %[a]\n" "flw.ps f11, %[b]\n"
-                    "fadd.ps f12, f10, f11\n" "fsw.ps f12, %[d]\n"
-                    : [d] "=m"(*(float(*)[8])&dst[i])
-                    : [a] "m"(*(const float(*)[8])&src0[i]),
-                      [b] "m"(*(const float(*)[8])&src1[i])
-                    : "f10","f11","f12");
-            } else {
-                __asm__ volatile(
-                    "flw.ps f10, %[a]\n" "flw.ps f11, %[b]\n"
-                    "fsub.ps f12, f10, f11\n" "fsw.ps f12, %[d]\n"
-                    : [d] "=m"(*(float(*)[8])&dst[i])
-                    : [a] "m"(*(const float(*)[8])&src0[i]),
-                      [b] "m"(*(const float(*)[8])&src1[i])
-                    : "f10","f11","f12");
-            }
-        }
-        return;
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [src1_vec] "m"(*(const float(*)[8])&src1_block[i])
+            : "f10", "f11", "f12"
+        );
     }
 
-    // Slow path: broadcasting
-    const int64_t total_rows = ne1 * ne2 * ne3;
-    for (int64_t ir = tid; ir < total_rows; ir += nth) {
-        const int64_t i3 = ir / (ne2 * ne1);
-        const int64_t i2 = (ir - i3 * ne2 * ne1) / ne1;
-        const int64_t i1 = ir - i3 * ne2 * ne1 - i2 * ne1;
-        const int64_t i13 = i3 % ne13, i12 = i2 % ne12, i11 = i1 % ne11;
+    // Restore original mask
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+}
 
-        float * dp  = (float *)((char *)dst  + i3*nb3  + i2*nb2  + i1*nb1);
-        const float * s0p = (const float *)((const char *)src0 + i3*nb03 + i2*nb02 + i1*nb01);
-        const float * s1p = (const float *)((const char *)src1 + i13*nb13 + i12*nb12 + i11*nb11);
+static inline void block_add_cache_aligned(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
+    // Process 8 elements at a time using vector addition
+    int32_t vec_end = (elements / 8) * 8;
 
-        if (ne10 == 1) {
-            float scalar = s1p[0];
-            for (int64_t i = 0; i < ne0; i++) {
-                if (operation == GGML_OP_MUL) dp[i] = s0p[i] * scalar;
-                else if (operation == GGML_OP_ADD) dp[i] = s0p[i] + scalar;
-                else dp[i] = s0p[i] - scalar;
-            }
-        } else {
-            for (int64_t i = 0; i < ne0; i++) {
-                float a = s0p[i], b = s1p[i % ne10];
-                if (operation == GGML_OP_MUL) dp[i] = a * b;
-                else if (operation == GGML_OP_ADD) dp[i] = a + b;
-                else dp[i] = a - b;
-            }
-        }
+    // Set mask register to enable all 8 vector elements
+    unsigned long temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
+
+    for (int32_t i = 0; i < vec_end; i += 8) {
+        // Compute results into temporary buffer
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"        // Load 8 src0 values
+            "flw.ps f11, %[src1_vec]\n"        // Load 8 src1 values
+            "fadd.ps f12, f10, f11\n"          // dst = src0 + src1 (8-wide)
+            "fsw.ps f12, %[dst_vec]\n"         // Store 8 results to temp buffer
+
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [src1_vec] "m"(*(const float(*)[8])&src1_block[i])
+            : "f10", "f11", "f12"
+        );
+    }
+
+    // Restore original mask
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+}
+
+static inline void block_sub_cache_aligned(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
+    // Process 8 elements at a time using vector addition
+    int32_t vec_end = (elements / 8) * 8;
+
+    // Set mask register to enable all 8 vector elements
+    unsigned long temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
+
+    for (int32_t i = 0; i < vec_end; i += 8) {
+        // Compute results into temporary buffer
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"        // Load 8 src0 values
+            "flw.ps f11, %[src1_vec]\n"        // Load 8 src1 values
+            "fsub.ps f12, f10, f11\n"          // dst = src0 + src1 (8-wide)
+            "fsw.ps f12, %[dst_vec]\n"         // Store 8 results to temp buffer
+
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [src1_vec] "m"(*(const float(*)[8])&src1_block[i])
+            : "f10", "f11", "f12"
+        );
+    }
+
+    // Restore original mask
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+}
+
+
+// Broadcast variants: src1 is a single scalar, broadcast to all 8 lanes via fbc.ps
+static inline void block_mul_broadcast(float* dst_block, const float* src0_block, float scalar, int elements) {
+    for (int32_t i = 0; i < elements; i += 8) {
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"
+            "fbc.ps f11, %[s]\n"
+            "fmul.ps f12, f10, f11\n"
+            "fsw.ps f12, %[dst_vec]\n"
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [s] "m"(scalar)
+            : "f10", "f11", "f12"
+        );
     }
 }
 
-static void ggml_et_op_mul(void * env, struct ggml_node_meta_et * m) {
-    ggml_et_op_elmap(env, m, GGML_OP_MUL);
+static inline void block_add_broadcast(float* dst_block, const float* src0_block, float scalar, int elements) {
+    for (int32_t i = 0; i < elements; i += 8) {
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"
+            "fbc.ps f11, %[s]\n"
+            "fadd.ps f12, f10, f11\n"
+            "fsw.ps f12, %[dst_vec]\n"
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [s] "m"(scalar)
+            : "f10", "f11", "f12"
+        );
+    }
 }
-static void ggml_et_op_add(void * env, struct ggml_node_meta_et * m) {
-    ggml_et_op_elmap(env, m, GGML_OP_ADD);
-}
-static void ggml_et_op_sub(void * env, struct ggml_node_meta_et * m) {
-    ggml_et_op_elmap(env, m, GGML_OP_SUB);
+
+static inline void block_sub_broadcast(float* dst_block, const float* src0_block, float scalar, int elements) {
+    for (int32_t i = 0; i < elements; i += 8) {
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"
+            "fbc.ps f11, %[s]\n"
+            "fsub.ps f12, f10, f11\n"
+            "fsw.ps f12, %[dst_vec]\n"
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [s] "m"(scalar)
+            : "f10", "f11", "f12"
+        );
+    }
 }
 
 // ========================================================================
@@ -1829,6 +1852,7 @@ static void ggml_et_op_flash_attn_ext(void * env, struct ggml_node_meta_et * m) 
 // Entry point — graph execution loop
 // ========================================================================
 int entry_point(struct ggml_cgraph_et * cg, void * env) {
+    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
     struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *)cg->data;
     uint8_t * node_op = (uint8_t *)(node_meta + cg->n_nodes);
     const int n_nodes = cg->n_nodes;
@@ -1852,8 +1876,160 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
         //     continue;
         // }
 
+        device_barrier(32);
+
         switch (op) {
-            case GGML_OP_MUL:            ggml_et_op_mul(env, &node_meta[i]); break;
+            case GGML_OP_MUL:
+            case GGML_OP_ADD:
+            case GGML_OP_SUB:
+            {
+                // Check if we support the data types
+                if (node_meta[i].src0.type != node_meta[i].src1.type || node_meta[i].src0.type != node_meta[i].dst.type) {
+                    break; // Skip if types don't match
+                }
+                
+                if (node_meta[i].src0.type != GGML_TYPE_F32) {
+                    break; // Only support F32 for now
+                }
+                
+                int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+                int num_threads = get_num_threads(kernel_env->shire_mask);
+
+                void * src0_data = (void *)(uintptr_t)node_meta[i].src0.data;
+                void * src1_data = (void *)(uintptr_t)node_meta[i].src1.data;
+                void * dst_data  = (void *)(uintptr_t)node_meta[i].dst.data;
+                if (!src0_data || !src1_data || !dst_data) break;
+
+                const int64_t ne0 = node_meta[i].dst.ne[0], ne1 = node_meta[i].dst.ne[1];
+                const int64_t ne2 = node_meta[i].dst.ne[2], ne3 = node_meta[i].dst.ne[3];
+                const int64_t ne10 = node_meta[i].src1.ne[0], ne11 = node_meta[i].src1.ne[1];
+                const int64_t ne12 = node_meta[i].src1.ne[2], ne13 = node_meta[i].src1.ne[3];
+
+                const size_t nb0 = (size_t)node_meta[i].dst.nb[0], nb1 = (size_t)node_meta[i].dst.nb[1];
+                const size_t nb2 = (size_t)node_meta[i].dst.nb[2], nb3 = (size_t)node_meta[i].dst.nb[3];
+                const size_t nb00 = (size_t)node_meta[i].src0.nb[0], nb01 = (size_t)node_meta[i].src0.nb[1];
+                const size_t nb02 = (size_t)node_meta[i].src0.nb[2], nb03 = (size_t)node_meta[i].src0.nb[3];
+                const size_t nb10 = (size_t)node_meta[i].src1.nb[0], nb11 = (size_t)node_meta[i].src1.nb[1];
+                const size_t nb12 = (size_t)node_meta[i].src1.nb[2], nb13 = (size_t)node_meta[i].src1.nb[3];
+
+                const size_t elem_size = 4; // F32
+                const bool cache_aligned = (ne0 % (16/elem_size) == 0);
+                if(!cache_aligned) {
+                    break;
+                }
+
+                // Fast path: no broadcasting, contiguous
+                const bool no_broadcast = (ne10 == ne0 && ne11 == ne1 && ne12 == ne2 && ne13 == ne3);
+                const bool all_contiguous = (nb0 == elem_size && nb00 == elem_size && nb10 == elem_size &&
+                                            nb1 == ne0 * elem_size && nb01 == ne0 * elem_size && nb11 == ne0 * elem_size);
+
+                if (no_broadcast && all_contiguous) {
+                    const int64_t total_elements = ne0 * ne1 * ne2 * ne3;
+                    const int64_t elements_per_cacheline = 16 / elem_size;  // 64 bytes / element_size
+                    const int64_t total_cachelines = (total_elements + elements_per_cacheline - 1) / elements_per_cacheline;
+
+                    const int64_t cl_per_thread = (total_cachelines + num_threads - 1) / num_threads;
+                    const int64_t cl_start = thread_id * cl_per_thread;
+                    int64_t cl_end = cl_start + cl_per_thread;
+                    if (cl_end > total_cachelines) cl_end = total_cachelines;
+
+                    if (cl_start >= total_cachelines) {
+                        break;
+                    }
+
+                    const int64_t elem_start = cl_start * elements_per_cacheline;
+                    int64_t elem_end = cl_end * elements_per_cacheline;
+                    if (elem_end > total_elements) elem_end = total_elements;
+                    const int32_t count = (int32_t)(elem_end - elem_start);
+
+                    switch (op) {
+                        case GGML_OP_MUL:
+                            block_mul_cache_aligned((float*)dst_data + elem_start, (float*)src0_data + elem_start, (float*)src1_data + elem_start, count);
+                            break;
+                        case GGML_OP_ADD:
+                            block_add_cache_aligned((float*)dst_data + elem_start, (float*)src0_data + elem_start, (float*)src1_data + elem_start, count);
+                            break;
+                        case GGML_OP_SUB:
+                            block_sub_cache_aligned((float*)dst_data + elem_start, (float*)src0_data + elem_start, (float*)src1_data + elem_start, count);
+                            break;
+                        default:
+                            break;
+                    }
+                    break;
+                }
+
+                // Slow path: broadcasting or non-contiguous: row based or bcast on last row
+                const int64_t total_rows = ne1 * ne2 * ne3;
+
+                const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
+                const int64_t start_row = thread_id * rows_per_thread;
+                const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
+
+                if (start_row >= total_rows) {
+                    break;
+                }
+
+                for (int64_t ir = start_row; ir < end_row; ir++) {
+                    // Convert flat row index to 3D coordinates
+                    const int64_t i03 = ir / (ne2 * ne1);
+                    const int64_t i02 = (ir - i03 * ne2 * ne1) / ne1;
+                    const int64_t i01 = (ir - i03 * ne2 * ne1 - i02 * ne1);
+
+                    // Handle broadcasting: src1 coordinates with modulo
+                    const int64_t i13 = i03 % ne13;
+                    const int64_t i12 = i02 % ne12;
+                    const int64_t i11 = i01 % ne11;
+
+                    // Calculate base pointers for this row using stride-based addressing
+                    void* dst_ptr = (void*)((char*)dst_data + i03*nb3 + i02*nb2 + i01*nb1);
+                    const void* src0_ptr = (const void*)((const char*)src0_data + i03*nb03 + i02*nb02 + i01*nb01);
+                    const void* src1_ptr = (const void*)((const char*)src1_data + i13*nb13 + i12*nb12 + i11*nb11);
+
+                    if (ne10 == 1) {
+                        // Broadcast scalar: src1 has ne[0]=1, broadcast across entire row
+                        float scalar = ((const float*)src1_ptr)[0];
+                        switch (op) {
+                            case GGML_OP_MUL:
+                                block_mul_broadcast((float*)dst_ptr, (const float*)src0_ptr, scalar, (int)ne0);
+                                break;
+                            case GGML_OP_ADD:
+                                block_add_broadcast((float*)dst_ptr, (const float*)src0_ptr, scalar, (int)ne0);
+                                break;
+                            case GGML_OP_SUB:
+                                block_sub_broadcast((float*)dst_ptr, (const float*)src0_ptr, scalar, (int)ne0);
+                                break;
+                            default:
+                                break;
+                        }
+                    } else {
+                        // Broadcasting in dimension 0: src1 repeats across src0
+                        const int64_t nr0 = ne0 / ne10;
+
+                        for (int64_t r = 0; r < nr0; r++) {
+                            const float* src0_block = (const float*)src0_ptr + r * ne10;
+                            float* dst_block = (float*)dst_ptr + r * ne10;
+
+                            switch (op) {
+                                case GGML_OP_MUL:
+                                    block_mul_cache_aligned(dst_block, src0_block, (const float*)src1_ptr, (int)ne10);
+                                    break;
+                                case GGML_OP_ADD:
+                                    block_add_cache_aligned(dst_block, src0_block, (const float*)src1_ptr, (int)ne10);
+                                    break;
+                                case GGML_OP_SUB:
+                                    block_sub_cache_aligned(dst_block, src0_block, (const float*)src1_ptr, (int)ne10);
+                                    break;
+                                default:
+                                    break;
+                            }
+                        }
+                    }
+                }
+
+            }
+
+            break;   
+                    //  ggml_et_op_mul(env, &node_meta[i]); break;
             // case GGML_OP_ADD:            ggml_et_op_add(env, &node_meta[i]); break;
             // case GGML_OP_SUB:            ggml_et_op_sub(env, &node_meta[i]); break;
             // case GGML_OP_GLU:            ggml_et_op_glu(env, &node_meta[i]); break;
@@ -1892,12 +2068,12 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 return -1;
         }
 
-        if (op != GGML_OP_RESHAPE &&
-            op != GGML_OP_VIEW    &&
-            op != GGML_OP_PERMUTE &&
-            op != GGML_OP_TRANSPOSE) {
-            device_barrier(32);
-        }
+        // if (op != GGML_OP_RESHAPE &&
+        //     op != GGML_OP_VIEW    &&
+        //     op != GGML_OP_PERMUTE &&
+        //     op != GGML_OP_TRANSPOSE) {
+        //     device_barrier(32);
+        // }
     }
 
     return 0;
