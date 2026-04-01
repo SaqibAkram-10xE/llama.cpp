@@ -1842,50 +1842,51 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             continue;
         }
 
-        // // Fusion: RMS_NORM + MUL -> fused RMS_NORM_MUL
+        // Fusion: RMS_NORM + MUL -> fused RMS_NORM_MUL
         // if (op == GGML_OP_RMS_NORM &&
         //     ggml_et_can_fuse(cg, i, node_op, n_nodes,
         //                      (enum ggml_op[]){ GGML_OP_RMS_NORM, GGML_OP_MUL }, 2)) {
         //     ggml_et_op_rms_norm_mul(env, &node_meta[i], &node_meta[i + 1]);
         //     i++;
-        //     device_barrier(32);
+        //     // device_barrier(32);
         //     continue;
         // }
 
         switch (op) {
-            case GGML_OP_SQR:            ggml_et_op_sqr(env, &node_meta[i]); break;
-            case GGML_OP_UNARY:          ggml_et_op_unary(env, &node_meta[i]); break;
-            case GGML_OP_SUM_ROWS:       ggml_et_op_sum_rows(env, &node_meta[i]); break;
             case GGML_OP_MUL:            ggml_et_op_mul(env, &node_meta[i]); break;
-            case GGML_OP_ADD:            ggml_et_op_add(env, &node_meta[i]); break;
-            case GGML_OP_SUB:            ggml_et_op_sub(env, &node_meta[i]); break;
-            case GGML_OP_CUMSUM:         ggml_et_op_cumsum(env, &node_meta[i]); break;
-            case GGML_OP_MUL_MAT:        ggml_et_op_mul_mat(env, &node_meta[i]); break;
-            case GGML_OP_MUL_MAT_ID:     ggml_et_op_mul_mat_id(env, &node_meta[i]); break;
-            case GGML_OP_ROPE:           ggml_et_op_rope(env, &node_meta[i]); break;
-            case GGML_OP_RMS_NORM:       ggml_et_op_rms_norm(env, &node_meta[i]); break;
-            case GGML_OP_NORM:           ggml_et_op_norm(env, &node_meta[i]); break;
-            case GGML_OP_L2_NORM:        ggml_et_op_l2_norm(env, &node_meta[i]); break;
-            case GGML_OP_SCALE:          ggml_et_op_scale(env, &node_meta[i]); break;
-            case GGML_OP_GLU:            ggml_et_op_glu(env, &node_meta[i]); break;
-            case GGML_OP_SOFT_MAX:       ggml_et_op_softmax(env, &node_meta[i]); break;
-            case GGML_OP_FLASH_ATTN_EXT: ggml_et_op_flash_attn_ext(env, &node_meta[i]); break;
-            case GGML_OP_GET_ROWS:       ggml_et_op_get_rows(env, &node_meta[i]); break;
-            case GGML_OP_SET_ROWS:       ggml_et_op_set_rows(env, &node_meta[i]); break;
-            case GGML_OP_CONT:           ggml_et_op_cont(env, &node_meta[i]); break;
-            case GGML_OP_CPY:            ggml_et_op_cpy(env, &node_meta[i]); break;
-            case GGML_OP_CONCAT:         ggml_et_op_concat(env, &node_meta[i]); break;
-            case GGML_OP_REPEAT:         ggml_et_op_repeat(env, &node_meta[i]); break;
-            case GGML_OP_PAD:            ggml_et_op_pad(env, &node_meta[i]); break;
-            case GGML_OP_SET:            ggml_et_op_set(env, &node_meta[i]); break;
-            case GGML_OP_FILL:           ggml_et_op_fill(env, &node_meta[i]); break;
-            case GGML_OP_DIAG:           ggml_et_op_diag(env, &node_meta[i]); break;
+            // case GGML_OP_ADD:            ggml_et_op_add(env, &node_meta[i]); break;
+            // case GGML_OP_SUB:            ggml_et_op_sub(env, &node_meta[i]); break;
+            // case GGML_OP_GLU:            ggml_et_op_glu(env, &node_meta[i]); break;
+            // case GGML_OP_SOFT_MAX:       ggml_et_op_softmax(env, &node_meta[i]); break;
+            // case GGML_OP_FLASH_ATTN_EXT: ggml_et_op_flash_attn_ext(env, &node_meta[i]); break;
+            // case GGML_OP_GET_ROWS:       ggml_et_op_get_rows(env, &node_meta[i]); break;
+            // case GGML_OP_SET_ROWS:       ggml_et_op_set_rows(env, &node_meta[i]); break;
+            // case GGML_OP_CONT:           ggml_et_op_cont(env, &node_meta[i]); break;
+            // case GGML_OP_MUL_MAT:        ggml_et_op_mul_mat(env, &node_meta[i]); break;
+            // case GGML_OP_ROPE:           ggml_et_op_rope(env, &node_meta[i]); break;
+            // case GGML_OP_RMS_NORM:       ggml_et_op_rms_norm(env, &node_meta[i]); break;
 
-            case GGML_OP_RESHAPE:
-            case GGML_OP_VIEW:
-            case GGML_OP_PERMUTE:
-            case GGML_OP_TRANSPOSE:
-                break;
+            // case GGML_OP_SQR:            ggml_et_op_sqr(env, &node_meta[i]); break;
+            // case GGML_OP_UNARY:          ggml_et_op_unary(env, &node_meta[i]); break;
+            // case GGML_OP_SUM_ROWS:       ggml_et_op_sum_rows(env, &node_meta[i]); break;
+            // case GGML_OP_CUMSUM:         ggml_et_op_cumsum(env, &node_meta[i]); break;
+            // case GGML_OP_MUL_MAT_ID:     ggml_et_op_mul_mat_id(env, &node_meta[i]); break;
+            // case GGML_OP_NORM:           ggml_et_op_norm(env, &node_meta[i]); break;
+            // case GGML_OP_L2_NORM:        ggml_et_op_l2_norm(env, &node_meta[i]); break;
+            // case GGML_OP_SCALE:          ggml_et_op_scale(env, &node_meta[i]); break;
+            // case GGML_OP_CPY:            ggml_et_op_cpy(env, &node_meta[i]); break;
+            // case GGML_OP_CONCAT:         ggml_et_op_concat(env, &node_meta[i]); break;
+            // case GGML_OP_REPEAT:         ggml_et_op_repeat(env, &node_meta[i]); break;
+            // case GGML_OP_PAD:            ggml_et_op_pad(env, &node_meta[i]); break;
+            // case GGML_OP_SET:            ggml_et_op_set(env, &node_meta[i]); break;
+            // case GGML_OP_FILL:           ggml_et_op_fill(env, &node_meta[i]); break;
+            // case GGML_OP_DIAG:           ggml_et_op_diag(env, &node_meta[i]); break;
+
+            // case GGML_OP_RESHAPE:
+            // case GGML_OP_VIEW:
+            // case GGML_OP_PERMUTE:
+            // case GGML_OP_TRANSPOSE:
+            //     break;
 
             default:
                 return -1;
