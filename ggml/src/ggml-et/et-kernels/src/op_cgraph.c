@@ -1878,42 +1878,41 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
         device_barrier(32);
 
+
+        int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+        int num_threads = get_num_threads(kernel_env->shire_mask);
+
+        void * src0_data = (void *)(uintptr_t)node_meta[i].src0.data;
+        void * src1_data = (void *)(uintptr_t)node_meta[i].src1.data;
+        void * dst_data  = (void *)(uintptr_t)node_meta[i].dst.data;
+        if (!src0_data || !src1_data || !dst_data) break;
+
+        const int64_t ne0 = node_meta[i].dst.ne[0], ne1 = node_meta[i].dst.ne[1];
+        const int64_t ne2 = node_meta[i].dst.ne[2], ne3 = node_meta[i].dst.ne[3];
+        const int64_t ne10 = node_meta[i].src1.ne[0], ne11 = node_meta[i].src1.ne[1];
+        const int64_t ne12 = node_meta[i].src1.ne[2], ne13 = node_meta[i].src1.ne[3];
+
+        const size_t nb0 = (size_t)node_meta[i].dst.nb[0], nb1 = (size_t)node_meta[i].dst.nb[1];
+        const size_t nb2 = (size_t)node_meta[i].dst.nb[2], nb3 = (size_t)node_meta[i].dst.nb[3];
+        const size_t nb00 = (size_t)node_meta[i].src0.nb[0], nb01 = (size_t)node_meta[i].src0.nb[1];
+        const size_t nb02 = (size_t)node_meta[i].src0.nb[2], nb03 = (size_t)node_meta[i].src0.nb[3];
+        const size_t nb10 = (size_t)node_meta[i].src1.nb[0], nb11 = (size_t)node_meta[i].src1.nb[1];
+        const size_t nb12 = (size_t)node_meta[i].src1.nb[2], nb13 = (size_t)node_meta[i].src1.nb[3];
+
+
+
         switch (op) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
             case GGML_OP_SUB:
             {
-                // Check if we support the data types
-                if (node_meta[i].src0.type != node_meta[i].src1.type || node_meta[i].src0.type != node_meta[i].dst.type) {
-                    break; // Skip if types don't match
-                }
-                
-                if (node_meta[i].src0.type != GGML_TYPE_F32) {
+                if ((node_meta[i].src0.type != GGML_TYPE_F32) || 
+                    (node_meta[i].src1.type != GGML_TYPE_F32) ||
+                    (node_meta[i].dst.type != GGML_TYPE_F32)){
                     break; // Only support F32 for now
                 }
-                
-                int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-                int num_threads = get_num_threads(kernel_env->shire_mask);
-
-                void * src0_data = (void *)(uintptr_t)node_meta[i].src0.data;
-                void * src1_data = (void *)(uintptr_t)node_meta[i].src1.data;
-                void * dst_data  = (void *)(uintptr_t)node_meta[i].dst.data;
-                if (!src0_data || !src1_data || !dst_data) break;
-
-                const int64_t ne0 = node_meta[i].dst.ne[0], ne1 = node_meta[i].dst.ne[1];
-                const int64_t ne2 = node_meta[i].dst.ne[2], ne3 = node_meta[i].dst.ne[3];
-                const int64_t ne10 = node_meta[i].src1.ne[0], ne11 = node_meta[i].src1.ne[1];
-                const int64_t ne12 = node_meta[i].src1.ne[2], ne13 = node_meta[i].src1.ne[3];
-
-                const size_t nb0 = (size_t)node_meta[i].dst.nb[0], nb1 = (size_t)node_meta[i].dst.nb[1];
-                const size_t nb2 = (size_t)node_meta[i].dst.nb[2], nb3 = (size_t)node_meta[i].dst.nb[3];
-                const size_t nb00 = (size_t)node_meta[i].src0.nb[0], nb01 = (size_t)node_meta[i].src0.nb[1];
-                const size_t nb02 = (size_t)node_meta[i].src0.nb[2], nb03 = (size_t)node_meta[i].src0.nb[3];
-                const size_t nb10 = (size_t)node_meta[i].src1.nb[0], nb11 = (size_t)node_meta[i].src1.nb[1];
-                const size_t nb12 = (size_t)node_meta[i].src1.nb[2], nb13 = (size_t)node_meta[i].src1.nb[3];
-
                 const size_t elem_size = 4; // F32
-                const bool cache_aligned = (ne0 % (16/elem_size) == 0);
+                const bool cache_aligned = (ne0 % 16 == 0);
                 if(!cache_aligned) {
                     break;
                 }
@@ -1925,7 +1924,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
                 if (no_broadcast && all_contiguous) {
                     const int64_t total_elements = ne0 * ne1 * ne2 * ne3;
-                    const int64_t elements_per_cacheline = 16 / elem_size;  // 64 bytes / element_size
+                    const int64_t elements_per_cacheline = 16;  // 64 bytes / element_size
                     const int64_t total_cachelines = (total_elements + elements_per_cacheline - 1) / elements_per_cacheline;
 
                     const int64_t cl_per_thread = (total_cachelines + num_threads - 1) / num_threads;
