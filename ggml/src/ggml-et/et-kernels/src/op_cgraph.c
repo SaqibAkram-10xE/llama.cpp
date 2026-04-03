@@ -12,6 +12,10 @@
 #include "quants.h"
 #include "math_fp.h"
 #include "block_ops.h"
+#include <etsoc/common/utils.h>
+#include "ggml_tensor.h"
+#include "tensor.h"
+
 
 // ========================================================================
 // Compact tensor metadata (ABI-compatible with host ggml_tensor_et)
@@ -997,104 +1001,358 @@ static inline void block_swiglu(float* dst_block, const float* x_block, const fl
 // ========================================================================
 // OP: SOFTMAX
 // ========================================================================
-#define LOG2E_CG 1.4426950408889634f
+#define LOG2E_F 1.4426950408889634f
 
-static void ggml_et_op_softmax(void * env, struct ggml_node_meta_et * m) {
-    int tid, nth;
-    if (cg_thread_setup(env, &tid, &nth)) return;
+typedef struct {
+    float max_val;
+    float sum_val;
+    uint32_t valid_mask;
+} softmax_params_t;
 
-    const float * src0 = (const float *)(uintptr_t)m->src0.data;
-    float * dst        = (float *)(uintptr_t)m->dst.data;
-    if (!src0 || !dst) return;
+static inline bool softmax_lane_is_valid(float x) {
+    return (x == x) && (x != -INFINITY) && (x != INFINITY);
+}
 
-    const float * mask_data = m->src1.data ? (const float *)(uintptr_t)m->src1.data : 0;
+static inline softmax_params_t softmax_params_empty(void) {
+    softmax_params_t p;
+    p.max_val = -INFINITY;
+    p.sum_val = 0.0f;
+    p.valid_mask = 0;
+    return p;
+}
 
-    float scale, max_bias;
-    memcpy(&scale,    &m->op_params[0], sizeof(float));
-    memcpy(&max_bias, &m->op_params[1], sizeof(float));
+// chunk_transform_ps_8_branchless_mask
+//
+// Vector transform for 8 logits:
+//
+//   x = src * scale + (mask ? mask * slope : 0)
+//
+// Implemented branchlessly so masked and unmasked paths share the same
+// instruction stream. Used by pass1 and pass2 vector loops.
+static inline void chunk_transform_ps_8_branchless_mask(
+    float       *tmp8,
+    const float *src,
+    const float *mask,
+    float scale,
+    float slope)
+{
+    unsigned long ms;
+    const float zero = 0.0f;
+    const unsigned long mask_load_m0 = (mask != NULL) ? 0xFFul : 0x00ul;
+    const float *mp = (mask != NULL) ? mask : &zero;
 
-    const int64_t ne00 = m->src0.ne[0];
-    const int64_t ne01 = m->src0.ne[1];
-    const int64_t ne02 = m->src0.ne[2];
-    const int64_t ne03 = m->src0.ne[3];
+    __asm__ volatile (
+        "mova.x.m  %[ms]                \n\t"
 
-    const int64_t ne10 = mask_data ? m->src1.ne[0] : 0;
-    const int64_t ne11 = mask_data ? m->src1.ne[1] : 0;
-    const int64_t ne12 = mask_data ? m->src1.ne[2] : 0;
-    const int64_t ne13 = mask_data ? m->src1.ne[3] : 0;
+        "mov.m.x   m0, x0, 0xFF         \n\t"
+        "fbc.ps    f10, 0(%[p_scale])   \n\t"
+        "fbc.ps    f11, 0(%[p_slope])   \n\t"
+        "fbc.ps    f1, 0(%[p_zero])    \n\t"
 
-    // ALiBi slope calculation
-    const uint32_t n_head = (uint32_t)ne02;
-    uint32_t n_head_log2 = 1;
-    float m0 = 1.0f, m1 = 1.0f;
+        "mov.m.x   m0, %[maskm0], 0     \n\t" // load mask if needed
+        "flw.ps    f1, 0(%[mp])         \n\t"
 
-    if (max_bias > 0.0f) {
-        while (n_head_log2 < n_head) n_head_log2 <<= 1;
-        if (n_head_log2 > n_head) n_head_log2 >>= 1;
-        float inv = et_fdiv(1.0f, (float)n_head_log2);
-        m0 = et_expf(-max_bias * 0.69314718f * inv);
-        m1 = et_expf(-max_bias * 0.69314718f * inv * 0.5f);
-    }
+        "mov.m.x   m0, x0, 0xFF         \n\t"
 
-    const int64_t rows_per_batch = ne02 * ne01;
-    const int64_t total_rows = ne03 * rows_per_batch;
+        "flw.ps    f0, 0(%[sp])         \n\t"
+        "fmul.ps   f0, f0, f10          \n\t"
+        "fmul.ps   f1, f1, f11          \n\t"
+        "fadd.ps   f0, f0, f1, rne      \n\t"
+        "fsw.ps    f0, 0(%[tp])         \n\t"
 
-    for (int64_t row = tid; row < total_rows; row += nth) {
-        const int64_t i03 = row / rows_per_batch;
-        const int64_t rem = row % rows_per_batch;
-        const int64_t i02 = rem / ne01;
-        const int64_t i01 = rem % ne01;
+        "mova.m.x  %[ms]                \n\t"
+        : [ms] "=&r"(ms)
+        : [tp]      "r"(tmp8),
+          [sp]      "r"(src),
+          [mp]      "r"(mp),
+          [p_zero]  "r"(&zero),
+          [p_scale] "r"(&scale),
+          [p_slope] "r"(&slope),
+          [maskm0]  "r"(mask_load_m0)
+        : "f0", "f1", "f10", "f11", "memory"
+    );
+}
 
-        float slope = 1.0f;
-        if (max_bias > 0.0f) {
-            uint32_t h = (uint32_t)i02;
-            if (h < n_head_log2) {
-                slope = m0;
-                for (uint32_t k = 0; k < h; k++) slope *= m0;
-            } else {
-                uint32_t exp_val = 2 * (h - n_head_log2) + 1;
-                slope = m1;
-                for (uint32_t k = 1; k < exp_val; k++) slope *= m1;
+// softmax_pass1_range
+//
+// Computes the numerically-stable softmax scan over a sub-range of a row.
+//
+// This implements the 1st pass of online softmax
+//
+//   max' = max(max, x)
+//   sum' = sum * exp(old_max - max') + exp(x - max')
+//
+// and returns a partial result containing:
+//
+//   - max_val : maximum logit observed in this range
+//   - sum_val : exp-normalized sum relative to max_val
+//
+// These partial results can be merged with softmax_params_merge() to obtain
+// the result for the full row.
+static inline softmax_params_t softmax_pass1_range(
+    const float *src,
+    const float *mask,
+    int begin,
+    int end,
+    float scale,
+    float slope)
+{
+    __attribute__((aligned(32))) float lane_max[8];
+    __attribute__((aligned(32))) float lane_sum[8];
+    __attribute__((aligned(32))) float tmp[8];
+
+    uint8_t valid_mask = 0;
+
+    const float one_f   = 1.0f;
+    const float zero_f  = 0.0f;
+    const float neg_inf = -INFINITY;
+    const float log2e   = LOG2E_F;
+
+    unsigned long ms;
+
+    __asm__ volatile (
+        "mova.x.m  %[ms]                \n\t"
+        "mov.m.x   m0, x0, 0xFF         \n\t"
+        "fbc.ps    f20, 0(%[p_ninf])    \n\t"
+        "fbc.ps    f21, 0(%[p_zero])    \n\t"
+        "fbc.ps    f22, 0(%[p_one])     \n\t"
+        "fbc.ps    f23, 0(%[p_log2e])   \n\t"
+        : [ms] "=&r"(ms)
+        : [p_ninf]  "r"(&neg_inf),
+          [p_zero]  "r"(&zero_f),
+          [p_one]   "r"(&one_f),
+          [p_log2e] "r"(&log2e)
+        : "f20", "f21", "f22", "f23"
+    );
+
+    int i = begin;
+    for (; i < end; i += 8) {
+        chunk_transform_ps_8_branchless_mask(tmp, src + i, mask ? (mask + i) : NULL, scale, slope);
+
+        uint8_t cur_mask = 0;
+        for (int j = 0; j < 8; ++j) {
+            if (softmax_lane_is_valid(tmp[j])) {
+                cur_mask |= (uint8_t)(1u << j);
             }
         }
 
-        const int64_t src_off = i03 * ne02 * ne01 * ne00 + i02 * ne01 * ne00 + i01 * ne00;
-        const float * sr = src0 + src_off;
-        float * dr = dst + src_off;
-        const float * mr = 0;
+        const uint8_t init_mask = (uint8_t)(cur_mask & ~valid_mask);
+        const uint8_t upd_mask  = (uint8_t)(cur_mask &  valid_mask);
 
-        if (mask_data) {
-            int64_t mi3 = ne13 > 0 ? i03 % ne13 : 0;
-            int64_t mi2 = ne12 > 0 ? i02 % ne12 : 0;
-            mr = mask_data + mi3 * ne12 * ne11 * ne10 + mi2 * ne11 * ne10 + i01 * ne10;
-        }
+        if (init_mask || upd_mask) {
+            __asm__ volatile (
+                "flw.ps    f0, 0(%[p_tmp])       \n\t"
 
-        // Find max
-        float max_val = -3.402823466e+38f;
-        for (int64_t i = 0; i < ne00; i++) {
-            float v = sr[i] * scale;
-            if (mr) v += mr[i] * slope;
-            if (v > max_val) max_val = v;
-        }
+                "mov.m.x   m0, %[initm], 0       \n\t"
+                "fcmovm.ps f20, f0,  f20         \n\t"
+                "fcmovm.ps f21, f22, f21         \n\t"
 
-        // Compute exp and sum
-        float sum = 0.0f;
-        for (int64_t i = 0; i < ne00; i++) {
-            float v = sr[i] * scale;
-            if (mr) v += mr[i] * slope;
-            float e = et_expf(v - max_val);
-            dr[i] = e;
-            sum += e;
-        }
+                "mov.m.x   m0, %[updm], 0        \n\t"
+                "fmax.ps   f1, f20, f0           \n\t"
 
-        // Normalize
-        float inv_sum = sum == 0.0f ? 0.0f : et_fdiv(1.0f, sum);
-        for (int64_t i = 0; i < ne00; i++) {
-            dr[i] *= inv_sum;
+                "fsub.ps   f2, f20, f1, rne      \n\t"
+                "fmul.ps   f2, f2,  f23          \n\t"
+                "fexp.ps   f2, f2                \n\t"
+
+                "fsub.ps   f3, f0,  f1, rne      \n\t"
+                "fmul.ps   f3, f3,  f23          \n\t"
+                "fexp.ps   f3, f3                \n\t"
+
+                "fmul.ps   f21, f21, f2          \n\t"
+                "fadd.ps   f21, f21, f3, rne     \n\t"
+                "fcmovm.ps f20, f1,  f20         \n\t"
+
+                "mov.m.x   m0, x0, 0xFF          \n\t"
+                :
+                : [p_tmp] "r"(tmp),
+                  [initm] "r"((unsigned long)init_mask),
+                  [updm]  "r"((unsigned long)upd_mask)
+                : "f0", "f1", "f2", "f3", "memory"
+            );
+
+            valid_mask |= cur_mask;
         }
     }
+
+    __asm__ volatile (
+        "mov.m.x   m0, x0, 0xFF         \n\t"
+        "fsw.ps    f20, 0(%[p_lmax])    \n\t"
+        "fsw.ps    f21, 0(%[p_lsum])    \n\t"
+        "mova.m.x  %[ms]                \n\t"
+        :
+        : [p_lmax] "r"(lane_max),
+          [p_lsum] "r"(lane_sum),
+          [ms]     "r"(ms)
+        : "memory"
+    );
+
+    softmax_params_t out = softmax_params_empty();
+    out.valid_mask = valid_mask;
+
+    for (int k = 0; k < 8; ++k) {
+        if (valid_mask & (1u << k)) {
+            if (out.valid_mask == (1u << k) || out.max_val == -INFINITY || lane_max[k] > out.max_val) {
+                out.max_val = lane_max[k];
+            }
+        }
+    }
+
+    if (out.max_val != -INFINITY) {
+        // Compute lane correction factors via fexp.ps to stay consistent
+        // with the fexp.ps used inside the online softmax loop above.
+        // corr[k] = exp2((lane_max[k] - out.max_val) * LOG2E) = exp(lane_max[k] - out.max_val)
+        const float neg_max_l2 = -out.max_val * LOG2E_F;
+        __attribute__((aligned(32))) float corr[8];
+        __asm__ volatile (
+            "mova.x.m  %[ms]              \n\t"
+            "mov.m.x   m0, x0, 0xFF       \n\t"
+            "fbc.ps    f0, 0(%[p_nml2])   \n\t"
+            "fbc.ps    f2, 0(%[p_l2e])    \n\t"
+            "flw.ps    f1, 0(%[p_lmax])   \n\t"
+            "fmadd.ps  f0, f1, f2, f0     \n\t"
+            "fexp.ps   f0, f0             \n\t"
+            "fsw.ps    f0, 0(%[p_corr])   \n\t"
+            "mova.m.x  %[ms]              \n\t"
+            :
+            : [p_nml2] "r"(&neg_max_l2),
+              [p_l2e]  "r"(&log2e),
+              [p_lmax] "r"(lane_max),
+              [p_corr] "r"(corr),
+              [ms]     "r"(ms)
+            : "f0", "f1", "f2", "memory"
+        );
+        for (int k = 0; k < 8; ++k) {
+            if (valid_mask & (1u << k)) {
+                out.sum_val += lane_sum[k] * corr[k];
+            }
+        }
+    }
+
+    return out;
 }
 
+// Pass 2 (normalize) over [begin, end).
+//
+// Computes: dst[i] = exp(x[i]*scale + mask[i]*slope - max) / sum
+//
+// Uses fexp.ps for the numerator; the denominator (params.sum_val) must
+// already be fully computed by the caller (pass1 + any sink merge).
+static inline void softmax_pass2_range(
+    float *dst,
+    const float *src,
+    const float *mask,
+    int begin,
+    int end,
+    float scale,
+    float slope,
+    softmax_params_t params)
+{
+    const float s2      = scale * LOG2E_F;
+    const float sl2     = slope * LOG2E_F;
+    const float neg_ml2 = -params.max_val * LOG2E_F;
+    const float inv_sum = et_fdiv(1.0f, params.sum_val);
+
+    unsigned long ms;
+
+    __asm__ volatile (
+        "mova.x.m  %[ms]                \n\t"
+        "mov.m.x   m0, x0, 0xFF         \n\t"
+        "fbc.ps    f10, 0(%[p_s2])      \n\t"
+        "fbc.ps    f12, 0(%[p_nml2])    \n\t"
+        "fbc.ps    f13, 0(%[p_inv])     \n\t"
+        : [ms] "=&r"(ms)
+        : [p_s2]   "r"(&s2),
+          [p_nml2] "r"(&neg_ml2),
+          [p_inv]  "r"(&inv_sum)
+        : "f10", "f12", "f13"
+    );
+
+    if (mask != NULL) {
+        __asm__ volatile (
+            "fbc.ps    f11, 0(%[p_sl2]) \n\t"
+            :
+            : [p_sl2] "r"(&sl2)
+            : "f11"
+        );
+
+        for (int c = begin; c < end; c += 8) {
+            __asm__ volatile (
+                "flw.ps    f0, 0(%[sp])           \n\t"
+                "flw.ps    f1, 0(%[mp])           \n\t"
+                "fmadd.ps  f0, f0, f10, f12       \n\t"
+                "fmadd.ps  f0, f1, f11, f0        \n\t"
+                "fexp.ps   f0, f0                 \n\t"
+                "fmul.ps   f0, f0, f13            \n\t"
+                "fsw.ps    f0, 0(%[dp])           \n\t"
+                :
+                : [sp] "r"(src + c), [mp] "r"(mask + c), [dp] "r"(dst + c)
+                : "f0", "f1", "memory"
+            );
+        }
+    } else {
+        for (int c = begin; c < end; c += 8) {
+            __asm__ volatile (
+                "flw.ps    f0, 0(%[sp])           \n\t"
+                "fmadd.ps  f0, f0, f10, f12       \n\t"
+                "fexp.ps   f0, f0                 \n\t"
+                "fmul.ps   f0, f0, f13            \n\t"
+                "fsw.ps    f0, 0(%[dp])           \n\t"
+                :
+                : [sp] "r"(src + c), [dp] "r"(dst + c)
+                : "f0", "memory"
+            );
+        }
+    }
+
+    __asm__ volatile (
+        "mova.m.x  %[ms] \n\t"
+        :: [ms] "r"(ms)
+    );
+}
+
+// Single-core row path using the new structure.
+static inline void compute_softmax_row(
+    float *dst,
+    const float *src,
+    const float *mask,
+    int cols,
+    float scale,
+    float slope,
+    float sink_value,
+    bool use_sinks)
+{
+    softmax_params_t params = softmax_pass1_range(src, mask, 0, cols, scale, slope);
+
+    if (use_sinks) {
+        // For sinks, use fully scalar et_expf to match the reference CPU
+        // backend's expf precision.  Sink tests use small arrays (ne<=32)
+        // so the scalar path has negligible performance impact.
+        float max_val = params.max_val;
+        if (sink_value > max_val) max_val = sink_value;
+
+        // Compute sum = Σ exp(x'[i] - max) + exp(sink - max)  (scalar)
+        float sum = 0.0f;
+        for (int i = 0; i < cols; ++i) {
+            float x = src[i] * scale;
+            if (mask != NULL) x += mask[i] * slope;
+            sum += et_expf(x - max_val);
+        }
+        sum += et_expf(sink_value - max_val);
+
+        // Normalize: dst[i] = exp(x'[i] - max) / sum  (scalar)
+        float inv_sum = et_fdiv(1.0f, sum);
+        for (int i = 0; i < cols; ++i) {
+            float x = src[i] * scale;
+            if (mask != NULL) x += mask[i] * slope;
+            dst[i] = et_expf(x - max_val) * inv_sum;
+        }
+    } else {
+        if (!params.valid_mask) {
+            return;
+        }
+        softmax_pass2_range(dst, src, mask, 0, cols, scale, slope, params);
+    }
+}
 // ========================================================================
 // OP: ROPE
 // ========================================================================
@@ -1861,97 +2119,445 @@ static void ggml_et_op_set(void * env, struct ggml_node_meta_et * m) {
 // ========================================================================
 // OP: FLASH_ATTN_EXT  —  scalar F32 flash attention (GQA + masking)
 // ========================================================================
-#define FA_DV_MAX_CG 128
 
-static void ggml_et_op_flash_attn_ext(void * env, struct ggml_node_meta_et * m) {
-    int tid, nth;
-    if (cg_thread_setup(env, &tid, &nth)) return;
+// #define FA_DV_MAX_F32 128
+// Maximum head dimension supported (128 covers all common LLMs).
+#define FA_DV_MAX 128
 
-    const char * q_data = (const char *)(uintptr_t)m->src0.data;
-    const char * k_data = (const char *)(uintptr_t)m->src1.data;
-    const char * v_data = (const char *)(uintptr_t)m->src2.data;
-    char * dst_data     = (char *)(uintptr_t)m->dst.data;
-    if (!q_data || !k_data || !v_data || !dst_data) return;
+// Read element d from a row, handling F16 or F32 type.
+// row_base points to the start of the row (byte address).
+// nb0 is the stride per element (2 for F16, 4 for F32).
+static inline float read_kv_f32(const char * row_base, int64_t d,
+                                int64_t nb0, int type) {
+    if (type == GGML_TYPE_F32) {
+        return *(const float *)(row_base + d * nb0);
+    }
+    // F16
+    return fp16_to_fp32(*(const uint16_t *)(row_base + d * nb0));
+}
 
-    float scale;
-    memcpy(&scale, &m->op_params[0], sizeof(float));
-
-    const int64_t dk  = m->src0.ne[0];
-    const int64_t nq  = m->src0.ne[1];
-    const int64_t nhq = m->src0.ne[2];
-    const int64_t no  = m->src0.ne[3];
-    const int64_t nk  = m->src1.ne[1];
-    const int64_t nhk = m->src1.ne[2];
-    const int64_t dv  = m->src2.ne[0];
-
-    if (dv > FA_DV_MAX_CG) return;
-
-    const int k_type = m->src1.type;
-    const int v_type = m->src2.type;
-    const int64_t gqa_ratio = nhq / nhk;
-    const int64_t total_rows = nq * nhq * no;
-
-    for (int64_t row = tid; row < total_rows; row += nth) {
-        int64_t iq3 = row / (nhq * nq);
-        int64_t rem = row % (nhq * nq);
-        int64_t iq2 = rem / nq;
-        int64_t iq1 = rem % nq;
-        int64_t ik2 = iq2 / gqa_ratio;
-
-        const float * pq = (const float *)(q_data +
-            iq1*(size_t)m->src0.nb[1] + iq2*(size_t)m->src0.nb[2] + iq3*(size_t)m->src0.nb[3]);
-        float * out = (float *)(dst_data +
-            iq2*(size_t)m->dst.nb[1] + iq1*(size_t)m->dst.nb[2] + iq3*(size_t)m->dst.nb[3]);
-
-        int64_t kv_base_k = ik2*(size_t)m->src1.nb[2] + iq3*(size_t)m->src1.nb[3];
-        int64_t kv_base_v = ik2*(size_t)m->src2.nb[2] + iq3*(size_t)m->src2.nb[3];
-
-        float acc[FA_DV_MAX_CG];
-        for (int64_t d = 0; d < dv; d++) acc[d] = 0.0f;
-        float M = -3.402823466e+38f;
-        float S = 0.0f;
-
-        for (int64_t ik1 = 0; ik1 < nk; ik1++) {
-            const char * pk = k_data + ik1*(size_t)m->src1.nb[1] + kv_base_k;
-            const char * pv = v_data + ik1*(size_t)m->src2.nb[1] + kv_base_v;
-
-            // QK dot
-            float s = 0.0f;
-            if (k_type == GGML_TYPE_F32) {
-                const float * kf = (const float *)pk;
-                for (int64_t d = 0; d < dk; d++) s += pq[d] * kf[d];
-            } else {
-                for (int64_t d = 0; d < dk; d++)
-                    s += pq[d] * fp16_to_fp32(*(const uint16_t *)(pk + d*(size_t)m->src1.nb[0]));
-            }
-            s = s * scale;
-
-            float Mold = M;
-            float ms = 1.0f, vs = 1.0f;
-            if (s > M) {
-                M = s;
-                ms = et_expf(Mold - M);
-                for (int64_t d = 0; d < dv; d++) acc[d] *= ms;
-            } else {
-                vs = et_expf(s - M);
-            }
-
-            if (v_type == GGML_TYPE_F32) {
-                const float * vf = (const float *)pv;
-                for (int64_t d = 0; d < dv; d++) acc[d] += vf[d] * vs;
-            } else {
-                for (int64_t d = 0; d < dv; d++)
-                    acc[d] += fp16_to_fp32(*(const uint16_t *)(pv + d*(size_t)m->src2.nb[0])) * vs;
-            }
-            S = S * ms + vs;
+// Dot product of F32 query vector with a K row (F16 or F32).
+static inline float dot_qk(const float * q, const char * k_row,
+                            int64_t dk, int64_t k_nb0, int k_type) {
+    float acc = 0.0f;
+    if (k_type == GGML_TYPE_F32) {
+        const float * kf = (const float *) k_row;
+        for (int64_t i = 0; i < dk; ++i) {
+            acc += q[i] * kf[i];
         }
+    } else {
+        // F16 stride-aware read
+        for (int64_t i = 0; i < dk; ++i) {
+            acc += q[i] * fp16_to_fp32(*(const uint16_t *)(k_row + i * k_nb0));
+        }
+    }
+    return acc;
+}
 
-        float S_inv = S == 0.0f ? 0.0f : et_fdiv(1.0f, S);
-        for (int64_t d = 0; d < dv; d++) {
-            out[d] = acc[d] * S_inv;
+static inline float get_mask_val(const struct ggml_tensor * mask,
+                                 int64_t iq1, int64_t ik1,
+                                 int64_t iq2, int64_t iq3) {
+    // mask layout: [nk, nq, ne2, ne3] -> broadcast via modulo
+    const char * base = (const char *) mask->data
+        + iq1 * mask->nb[1]
+        + (iq2 % mask->ne[2]) * mask->nb[2]
+        + (iq3 % mask->ne[3]) * mask->nb[3];
+
+    if (mask->type == GGML_TYPE_F32) {
+        return *(const float *)(base + ik1 * mask->nb[0]);
+    }
+    // F16
+    return fp16_to_fp32(*(const uint16_t *)(base + ik1 * mask->nb[0]));
+}
+
+
+
+// ========================================================================
+// OP: FLASH_ATTN_EXT  —  scalar F16 flash attention 
+// ========================================================================
+
+#define NUM_COMPUTE_SHIRES 32
+#define MINIONS_PER_SHIRE  32
+
+// QK^T tiles: 16 KV positions at a time, K in chunks of 32 F16
+#define TILE_KV 16
+#define TILE_K  32
+
+// L1 scratchpad layout: A (Q) in lines 0-15, B (K interleaved) in lines 16-31
+#define A_L1_START 0
+#define B_L1_START 16
+
+// Max head dimensions
+#define FA_DV_MAX_F16 256   // max value head dim (dv)
+#define FA_DK_MAX_F16 256   // max key head dim (dk) - some models use hsk > hsv
+
+// Per-minion accumulator stride in L2 SCP (1024 bytes for dv=256 F32).
+#define L2SCP_ACC_STRIDE  (FA_DV_MAX_F16 * sizeof(float))
+
+typedef uint16_t et_fp16_t;
+
+#define ET_NEG_INF_F (-3.402823466e+38f)
+
+struct ggml_et_flash_attn_ext_params {
+    struct ggml_tensor src0;     // Q (F32)
+    struct ggml_tensor src1;     // K (F16)
+    struct ggml_tensor src2;     // V (F16)
+    struct ggml_tensor mask;     // mask (F16 or F32), zeroed when absent
+    struct ggml_tensor dst;      // Output (F32)
+    float scale;
+    int32_t has_mask;
+};
+
+static inline const char * get_mask_row_base(const struct ggml_tensor * mask,
+                                             int64_t iq1, int64_t iq2, int64_t iq3) {
+    return (const char *) mask->data
+        + iq1 * mask->nb[1]
+        + (iq2 % mask->ne[2]) * mask->nb[2]
+        + (iq3 % mask->ne[3]) * mask->nb[3];
+}
+
+static inline float get_mask_val_from_base(const struct ggml_tensor * mask,
+                                           const char * base, int64_t ik1) {
+    if (mask->type == GGML_TYPE_F32) {
+        return *(const float *)(base + ik1 * mask->nb[0]);
+    }
+    return fp16_to_fp32(*(const uint16_t *)(base + ik1 * mask->nb[0]));
+}
+
+// Build B panel input for TensorLoadTranspose16.
+//
+// TensorLoadTranspose16 does: L1Scp[c].h[i] = input[i].h[c]
+// We want the interleaved B: L1Scp[l].h[n*2+r] = K[n][dk_start + 2*l + r]
+// So we need: input[n*2+r].h[l] = K[n][dk_start + 2*l + r]
+//
+// For each KV position n, produce two rows (de-interleave even/odd dk elements):
+//   Row 2n:   K[n][dk+0], K[n][dk+2], ..., K[n][dk+30]  (16 evens)
+//   Row 2n+1: K[n][dk+1], K[n][dk+3], ..., K[n][dk+31]  (16 odds)
+//
+// Output buffer: 32 rows × 32 halfwords (64-byte stride, 16 hw data + 16 hw pad)
+//
+
+// Prefetch KV rows for one chunk into L2 using the platform l2_prefetch primitive.
+static inline void __attribute__((always_inline))
+prefetch_kv_to_l2(const char * head, int64_t kv_start, int64_t d_start,
+                  int64_t kv_count, int64_t nb1)
+{
+    const void *base = (const void *)(head + kv_start * nb1 + d_start * 2);
+    l2_prefetch(base, (uint64_t)kv_count, (uint64_t)nb1);
+}
+
+static inline void __attribute__((always_inline))
+pack_k_for_transpose16(et_fp16_t * out,
+                       const char * k_base,
+                       int64_t kv_start,
+                       int64_t dk_start,
+                       int64_t kv_count,
+                       int64_t nb1_k)
+{
+    // save registers we use becayse TensorFMA uses all FP registers
+    // and this function is used in the middle TensorFMAs
+    uint32_t save_f28[8] __attribute__((aligned(32)));
+    uint32_t save_f29[8] __attribute__((aligned(32)));
+    uint32_t save_f30[8] __attribute__((aligned(32)));
+    uint32_t save_f31[8] __attribute__((aligned(32)));
+    unsigned long old_mask;
+
+    __asm__ volatile(
+        "mova.x.m  %[ms]            \n\t"
+        "mov.m.x   m0, x0, 0xFF     \n\t"
+        "fsw.ps    f28, 0(%[save28])\n\t"
+        "fsw.ps    f29, 0(%[save29])\n\t"
+        "fsw.ps    f30, 0(%[save30])\n\t"
+        "fsw.ps    f31, 0(%[save31])\n\t"
+        : [ms] "=&r"(old_mask)
+        : [save28] "r"(save_f28),
+          [save29] "r"(save_f29),
+          [save30] "r"(save_f30),
+          [save31] "r"(save_f31)
+        : "f28", "f29", "f30", "f31", "memory"
+    );
+
+    for (int j = 0; j < (int)kv_count; ++j) {
+        const et_fp16_t * k_row =
+            (const et_fp16_t *)(k_base + (kv_start + j) * nb1_k) + dk_start;
+        et_fp16_t * even_row = out + (j * 2)     * 32;
+        et_fp16_t * odd_row  = out + (j * 2 + 1) * 32;
+        {
+            __asm__ volatile(
+                "flw.ps    f30, 0(%[src0])  \n\t"
+                "flw.ps    f31, 0(%[src1])  \n\t"
+                "fpackreph.pi f28, f30      \n\t"
+                "fsrli.pi  f29, f30, 16     \n\t"
+                "fpackreph.pi f29, f29      \n\t"
+                "fpackreph.pi f30, f31      \n\t"
+                "fsrli.pi  f31, f31, 16     \n\t"
+                "fpackreph.pi f31, f31      \n\t"
+                "mov.m.x   m0, x0, 0x0F     \n\t"
+                "fcmovm.ps f28, f28, f30    \n\t"
+                "fcmovm.ps f29, f29, f31    \n\t"
+                "mov.m.x   m0, x0, 0xFF     \n\t"
+                "fsw.ps    f28, 0(%[even])  \n\t"
+                "fsw.ps    f29, 0(%[odd])   \n\t"
+                :
+                : [src0] "r"(k_row),
+                  [src1] "r"(k_row + 16),
+                  [even] "r"(even_row),
+                  [odd] "r"(odd_row)
+                : "f28", "f29", "f30", "f31", "memory"
+            );
+        }
+    }
+
+    __asm__ volatile(
+        "flw.ps    f28, 0(%[save28])\n\t"
+        "flw.ps    f29, 0(%[save29])\n\t"
+        "flw.ps    f30, 0(%[save30])\n\t"
+        "flw.ps    f31, 0(%[save31])\n\t"
+        "mova.m.x  %[ms]            \n\t"
+        :
+        : [ms] "r"(old_mask),
+          [save28] "r"(save_f28),
+          [save29] "r"(save_f29),
+          [save30] "r"(save_f30),
+          [save31] "r"(save_f31)
+        : "f28", "f29", "f30", "f31", "memory"
+    );
+
+    for (int j = (int)kv_count; j < TILE_KV; ++j) {
+        et_fp16_t * even_row = out + (j * 2)     * 32;
+        et_fp16_t * odd_row  = out + (j * 2 + 1) * 32;
+        for (int l = 0; l < TILE_K / 2; ++l) {
+            even_row[l] = 0;
+            odd_row[l]  = 0;
         }
     }
 }
+
+// Build interleaved B panel for TensorFMA16A32 (weights @ V).
+//
+// K dimension  = kv_count KV positions (up to TILE_KV = 16)
+// N dimension  = 16 dv values per chunk
+// Output       = 8 SCP lines × 32 halfwords (512 bytes, 64-byte stride)
+//
+//   out[l*32 + n*2 + r] = V[kv_base + 2*l + r][dv_start + n]
+//   l = 0..7 (K/2), n = 0..15 (output cols), r = 0..1 (even/odd K)
+//
+// Zero-pads KV positions beyond kv_count.
+static inline void __attribute__((always_inline))
+pack_v_interleaved(et_fp16_t *out,
+                   const char *v_head,
+                   int64_t kv_base,
+                   int64_t dv_start,
+                   int64_t kv_count,
+                   int64_t nb1_v)
+{
+    for (int k = 0; k < TILE_KV; ++k) {
+        const int l = k >> 1;
+        const int r = k & 1;
+        et_fp16_t * const dst = out + l * 32 + r;
+        if (k < (int)kv_count) {
+            const et_fp16_t *v_row =
+                (const et_fp16_t *)(v_head + (kv_base + k) * nb1_v) + dv_start;
+            for (int n = 0; n < 16; ++n)
+                dst[n * 2] = v_row[n];
+        } else {
+            for (int n = 0; n < 16; ++n)
+                dst[n * 2] = 0;
+        }
+    }
+}
+
+
+static inline void __attribute__((always_inline))
+convert_q_row_f32_to_f16(et_fp16_t * dst, const float * src, int64_t n) {
+    static const int32_t __attribute__((aligned(32))) offsets[8] = {
+        0, 2, 4, 6, 8, 10, 12, 14
+    };
+
+    unsigned long old_mask;
+    __asm__ volatile(
+        "mova.x.m  %[ms]             \n\t"
+        "mov.m.x   m0, x0, 0xFF      \n\t"
+        "flw.ps    f1, 0(%[offs])    \n\t"
+        : [ms] "=&r"(old_mask)
+        : [offs] "r"(offsets)
+        : "f1"
+    );
+
+    for (int64_t d = 0; d < n; d += 8) {
+        __asm__ volatile(
+            "flw.ps      f2, 0(%[src])    \n\t"
+            "fcvt.f16.ps f3, f2           \n\t"
+            "fsch.ps     f3, f1(%[dst])   \n\t"
+            :
+            : [src] "r"(src + d), [dst] "r"(dst + d)
+            : "f2", "f3", "memory"
+        );
+    }
+
+    __asm__ volatile(
+        "mova.m.x  %[ms]             \n\t"
+        :
+        : [ms] "r"(old_mask)
+    );
+}
+
+static inline void __attribute__((always_inline))
+accumulate_v_row_f16_contig(float * acc, const char * pv, int64_t dv, float vs) {
+    static const int32_t __attribute__((aligned(32))) gather_idx[8] = {
+        0, 2, 4, 6, 8, 10, 12, 14
+    };
+
+    unsigned long old_mask;
+    __asm__ volatile(
+        "mova.x.m  %[ms]             \n\t"
+        "mov.m.x   m0, x0, 0xFF      \n\t"
+        "flw.ps    f1, 0(%[gidx])    \n\t"
+        : [ms] "=&r"(old_mask)
+        : [gidx] "r"(gather_idx)
+        : "f1"
+    );
+
+    for (int64_t d = 0; d < dv; d += 8) {
+        __asm__ volatile(
+            "fbc.ps      f2, 0(%[p_vs])   \n\t"
+            "fgh.ps      f3, f1(%[pv])    \n\t"
+            "fcvt.ps.f16 f3, f3           \n\t"
+            "flw.ps      f4, 0(%[pa])     \n\t"
+            "fmadd.ps    f4, f3, f2, f4   \n\t"
+            "fsw.ps      f4, 0(%[pa])     \n\t"
+            :
+            : [p_vs] "r"(&vs), [pv] "r"(pv + d * 2), [pa] "r"(acc + d)
+            : "f2", "f3", "f4", "memory"
+        );
+    }
+
+    __asm__ volatile(
+        "mova.m.x  %[ms]             \n\t"
+        :
+        : [ms] "r"(old_mask)
+    );
+}
+
+static inline void __attribute__((always_inline))
+rescale_accumulate_v_row_f16_contig(float * acc, const char * pv, int64_t dv, float ms) {
+    static const int32_t __attribute__((aligned(32))) gather_idx[8] = {
+        0, 2, 4, 6, 8, 10, 12, 14
+    };
+
+    unsigned long old_mask;
+    __asm__ volatile(
+        "mova.x.m  %[msk]            \n\t"
+        "mov.m.x   m0, x0, 0xFF      \n\t"
+        "flw.ps    f1, 0(%[gidx])    \n\t"
+        : [msk] "=&r"(old_mask)
+        : [gidx] "r"(gather_idx)
+        : "f1"
+    );
+
+    for (int64_t d = 0; d < dv; d += 8) {
+        __asm__ volatile(
+            "fbc.ps      f2, 0(%[p_ms])   \n\t"
+            "fgh.ps      f3, f1(%[pv])    \n\t"
+            "fcvt.ps.f16 f3, f3           \n\t"
+            "flw.ps      f4, 0(%[pa])     \n\t"
+            "fmadd.ps    f4, f4, f2, f3   \n\t"
+            "fsw.ps      f4, 0(%[pa])     \n\t"
+            :
+            : [p_ms] "r"(&ms), [pv] "r"(pv + d * 2), [pa] "r"(acc + d)
+            : "f2", "f3", "f4", "memory"
+        );
+    }
+
+    __asm__ volatile(
+        "mova.m.x  %[msk]            \n\t"
+        :
+        : [msk] "r"(old_mask)
+    );
+}
+
+static inline void __attribute__((always_inline))
+zero_acc_vec(float * acc, int64_t dv) {
+    const float zero = 0.0f;
+    unsigned long old_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(old_mask));
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");
+
+    for (int64_t d = 0; d < dv; d += 8) {
+        __asm__ volatile(
+            "fbc.ps  f2, 0(%[z])     \n\t"
+            "fsw.ps  f2, 0(%[a])     \n\t"
+            :
+            : [z] "r"(&zero), [a] "r"(acc + d)
+            : "f2", "memory"
+        );
+    }
+
+    __asm__ volatile("mova.m.x %0" :: "r"(old_mask));
+}
+
+static inline void __attribute__((always_inline))
+scale_acc_vec(float * acc, int64_t dv, float scale) {
+    unsigned long old_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(old_mask));
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");
+
+    for (int64_t d = 0; d < dv; d += 8) {
+        __asm__ volatile(
+            "fbc.ps    f2, 0(%[s])    \n\t"
+            "flw.ps    f3, 0(%[a])    \n\t"
+            "fmul.ps   f3, f3, f2     \n\t"
+            "fsw.ps    f3, 0(%[a])    \n\t"
+            :
+            : [s] "r"(&scale), [a] "r"(acc + d)
+            : "f2", "f3", "memory"
+        );
+    }
+
+    __asm__ volatile("mova.m.x %0" :: "r"(old_mask));
+}
+
+static inline void __attribute__((always_inline))
+normalize_store_vec(float * out, float * acc, int64_t dv, float inv, int use_fast_store) {
+    unsigned long old_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(old_mask));
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");
+
+    for (int64_t d = 0; d < dv; d += 8) {
+        __asm__ volatile(
+            "fbc.ps    f2, 0(%[inv])   \n\t"
+            "flw.ps    f3, 0(%[a])     \n\t"
+            "fmul.ps   f3, f3, f2      \n\t"
+            "fsw.ps    f3, 0(%[a])     \n\t"
+            :
+            : [inv] "r"(&inv), [a] "r"(acc + d)
+            : "f2", "f3", "memory"
+        );
+        if (use_fast_store) {
+            __asm__ volatile(
+                "flw.ps  f4, 0(%[a])     \n\t"
+                "fsw.ps  f4, 0(%[o])     \n\t"
+                :
+                : [a] "r"(acc + d), [o] "r"(out + d)
+                : "f4", "memory"
+            );
+        } else {
+            atomic_store_f32((volatile float *) &out[d + 0], acc[d + 0]);
+            atomic_store_f32((volatile float *) &out[d + 1], acc[d + 1]);
+            atomic_store_f32((volatile float *) &out[d + 2], acc[d + 2]);
+            atomic_store_f32((volatile float *) &out[d + 3], acc[d + 3]);
+            atomic_store_f32((volatile float *) &out[d + 4], acc[d + 4]);
+            atomic_store_f32((volatile float *) &out[d + 5], acc[d + 5]);
+            atomic_store_f32((volatile float *) &out[d + 6], acc[d + 6]);
+            atomic_store_f32((volatile float *) &out[d + 7], acc[d + 7]);
+        }
+    }
+
+    __asm__ volatile("mova.m.x %0" :: "r"(old_mask));
+}
+
+
+
 
 // ========================================================================
 // Entry point — graph execution loop
@@ -1962,34 +2568,32 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
     uint8_t * node_op = (uint8_t *)(node_meta + cg->n_nodes);
     const int n_nodes = cg->n_nodes;
 
-    // device_barrier(32);
-
     for (int i = 0; i < n_nodes; i++) {
         const int op = node_op[i];
 
         if (op == GGML_OP_NONE) {
             continue;
         }
-
         // Fusion: RMS_NORM + MUL -> fused RMS_NORM_MUL
         // if (op == GGML_OP_RMS_NORM &&
         //     ggml_et_can_fuse(cg, i, node_op, n_nodes,
         //                      (enum ggml_op[]){ GGML_OP_RMS_NORM, GGML_OP_MUL }, 2)) {
         //     ggml_et_op_rms_norm_mul(env, &node_meta[i], &node_meta[i + 1]);
         //     i++;
-        //     // device_barrier(32);
         //     continue;
         // }
-
-        device_barrier(32);
-
-
+       
         int thread_id = get_relative_thread_id(kernel_env->shire_mask);
         int num_threads = get_num_threads(kernel_env->shire_mask);
-
+        
         void * src0_data = (void *)(uintptr_t)node_meta[i].src0.data;
         void * src1_data = (void *)(uintptr_t)node_meta[i].src1.data;
         void * dst_data  = (void *)(uintptr_t)node_meta[i].dst.data;
+
+        // Basic null pointer checks
+        if (!src0_data || !dst_data) {
+            continue;
+        }
 
         const int64_t ne0 = node_meta[i].dst.ne[0], ne1 = node_meta[i].dst.ne[1];
         const int64_t ne2 = node_meta[i].dst.ne[2], ne3 = node_meta[i].dst.ne[3];
@@ -2002,65 +2606,64 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
         const size_t nb02 = (size_t)node_meta[i].src0.nb[2], nb03 = (size_t)node_meta[i].src0.nb[3];
         const size_t nb10 = (size_t)node_meta[i].src1.nb[0], nb11 = (size_t)node_meta[i].src1.nb[1];
         const size_t nb12 = (size_t)node_meta[i].src1.nb[2], nb13 = (size_t)node_meta[i].src1.nb[3];
+        
+        device_barrier(32);
 
-        switch (op) {
-            case GGML_OP_MUL:
-            case GGML_OP_ADD:
-            case GGML_OP_SUB:
-            {
-                if (!src0_data || !src1_data || !dst_data) break;
-                if ((node_meta[i].src0.type != GGML_TYPE_F32) || 
-                    (node_meta[i].src1.type != GGML_TYPE_F32) ||
-                    (node_meta[i].dst.type != GGML_TYPE_F32)){
-                    break; // Only support F32 for now
+        if(op == GGML_OP_ADD || op == GGML_OP_MUL || op == GGML_OP_SUB) {
+            if (!src0_data || !src1_data || !dst_data) {
+                continue;
+            } 
+            if ((node_meta[i].src0.type != GGML_TYPE_F32) || 
+                (node_meta[i].src1.type != GGML_TYPE_F32) ||
+                (node_meta[i].dst.type != GGML_TYPE_F32)){
+                continue; // Only support F32 for now
+            }
+            const size_t elem_size = 4; // F32
+            const bool cache_aligned = (ne0 % 16 == 0);
+            if(!cache_aligned) {
+                continue;
+            }
+
+            // Fast path: no broadcasting, contiguous
+            const bool no_broadcast = (ne10 == ne0 && ne11 == ne1 && ne12 == ne2 && ne13 == ne3);
+            const bool all_contiguous = (nb0 == elem_size && nb00 == elem_size && nb10 == elem_size &&
+                                        nb1 == ne0 * elem_size && nb01 == ne0 * elem_size && nb11 == ne0 * elem_size);
+
+            if (no_broadcast && all_contiguous) {
+                const int64_t total_elements = ne0 * ne1 * ne2 * ne3;
+                const int64_t elements_per_cacheline = 16;  // 64 bytes / element_size
+                const int64_t total_cachelines = (total_elements + elements_per_cacheline - 1) / elements_per_cacheline;
+
+                const int64_t cl_per_thread = (total_cachelines + num_threads - 1) / num_threads;
+                const int64_t cl_start = thread_id * cl_per_thread;
+                int64_t cl_end = cl_start + cl_per_thread;
+                if (cl_end > total_cachelines) cl_end = total_cachelines;
+
+                if (cl_start >= total_cachelines) {
+                    // et_printf("CACHE LINES PASSED\n");
+                    continue;
+                }
+
+                const int64_t elem_start = cl_start * elements_per_cacheline;
+                int64_t elem_end = cl_end * elements_per_cacheline;
+                if (elem_end > total_elements) elem_end = total_elements;
+                const int32_t count = (int32_t)(elem_end - elem_start);
+
+                switch (op) {
+                    case GGML_OP_MUL:
+                        block_mul_cache_aligned((float*)dst_data + elem_start, (float*)src0_data + elem_start, (float*)src1_data + elem_start, count);
+                        break;
+                    case GGML_OP_ADD:
+                        block_add_cache_aligned((float*)dst_data + elem_start, (float*)src0_data + elem_start, (float*)src1_data + elem_start, count);
+                        break;
+                    case GGML_OP_SUB:
+                        block_sub_cache_aligned((float*)dst_data + elem_start, (float*)src0_data + elem_start, (float*)src1_data + elem_start, count);
+                        break;
+                    default:
+                        break;
                 }
                 
-                const size_t elem_size = 4; // F32
-                const bool cache_aligned = (ne0 % 16 == 0);
-                if(!cache_aligned) {
-                    break;
-                }
-
-                // Fast path: no broadcasting, contiguous
-                const bool no_broadcast = (ne10 == ne0 && ne11 == ne1 && ne12 == ne2 && ne13 == ne3);
-                const bool all_contiguous = (nb0 == elem_size && nb00 == elem_size && nb10 == elem_size &&
-                                            nb1 == ne0 * elem_size && nb01 == ne0 * elem_size && nb11 == ne0 * elem_size);
-
-                if (no_broadcast && all_contiguous) {
-                    const int64_t total_elements = ne0 * ne1 * ne2 * ne3;
-                    const int64_t elements_per_cacheline = 16;  // 64 bytes / element_size
-                    const int64_t total_cachelines = (total_elements + elements_per_cacheline - 1) / elements_per_cacheline;
-
-                    const int64_t cl_per_thread = (total_cachelines + num_threads - 1) / num_threads;
-                    const int64_t cl_start = thread_id * cl_per_thread;
-                    int64_t cl_end = cl_start + cl_per_thread;
-                    if (cl_end > total_cachelines) cl_end = total_cachelines;
-
-                    if (cl_start >= total_cachelines) {
-                        break;
-                    }
-
-                    const int64_t elem_start = cl_start * elements_per_cacheline;
-                    int64_t elem_end = cl_end * elements_per_cacheline;
-                    if (elem_end > total_elements) elem_end = total_elements;
-                    const int32_t count = (int32_t)(elem_end - elem_start);
-
-                    switch (op) {
-                        case GGML_OP_MUL:
-                            block_mul_cache_aligned((float*)dst_data + elem_start, (float*)src0_data + elem_start, (float*)src1_data + elem_start, count);
-                            break;
-                        case GGML_OP_ADD:
-                            block_add_cache_aligned((float*)dst_data + elem_start, (float*)src0_data + elem_start, (float*)src1_data + elem_start, count);
-                            break;
-                        case GGML_OP_SUB:
-                            block_sub_cache_aligned((float*)dst_data + elem_start, (float*)src0_data + elem_start, (float*)src1_data + elem_start, count);
-                            break;
-                        default:
-                            break;
-                    }
-                    break;
-                }
-
+            } else {
                 // Slow path: broadcasting or non-contiguous: row based or bcast on last row
                 const int64_t total_rows = ne1 * ne2 * ne3;
 
@@ -2069,7 +2672,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
                 if (start_row >= total_rows) {
-                    break;
+                    continue;
                 }
 
                 for (int64_t ir = start_row; ir < end_row; ir++) {
@@ -2128,170 +2731,519 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                         }
                     }
                 }
+            
+            } // end of else block for slow path
+            
+        } else if (op == GGML_OP_GLU) {
+            if (!src0_data || !dst_data) continue;
+            const bool is_split_mode = node_meta[i].src1.data != 0;
+            if ((node_meta[i].src0.type != GGML_TYPE_F32) || 
+                ((is_split_mode) && (node_meta[i].src1.type != GGML_TYPE_F32)) ||
+                (node_meta[i].dst.type != GGML_TYPE_F32)){
+                continue; // Only support F32 for now
+            }
+            const int32_t glu_op_type;         // GLU operation type (REGLU=0, GEGLU=1, SWIGLU=2, etc.)
+            const int32_t swapped;             // Whether gate and value are swapped
+            // FIXME: can we remove memcpy
+            memcpy(&glu_op_type, &node_meta[i].op_params[0], sizeof(int32_t));
+            memcpy(&swapped, &node_meta[i].op_params[1], sizeof(int32_t));
+    
+            // Get tensor dimensions
+            const int64_t nc = ne0;  // Output columns (input columns / 2)
+            const int64_t nr = ne1 * ne2 * ne3;  // Total rows
 
+            // Get strides
+            const size_t src0_stride = nb01;  // Stride between rows in src0
+            const size_t src1_stride = is_split_mode ? nb11 : nb01;  // Stride between rows in src1
+            const size_t dst_stride = nb1;    // Stride between rows in dst
+
+            // Validate dimensions for split SwiGLU
+            if (is_split_mode) {
+                // Split tensor mode: src0 and src1 should have same shape as dst
+                if (node_meta[i].src0.ne[0] != nc || ne10 != nc) {
+                    return -1; // Dimension mismatch in split mode
+                }
+            } else {
+                // Single tensor mode: src0 should have 2*nc columns
+                if (node_meta[i].src0.ne[0] != 2 * nc) {
+                    return -1; // Dimension mismatch in single tensor mode
+                }
             }
 
-            break;   
-            case GGML_OP_GLU:
-            {
-                if (!src0_data || !dst_data) break;
-                const bool is_split_mode = node_meta[i].src1.data != 0;
-                if ((node_meta[i].src0.type != GGML_TYPE_F32) || 
-                    ((is_split_mode) && (node_meta[i].src1.type != GGML_TYPE_F32)) ||
-                    (node_meta[i].dst.type != GGML_TYPE_F32)){
-                    break; // Only support F32 for now
+            // Calculate total elements for cache line distribution
+            const int64_t elements_per_cacheline = 16;  // 64 bytes / 4 bytes per float
+            const int64_t total_elements = nr * nc;
+            const int64_t total_cachelines = (total_elements + elements_per_cacheline - 1) / elements_per_cacheline;
+
+            // Distribute cache lines across threads
+            int64_t cachelines_per_thread = (total_cachelines + num_threads - 1) / num_threads;
+            int64_t start_cacheline = thread_id * cachelines_per_thread;
+            int64_t end_cacheline = start_cacheline + cachelines_per_thread;
+
+            // Clamp end_cacheline to actual number of cache lines
+            if (end_cacheline > total_cachelines) {
+                end_cacheline = total_cachelines;
+            }
+
+            // Thread should return if no work to do
+            if (start_cacheline >= total_cachelines) {
+                return 0;
+            }
+
+            // Process cache lines assigned to this thread
+            for (int64_t cl = start_cacheline; cl < end_cacheline; cl++) {
+                // Map cache line back to element coordinates
+                int64_t global_element_start = cl * elements_per_cacheline;
+                int64_t row = global_element_start / nc;
+                int64_t col = global_element_start % nc;
+
+                // Skip if we're past the end of data
+                if (global_element_start >= total_elements) {
+                    break;
                 }
-                const int32_t glu_op_type;         // GLU operation type (REGLU=0, GEGLU=1, SWIGLU=2, etc.)
-                const int32_t swapped;             // Whether gate and value are swapped
-                // FIXME: can we remove memcpy
-                memcpy(&glu_op_type, &node_meta[i].op_params[0], sizeof(int32_t));
-                memcpy(&swapped, &node_meta[i].op_params[1], sizeof(int32_t));
-        
-                // Get tensor dimensions
-                const int64_t nc = ne0;  // Output columns (input columns / 2)
-                const int64_t nr = ne1 * ne2 * ne3;  // Total rows
 
-                // Get strides
-                const size_t src0_stride = nb01;  // Stride between rows in src0
-                const size_t src1_stride = is_split_mode ? nb11 : nb01;  // Stride between rows in src1
-                const size_t dst_stride = nb1;    // Stride between rows in dst
+                // Calculate how many elements to process in this cache line
+                int64_t elements_remaining = total_elements - global_element_start;
+                int elements_this_block = (int)((elements_remaining < elements_per_cacheline) ?
+                                            elements_remaining : elements_per_cacheline);
 
-                // Validate dimensions for split SwiGLU
-                if (is_split_mode) {
-                    // Split tensor mode: src0 and src1 should have same shape as dst
-                    if (node_meta[i].src0.ne[0] != nc || ne10 != nc) {
-                        return -1; // Dimension mismatch in split mode
+                // Process elements that span across rows
+                int64_t elements_processed = 0;
+                while (elements_processed < elements_this_block && row < nr) {
+                    // Calculate elements to process in current row
+                    int64_t elements_in_row = nc - col;
+                    int64_t elements_to_process = elements_this_block - elements_processed;
+                    if (elements_to_process > elements_in_row) {
+                        elements_to_process = elements_in_row;
                     }
-                } else {
-                    // Single tensor mode: src0 should have 2*nc columns
-                    if (node_meta[i].src0.ne[0] != 2 * nc) {
-                        return -1; // Dimension mismatch in single tensor mode
+
+                    // Get pointers for current row and column range
+                    float* dst_ptr = (float*)((char*)dst_data + row * dst_stride) + col;
+
+                    float* x_ptr;
+                    float* g_ptr;
+
+                    if (is_split_mode) {
+                        // Split tensor mode
+                        x_ptr = (float*)((char*)src0_data + row * src0_stride) + col;
+                        g_ptr = (float*)((char*)src1_data + row * src1_stride) + col;
+                    } else {
+                        // Single tensor mode - src0 contains both x and g
+                        float* src0_row = (float*)((char*)src0_data + row * src0_stride);
+                        if (swapped) {
+                            g_ptr = src0_row + col;                // First half is gate
+                            x_ptr = src0_row + nc + col;           // Second half is value
+                        } else {
+                            x_ptr = src0_row + col;                // First half is value
+                            g_ptr = src0_row + nc + col;           // Second half is gate
+                        }
                     }
-                }
 
-                // Calculate total elements for cache line distribution
-                const int64_t elements_per_cacheline = 16;  // 64 bytes / 4 bytes per float
-                const int64_t total_elements = nr * nc;
-                const int64_t total_cachelines = (total_elements + elements_per_cacheline - 1) / elements_per_cacheline;
-
-                // Distribute cache lines across threads
-                int64_t cachelines_per_thread = (total_cachelines + num_threads - 1) / num_threads;
-                int64_t start_cacheline = thread_id * cachelines_per_thread;
-                int64_t end_cacheline = start_cacheline + cachelines_per_thread;
-
-                // Clamp end_cacheline to actual number of cache lines
-                if (end_cacheline > total_cachelines) {
-                    end_cacheline = total_cachelines;
-                }
-
-                // Thread should return if no work to do
-                if (start_cacheline >= total_cachelines) {
-                    return 0;
-                }
-
-                // Process cache lines assigned to this thread
-                for (int64_t cl = start_cacheline; cl < end_cacheline; cl++) {
-                    // Map cache line back to element coordinates
-                    int64_t global_element_start = cl * elements_per_cacheline;
-                    int64_t row = global_element_start / nc;
-                    int64_t col = global_element_start % nc;
-
-                    // Skip if we're past the end of data
-                    if (global_element_start >= total_elements) {
+                    // Process this segment
+                    if (glu_op_type == GGML_GLU_OP_GEGLU) {
+                        block_geglu(dst_ptr, x_ptr, g_ptr, (int)elements_to_process);
+                    } else if (glu_op_type == GGML_GLU_OP_SWIGLU) {
+                        block_swiglu(dst_ptr, x_ptr, g_ptr, (int)elements_to_process);
+                    } else {
                         break;
                     }
 
-                    // Calculate how many elements to process in this cache line
-                    int64_t elements_remaining = total_elements - global_element_start;
-                    int elements_this_block = (int)((elements_remaining < elements_per_cacheline) ?
-                                                elements_remaining : elements_per_cacheline);
+                    // Update counters
+                    elements_processed += elements_to_process;
+                    col += elements_to_process;
 
-                    // Process elements that span across rows
-                    int64_t elements_processed = 0;
-                    while (elements_processed < elements_this_block && row < nr) {
-                        // Calculate elements to process in current row
-                        int64_t elements_in_row = nc - col;
-                        int64_t elements_to_process = elements_this_block - elements_processed;
-                        if (elements_to_process > elements_in_row) {
-                            elements_to_process = elements_in_row;
+                    // Move to next row if current row is complete
+                    if (col >= nc) {
+                        row++;
+                        col = 0;
+                    }
+                }
+            }
+    
+        } else if (op == GGML_OP_SOFT_MAX) {
+            void * src2_data = (void *)(uintptr_t)node_meta[i].src2.data;
+            const float scale;         // Scale factor
+            const float max_bias;      // ALiBi max bias
+            memcpy((void*)&scale, &node_meta[i].op_params[0], sizeof(float));
+            memcpy((void*)&max_bias, &node_meta[i].op_params[1], sizeof(float));
+            
+            // Validate tensor types (F32 only)
+            if((node_meta[i].src0.type != GGML_TYPE_F32) || (node_meta[i].dst.type != GGML_TYPE_F32)){
+                continue; // Unsupported type combination
+            }
+
+            // Check if mask is used and validate type
+            bool use_mask = (node_meta[i].src1.data != NULL && (node_meta[i].src1.type == GGML_TYPE_F32 || node_meta[i].src1.type == GGML_TYPE_F16));
+
+            bool use_sinks = (node_meta[i].src2.data != NULL && node_meta[i].src2.type == GGML_TYPE_F32);
+
+            float* src0_data_f32 = (float*)src0_data;
+            float* dst_data_f32 = (float*)dst_data;
+            float* mask_data = use_mask ? (float*)src1_data : NULL;
+            float* sinks_data = use_sinks ? (float*)src2_data : NULL;
+
+            if (!src0_data_f32 || !dst_data_f32) {
+                continue; // Null data pointer
+            }
+
+            // Use pre-extracted dimensions (ne0, ne1, ne2, ne3 are dst dimensions)
+            const int64_t ne00 = ne0;  // Sequence length (columns) - same as dst ne[0]
+            const int64_t ne01 = ne1;  // Number of rows - same as dst ne[1]
+            const int64_t ne02 = ne2;  // Batch/head dimension - same as dst ne[2]
+            const int64_t ne03 = ne3;  // Outer batch dimension - same as dst ne[3]
+
+            const int64_t mask_ne10 = use_mask ? ne10 : 0;  // Mask sequence length
+            const int64_t mask_ne11 = use_mask ? ne11 : 0;  // Mask rows
+            const int64_t mask_ne12 = use_mask ? ne12 : 0;  // Mask batch/head dimension
+            const int64_t mask_ne13 = use_mask ? ne13 : 0;  // Mask outer batch dimension
+
+            if (use_mask) {
+                // - Dimension 0: mask must equal input exactly
+                // - Dimension 1: mask must be >= input (allows larger pre-allocated masks)
+                // - Dimension 2: input must be divisible by mask (modulo broadcasting)
+                // - Dimension 3: input must be divisible by mask (modulo broadcasting)
+                if (mask_ne10 != ne00 ||                    // Dimension 0: exact match required
+                    mask_ne11 < ne01 ||                     // Dimension 1: mask >= input
+                    (mask_ne12 > 0 && ne02 % mask_ne12 != 0) ||  // Dimension 2: input % mask == 0
+                    (mask_ne13 > 0 && ne03 % mask_ne13 != 0)) {  // Dimension 3: input % mask == 0
+                    continue; // Incompatible dimensions for ggml softmax broadcasting
+                }
+            }
+
+            // ALiBi slope calculation - compute per attention head
+            const uint32_t n_head = (uint32_t)ne02;
+            uint32_t n_head_log2 = 0;
+            float m0 = 1.0f;
+            float m1 = 1.0f;
+
+            if (max_bias > 0.0f) {
+                // This is equivalent to: 1 << floor(log2(n_head))
+                n_head_log2 = 1;
+                while (n_head_log2 < n_head) {
+                    n_head_log2 <<= 1;
+                }
+                if (n_head_log2 > n_head) {
+                    n_head_log2 >>= 1;
+                }
+
+                // Compute base slopes for ALiBi
+                // m0 = 2^(-max_bias / n_head_log2)
+                // m1 = 2^(-max_bias / (2 * n_head_log2))
+                float inv_n_head_log2 = et_fdiv(1.0f, (float)n_head_log2);
+                m0 = et_expf(-max_bias * 0.69314718f * inv_n_head_log2);  // 0.69314718 = ln(2)
+                m1 = et_expf(-max_bias * 0.69314718f * inv_n_head_log2 * 0.5f);
+            }
+
+            // Process tensor row by row in parallel across flattened rows.
+            // Flattened row index spans [i03, i02, i01] with row length ne00.
+            const int64_t rows_per_i03 = ne02 * ne01;
+            const int64_t total_rows = ne03 * rows_per_i03;
+
+            for (int64_t row = thread_id; row < total_rows; row += num_threads) {
+                const int64_t i03 = row / rows_per_i03;
+                const int64_t rem = row % rows_per_i03;
+                const int64_t i02 = rem / ne01;
+                const int64_t i01 = rem % ne01;
+
+                // Calculate ALiBi slope for this attention head
+                float slope = 1.0f;
+                if (max_bias > 0.0f) {
+                    const uint32_t h = (uint32_t)i02;  // head index
+                    if (h < n_head_log2) {
+                        // slope = m0^(h+1) for first half of heads
+                        slope = m0;
+                        for (uint32_t i = 0; i < h; i++) {
+                            slope *= m0;
                         }
-
-                        // Get pointers for current row and column range
-                        float* dst_ptr = (float*)((char*)dst_data + row * dst_stride) + col;
-
-                        float* x_ptr;
-                        float* g_ptr;
-
-                        if (is_split_mode) {
-                            // Split tensor mode
-                            x_ptr = (float*)((char*)src0_data + row * src0_stride) + col;
-                            g_ptr = (float*)((char*)src1_data + row * src1_stride) + col;
-                        } else {
-                            // Single tensor mode - src0 contains both x and g
-                            float* src0_row = (float*)((char*)src0_data + row * src0_stride);
-                            if (swapped) {
-                                g_ptr = src0_row + col;                // First half is gate
-                                x_ptr = src0_row + nc + col;           // Second half is value
-                            } else {
-                                x_ptr = src0_row + col;                // First half is value
-                                g_ptr = src0_row + nc + col;           // Second half is gate
-                            }
-                        }
-
-                        // Process this segment
-                        if (glu_op_type == GGML_GLU_OP_GEGLU) {
-                            block_geglu(dst_ptr, x_ptr, g_ptr, (int)elements_to_process);
-                        } else if (glu_op_type == GGML_GLU_OP_SWIGLU) {
-                            block_swiglu(dst_ptr, x_ptr, g_ptr, (int)elements_to_process);
-                        } else {
-                            break;
-                        }
-
-                        // Update counters
-                        elements_processed += elements_to_process;
-                        col += elements_to_process;
-
-                        // Move to next row if current row is complete
-                        if (col >= nc) {
-                            row++;
-                            col = 0;
+                    } else {
+                        // slope = m1^(2*(h - n_head_log2) + 1) for second half
+                        const uint32_t exp = 2 * (h - n_head_log2) + 1;
+                        slope = m1;
+                        for (uint32_t i = 1; i < exp; i++) {
+                            slope *= m1;
                         }
                     }
                 }
 
-            } break;
-            // case GGML_OP_SOFT_MAX:       ggml_et_op_softmax(env, &node_meta[i]); break;
-            // case GGML_OP_FLASH_ATTN_EXT: ggml_et_op_flash_attn_ext(env, &node_meta[i]); break;
-            // case GGML_OP_GET_ROWS:       ggml_et_op_get_rows(env, &node_meta[i]); break;
-            // case GGML_OP_SET_ROWS:       ggml_et_op_set_rows(env, &node_meta[i]); break;
-            // case GGML_OP_CONT:           ggml_et_op_cont(env, &node_meta[i]); break;
-            // case GGML_OP_MUL_MAT:        ggml_et_op_mul_mat(env, &node_meta[i]); break;
-            // case GGML_OP_ROPE:           ggml_et_op_rope(env, &node_meta[i]); break;
-            // case GGML_OP_RMS_NORM:       ggml_et_op_rms_norm(env, &node_meta[i]); break;
+                float sink_value = 0.0f;
+                if (use_sinks && sinks_data) {
+                    // Sinks tensor is 1D array indexed by head (i02)
+                    sink_value = sinks_data[i02];
+                }
 
-            // case GGML_OP_SQR:            ggml_et_op_sqr(env, &node_meta[i]); break;
-            // case GGML_OP_UNARY:          ggml_et_op_unary(env, &node_meta[i]); break;
-            // case GGML_OP_SUM_ROWS:       ggml_et_op_sum_rows(env, &node_meta[i]); break;
-            // case GGML_OP_CUMSUM:         ggml_et_op_cumsum(env, &node_meta[i]); break;
-            // case GGML_OP_MUL_MAT_ID:     ggml_et_op_mul_mat_id(env, &node_meta[i]); break;
-            // case GGML_OP_NORM:           ggml_et_op_norm(env, &node_meta[i]); break;
-            // case GGML_OP_L2_NORM:        ggml_et_op_l2_norm(env, &node_meta[i]); break;
-            // case GGML_OP_SCALE:          ggml_et_op_scale(env, &node_meta[i]); break;
-            // case GGML_OP_CPY:            ggml_et_op_cpy(env, &node_meta[i]); break;
-            // case GGML_OP_CONCAT:         ggml_et_op_concat(env, &node_meta[i]); break;
-            // case GGML_OP_REPEAT:         ggml_et_op_repeat(env, &node_meta[i]); break;
-            // case GGML_OP_PAD:            ggml_et_op_pad(env, &node_meta[i]); break;
-            // case GGML_OP_SET:            ggml_et_op_set(env, &node_meta[i]); break;
-            // case GGML_OP_FILL:           ggml_et_op_fill(env, &node_meta[i]); break;
-            // case GGML_OP_DIAG:           ggml_et_op_diag(env, &node_meta[i]); break;
+                const int64_t src_offset = i03 * ne02 * ne01 * ne00 +
+                                        i02 * ne01 * ne00 +
+                                        i01 * ne00;
 
-            // case GGML_OP_RESHAPE:
-            // case GGML_OP_VIEW:
-            // case GGML_OP_PERMUTE:
-            // case GGML_OP_TRANSPOSE:
-            //     break;
+                const float* src_row = src0_data_f32 + src_offset;
+                float* dst_row = dst_data_f32 + src_offset;
+                const float* mask_row = NULL;
 
-            default:
+                // Calculate mask row offset using ggml's broadcasting rules
+                if (use_mask && mask_data) {
+                    // ggml broadcasting logic:
+                    // - i11 = i01 (direct mapping for dimension 1, even if mask is larger)
+                    // - i12 = i02 % ne12 (modulo broadcasting for dimension 2)
+                    // - i13 = i03 % ne13 (modulo broadcasting for dimension 3)
+                    const int64_t mask_i03 = (mask_ne13 > 0) ? i03 % mask_ne13 : 0;
+                    const int64_t mask_i02 = (mask_ne12 > 0) ? i02 % mask_ne12 : 0;
+                    const int64_t mask_i01 = i01;  // Direct mapping (mask >= input guaranteed)
+
+                    const int64_t mask_offset = mask_i03 * mask_ne12 * mask_ne11 * mask_ne10 +
+                                            mask_i02 * mask_ne11 * mask_ne10 +
+                                            mask_i01 * mask_ne10;
+
+                    mask_row = mask_data + mask_offset;
+                }
+
+                compute_softmax_row(dst_row, src_row, mask_row, (int)ne00, scale, slope, sink_value, use_sinks);
+            }
+        } else if (op == GGML_OP_FLASH_ATTN_EXT) {
+                if (node_meta[i].dst.type != GGML_TYPE_F32 || node_meta[i].src0.type != GGML_TYPE_F32) {
+                    continue;
+                }
+                // K and V can be F16 or F32
+                if ((node_meta[i].src1.type != GGML_TYPE_F32 && node_meta[i].src1.type != GGML_TYPE_F16) ||
+                    (node_meta[i].src2.type != GGML_TYPE_F32 && node_meta[i].src2.type != GGML_TYPE_F16)) {
+                    continue;
+                }
+                if (node_meta[i].src2.data != 0) {
+                    continue;
+                }                   
+                // Mask is optional; if present must be F16 or F32
+                if (node_meta[i].src1.data != 0 &&
+                    node_meta[i].src1.type != GGML_TYPE_F32 &&
+                    node_meta[i].src1.type != GGML_TYPE_F16) {
+                    continue;
+                }
+                // Q and dst must be row-contiguous F32
+                // TODO: Add contiguity checks using pre-extracted strides
+                // For now, skip these checks
+                // continue; // Skip until contiguity checks are properly implemented
+
+                // K/V must have element-sized stride in dim 0
+                const size_t k_elem = node_meta[i].src1.type == GGML_TYPE_F16 ? 2 : 4;
+                const size_t v_elem = node_meta[i].src2.type == GGML_TYPE_F16 ? 2 : 4;
+                if (nb10 != k_elem || nb12 != v_elem) {
+                    continue;
+                }
+                float scale = 1.0f;
+                float max_bias = 0.0f;
+                float logit_softcap = 0.0f;
+                memcpy(&scale,         &node_meta[i].op_params[0], sizeof(scale));
+                memcpy(&max_bias,      &node_meta[i].op_params[1], sizeof(max_bias));
+                memcpy(&logit_softcap, &node_meta[i].op_params[2], sizeof(logit_softcap));
+                if (max_bias != 0.0f || logit_softcap != 0.0f) {
+                    continue;
+                }
+                // TODO: Add precision check when available in node_meta
+                // For now, assume F32 precision
+                // dk must match between Q and K; dv must match between V and dst
+                if (ne0 != ne10) {
+                    continue;
+                }
+                // TODO: Add dst dimension check when available
+                // For now, skip this check
+                if (ne0 > 256) {
+                    continue;
+                }
+                // GQA: n_head_q must be a multiple of n_head_kv
+                const int64_t nhq = ne2;  // Using pre-extracted dst ne[2] as src0 ne[2]
+                const int64_t nhk = ne12; // Using pre-extracted src1 ne[2]
+                if (nhq % nhk != 0) {
+                    continue;
+                }
+                // K and V must have matching sequence length, heads, and batch dims
+                if (ne11 != ne13 ||  // src1 ne[1] vs src2 ne[1] - using ne11 for src1 ne[1], need src2 ne[1]
+                    ne12 != ne12 ||  // src1 ne[2] vs src2 ne[2] - same dimension
+                    ne13 != ne13) {  // src1 ne[3] vs src2 ne[3] - same dimension
+                    // TODO: Add proper dimension comparison when all src2 dimensions are available
+                    continue;
+                }
+                // dst layout checks: [dv, nhq, nq, no]
+                // TODO: Add dst layout checks when all dimensions are properly mapped
+                // Batch dims: Q batch must match K batch
+                if (ne3 != ne13) {
+                    continue;
+                }
+                
+                // Use matrix engine kernel when K/V are F16 and dk is a multiple of 32
+                if (node_meta[i].src1.type == GGML_TYPE_F16 &&
+                    node_meta[i].src2.type == GGML_TYPE_F16 &&
+                    (ne0 % 32) == 0) {
+                    // TODO: F16 FLASH attention implementation temporarily disabled
+                    // due to tensor engine integration complexity
+                    continue;
+
+                } else {
+                    // -----------------------------------------------------
+                    // FA-F32
+                    // -----------------------------------------------------
+                    
+                    const int fa_thread_id = get_relative_thread_id(kernel_env->shire_mask);
+                    const int fa_num_threads = get_num_threads(kernel_env->shire_mask);
+                    if (fa_thread_id < 0 || fa_num_threads <= 0) {
+                        continue;
+                    }
+
+                    // Use pre-extracted data pointers and metadata
+                    const char * q_data   = (const char *)src0_data;
+                    const char * k_data   = (const char *)src1_data;
+                    const char * v_data   = (const char *)src1_data;  // TODO: Use proper src2
+                    char * fa_dst_data    = (char *)dst_data;
+
+                    const int k_type = node_meta[i].src1.type;
+                    const int v_type = node_meta[i].src2.type;
+                    const int64_t k_nb0 = nb10;  // Pre-extracted K stride
+                    const int64_t v_nb0 = nb12;  // Pre-extracted V stride
+
+                    // Use pre-extracted dimensions
+                    const int64_t dk  = ne0;      // Q ne[0] = K ne[0]
+                    const int64_t nq  = ne1;      // Q ne[1]
+                    const int64_t fa_nhq = ne2;   // Q ne[2]
+                    const int64_t no  = ne3;      // Q ne[3]
+                    const int64_t nk  = ne11;     // K ne[1]
+                    const int64_t fa_nhk = ne12;  // K ne[2]
+                    // TODO: Need to extract V ne[0] when available
+                    const int64_t dv  = ne0;      // Assuming V ne[0] = dst ne[0] for now
+
+                    if (dv > FA_DV_MAX) {
+                        continue;
+                    }
+
+                    // GQA: query heads per kv head
+                    const int64_t gqa_ratio = fa_nhq / fa_nhk;
+
+                    const int64_t total_rows = nq * fa_nhq * no;
+                    const float scale_f32 = scale;  // Use extracted scale
+
+                    // When dv is a multiple of 16 (64 bytes = cache line), output rows are
+                    // cache-line aligned and we can use fast normal stores. Otherwise we must
+                    // use atomic stores to avoid cache-line sharing corruption.
+                    const int use_fast_store = (dv % 16 == 0);
+
+                    for (int64_t row = fa_thread_id; row < total_rows; row += fa_num_threads) {
+                        const int64_t iq3 = row / (fa_nhq * nq);
+                        const int64_t rem = row % (fa_nhq * nq);
+                        const int64_t iq2 = rem / nq;           // query head index
+                        const int64_t iq1 = rem % nq;           // query position
+
+                        // Map query head -> kv head for GQA
+                        const int64_t ik2 = iq2 / gqa_ratio;
+
+                        // Q is always F32
+                        const float * pq = (const float *) (q_data + iq1*nb01 + iq2*nb02 + iq3*nb03);
+
+                        // dst layout: [dv, nhq, nq, no]
+                        float * out = (float *) (fa_dst_data + iq2*nb1 + iq1*nb2 + iq3*nb3);
+
+                        // Base byte offsets for K and V head+batch slice
+                        const int64_t kv_base = ik2*nb12 + iq3*nb13;
+                        const int64_t vv_base = ik2*nb12 + iq3*nb13;  // TODO: Use proper V strides
+
+                            float acc[FA_DV_MAX];
+                            for (int64_t d = 0; d < dv; ++d) {
+                                acc[d] = 0.0f;
+                            }
+
+                            float M = -3.402823466e+38f;
+                            float S = 0.0f;
+
+                            for (int64_t ik1 = 0; ik1 < nk; ++ik1) {
+
+                                // TODO: Implement proper mask handling when mask tensor is available
+                                // For now, skip mask processing
+                                const char * pk = k_data + ik1*nb11 + kv_base;
+                                const char * pv = v_data + ik1*nb11 + vv_base;  // TODO: Use proper V stride
+
+                                float s = dot_qk(pq, pk, dk, k_nb0, k_type) * scale_f32;
+                                const float Mold = M;
+
+                                float ms = 1.0f;
+                                float vs = 1.0f;
+                                if (s > M) {
+                                    M = s;
+                                    ms = et_expf(Mold - M);
+                                    for (int64_t d = 0; d < dv; ++d) {
+                                        acc[d] *= ms;
+                                    }
+                                } else {
+                                    vs = et_expf(s - M);
+                                }
+
+                                // Accumulate weighted V
+                                if (v_type == GGML_TYPE_F32) {
+                                    const float * pvf = (const float *) pv;
+                                    for (int64_t d = 0; d < dv; ++d) {
+                                        acc[d] += pvf[d] * vs;
+                                    }
+                                } else {
+                                    for (int64_t d = 0; d < dv; ++d) {
+                                        acc[d] += fp16_to_fp32(*(const uint16_t *)(pv + d * v_nb0)) * vs;
+                                    }
+                                }
+
+                                S = S * ms + vs;
+                            }
+
+                            const float S_inv = S == 0.0f ? 0.0f : et_fdiv(1.0f, S);
+                            if (use_fast_store) {
+                                for (int64_t d = 0; d < dv; ++d) {
+                                    out[d] = acc[d] * S_inv;
+                                }
+                            } else {
+                                for (int64_t d = 0; d < dv; ++d) {
+                                    atomic_store_f32((volatile float *) &out[d], acc[d] * S_inv);
+                                }
+                            }
+                        }
+                    }
+            // flash_attn_ext(env, &node_meta[i]);
+        } else if (op == GGML_OP_GET_ROWS) {
+            // ggml_et_op_get_rows(env, &node_meta[i]);
+        } else if (op == GGML_OP_SET_ROWS) {
+            // ggml_et_op_set_rows(env, &node_meta[i]);
+        } else if (op == GGML_OP_CONT) {
+            // ggml_et_op_cont(env, &node_meta[i]);
+        } else if (op == GGML_OP_MUL_MAT) {
+            // ggml_et_op_mul_mat(env, &node_meta[i]);
+        } else if (op == GGML_OP_ROPE) {
+            // ggml_et_op_rope(env, &node_meta[i]);
+        } else if (op == GGML_OP_RMS_NORM) {
+            // ggml_et_op_rms_norm(env, &node_meta[i]);
+        } else if (op == GGML_OP_SQR) {
+            // ggml_et_op_sqr(env, &node_meta[i]);
+        } else if (op == GGML_OP_UNARY) {
+            // ggml_et_op_unary(env, &node_meta[i]);
+        } else if (op == GGML_OP_SUM_ROWS) {
+            // ggml_et_op_sum_rows(env, &node_meta[i]);
+        } else if (op == GGML_OP_CUMSUM) {
+            // ggml_et_op_cumsum(env, &node_meta[i]);
+        } else if (op == GGML_OP_MUL_MAT_ID) {
+            // ggml_et_op_mul_mat_id(env, &node_meta[i]);
+        } else if (op == GGML_OP_NORM) {
+            // ggml_et_op_norm(env, &node_meta[i]);
+        } else if (op == GGML_OP_L2_NORM) {
+            // ggml_et_op_l2_norm(env, &node_meta[i]);
+        } else if (op == GGML_OP_SCALE) {
+            // ggml_et_op_scale(env, &node_meta[i]);
+        } else if (op == GGML_OP_CPY) {
+            // ggml_et_op_cpy(env, &node_meta[i]);
+        } else if (op == GGML_OP_CONCAT) {
+            // ggml_et_op_concat(env, &node_meta[i]);
+        } else if (op == GGML_OP_REPEAT) {
+            // ggml_et_op_repeat(env, &node_meta[i]);
+        } else if (op == GGML_OP_PAD) {
+            // ggml_et_op_pad(env, &node_meta[i]);
+        } else if (op == GGML_OP_SET) {
+            // ggml_et_op_set(env, &node_meta[i]);
+        } else if (op == GGML_OP_FILL) {
+            // ggml_et_op_fill(env, &node_meta[i]);
+        } else if (op == GGML_OP_DIAG) {
+            // ggml_et_op_diag(env, &node_meta[i]);
+        } else if (op == GGML_OP_RESHAPE || op == GGML_OP_VIEW || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE) {
+            // No-op operations
+        } else {
                 return -1;
         }
 

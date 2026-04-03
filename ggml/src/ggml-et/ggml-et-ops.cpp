@@ -1186,7 +1186,7 @@ bool ggml_et_op_flash_attn_ext(ggml_backend_et_device_context* dev_ctx, const gg
     if (node->src[4] != nullptr) {
         GGML_LOG_ERROR("ET: FLASH_ATTN_EXT baseline kernel does not support sinks\n");
         return false;
-    }
+    }                   
 
     // Mask is optional; if present must be F16 or F32
     if (node->src[3] != nullptr &&
