@@ -1725,169 +1725,544 @@ static void ggml_et_op_mul_mat_id(void * env, struct ggml_node_meta_et * m) {
 // ========================================================================
 // OP: GET_ROWS  —  row extraction with dequant (F32/Q8_0/Q4_0/Q4_K)
 // ========================================================================
-static void ggml_et_op_get_rows(void * env, struct ggml_node_meta_et * m) {
-    int tid, nth;
-    if (cg_thread_setup(env, &tid, &nth)) return;
 
-    const void * src0_data = (const void *)(uintptr_t)m->src0.data;
-    const int32_t * src1_data = (const int32_t *)(uintptr_t)m->src1.data;
-    float * dst_data = (float *)(uintptr_t)m->dst.data;
-    if (!src0_data || !src1_data || !dst_data) return;
 
-    const int64_t ne00 = m->src0.ne[0];
-    const int64_t ne01 = m->src0.ne[1];
-    const int64_t ne10 = m->src1.ne[0];
-    const int64_t ne11 = m->src1.ne[1];
-    const int64_t ne12 = m->src1.ne[2];
-    const int64_t ne13 = m->src1.ne[3];
-    const int src0_type = m->src0.type;
+#define CACHE_LINE_SIZE_BYTES 64
+#define CACHE_ELEMENTS(elem_size) (CACHE_LINE_SIZE_BYTES / (elem_size))
 
-    const int64_t total_rows = ne10 * ne11 * ne12 * ne13;
+// Copy a row of F32 data from source to destination
+static void copy_f32_row(float* dst, const float* src, int64_t num_elements) {
+    // Simple memcpy for F32 data - no conversion needed
+    for (int64_t i = 0; i < num_elements; i++) {
+        dst[i] = src[i];
+    }
+}
 
-    for (int64_t i = tid; i < total_rows; i += nth) {
-        int32_t row_index = src1_data[i];
-        if (row_index < 0 || row_index >= ne01) continue;
+// Copy a row of F32 data from source to destination, aligned to cache line boundaries
+// using FP32 load/store instructions. They don't perform data conversion so is fine.
+// Requirement: n_bytes is a multiple of CACHE_LINE_SIZE (64 bytes)
+static void copy_row_cache_align(float* dst, const float* src, int64_t n_bytes) {
+    int num_f32_elem = n_bytes / sizeof(float);
 
-        float * dst_row = dst_data + i * ne00;
+    // Unrolled to do an entire cache line at a time
+    __asm__ volatile (
+        "1: \n\t"
+        // --- Process 64 Bytes (1 Cache Line) ---
+        // Load 256 bits (32 bytes) into f0 and the other into f1
+        "flq2 f0, 0(%[src]) \n\t"
+        "flq2 f1, 32(%[src]) \n\t"
 
-        if (src0_type == GGML_TYPE_F32) {
-            const float * src_row = (const float *)src0_data + row_index * ne00;
-            for (int64_t k = 0; k < ne00; k++) dst_row[k] = src_row[k];
-        } else if (src0_type == GGML_TYPE_Q8_0) {
-            int64_t bpr = (ne00 + QK8_0 - 1) / QK8_0;
-            const block_q8_0 * blocks = (const block_q8_0 *)src0_data + row_index * bpr;
-            for (int64_t bi = 0; bi < bpr; bi++) {
-                float temp[QK8_0];
-                dequantize_q8_0_block(&blocks[bi], temp);
-                int64_t elems = (bi == bpr - 1) ? (ne00 - bi * QK8_0) : QK8_0;
-                for (int64_t k = 0; k < elems; k++) dst_row[bi * QK8_0 + k] = temp[k];
-            }
-        } else if (src0_type == GGML_TYPE_Q4_0) {
-            int64_t bpr = (ne00 + QK4_0 - 1) / QK4_0;
-            const block_q4_0 * blocks = (const block_q4_0 *)src0_data + row_index * bpr;
-            for (int64_t bi = 0; bi < bpr; bi++) {
-                float temp[QK4_0];
-                dequantize_q4_0_block(&blocks[bi], temp);
-                int64_t elems = (bi == bpr - 1) ? (ne00 - bi * QK4_0) : QK4_0;
-                for (int64_t k = 0; k < elems; k++) dst_row[bi * QK4_0 + k] = temp[k];
-            }
-        } else if (src0_type == GGML_TYPE_Q4_K) {
-            int64_t bpr = (ne00 + QK_K - 1) / QK_K;
-            const block_q4_K * blocks = (const block_q4_K *)src0_data + row_index * bpr;
-            for (int64_t bi = 0; bi < bpr; bi++) {
-                float temp[QK_K];
-                dequantize_q4_K_block(&blocks[bi], temp);
-                int64_t elems = (bi == bpr - 1) ? (ne00 - bi * QK_K) : QK_K;
-                for (int64_t k = 0; k < elems; k++) dst_row[bi * QK_K + k] = temp[k];
-            }
+        // Store 256 bits (32 bytes) from f0 and f1
+        "fsq2 f0, 0(%[dst]) \n\t"
+        "fsq2 f1, 32(%[dst]) \n\t"
+
+        // Increment Pointers by 64 bytes
+        "addi %[src], %[src], 64 \n\t"
+        "addi %[dst], %[dst], 64 \n\t"
+
+        // Decrement count by 16 elements
+        "addi %[n], %[n], -16 \n\t"
+
+        // Loop if at least 16 elements remain
+        "bge %[n], %[stride_count], 1b \n\t"
+
+        : [dst] "+r" (dst), [src] "+r" (src), [n] "+r" (num_f32_elem)
+        : [stride_count] "r" (16L)
+        : "f0", "f1", "memory"
+    );
+}
+
+// Copied from GGML: copy a row of Q4_0 data to F32 destination (with dequantization)
+static void copy_q4_0_row(float* dst, const block_q4_0* src_blocks, int64_t num_elements) {
+    const int64_t num_blocks = (num_elements + QK4_0 - 1) / QK4_0;
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const int64_t elements_in_block = (block_idx == num_blocks - 1) ?
+            (num_elements - block_idx * QK4_0) : QK4_0;
+
+        float temp_buffer[QK4_0];
+        dequantize_q4_0_block(&src_blocks[block_idx], temp_buffer);
+
+        for (int64_t i = 0; i < elements_in_block; i++) {
+            dst[block_idx * QK4_0 + i] = temp_buffer[i];
         }
     }
+}
+
+// Copy a row of Q8_0 data to F32 destination (with dequantization)
+static void copy_q8_0_row(float* dst, const block_q8_0* src_blocks, int64_t num_elements) {
+    // Number of Q8_0 blocks needed for this row
+    const int64_t num_blocks = (num_elements + QK8_0 - 1) / QK8_0;  // Round up to handle partial blocks
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const int64_t elements_in_block = (block_idx == num_blocks - 1) ?
+            (num_elements - block_idx * QK8_0) : QK8_0;  // Handle last partial block
+
+        // Dequantize the block
+        float temp_buffer[QK8_0];
+        dequantize_q8_0_block(&src_blocks[block_idx], temp_buffer);
+
+        // Copy dequantized values to destination
+        for (int64_t i = 0; i < elements_in_block; i++) {
+            dst[block_idx * QK8_0 + i] = temp_buffer[i];
+        }
+    }
+}
+
+// Copy a row of Q4_K data to F32 destination (with dequantization)
+static void copy_q4_K_row(float* dst, const block_q4_K* src_blocks, int64_t num_elements) {
+    const int64_t num_blocks = (num_elements + QK_K - 1) / QK_K;
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const int64_t elements_in_block = (block_idx == num_blocks - 1) ?
+            (num_elements - block_idx * QK_K) : QK_K;
+
+        float temp_buffer[QK_K];
+        dequantize_q4_K_block(&src_blocks[block_idx], temp_buffer);
+
+        for (int64_t i = 0; i < elements_in_block; i++) {
+            dst[block_idx * QK_K + i] = temp_buffer[i];
+        }
+    }
+}
+
+static void dequantize_q8_0_block_cache_aligned(const block_q8_0* block, float* dst) {
+    const int8_t* qs_ptr = block->qs;
+
+    uint64_t temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");           // Enable all 8 elements
+
+    const int32_t __attribute__((aligned(32))) vec_indices[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    float scale = fp16_to_fp32(block->d);
+    __asm__ volatile (
+        "fbcx.ps     f0, %0       \n\t" // Broadcast integer scale to all lanes
+        "flq2        f1, 0(%1)    \n\t" // Load gether indicies
+        :: "r"(scale), "r"(vec_indices)
+        : "f0", "f1"
+    );
+
+    for (int i = 0; i < 4; i++) {
+        __asm__ volatile (
+            "fgb.ps      f2, f1(%0)   \n\t" // Loads 8 bytes from (qs_ptr + indices) and sign-extends to 32-bit int.
+            "fcvt.ps.pw  f2, f2, rne  \n\t" // Convert Int32 to Float32
+            "fmul.ps     f2, f2, f0   \n\t" // f2 = f2 * f0 (scale)
+            "fsq2        f2, 0(%1)    \n\t" // Store 256 bits (8 floats) to dst.
+
+            :: "r"(qs_ptr), "r"(dst)
+            : "f2", "memory"
+        );
+
+        // Advance pointers in C
+        qs_ptr += 8;
+        dst += 8;
+    }
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+}
+
+// Copy a row of Q4_0 data to F32 destination (with dequantization), cache-aligned
+static void copy_q4_0_row_cache_aligned(float* dst, const block_q4_0* src_blocks, int64_t num_elements) {
+    const int64_t num_blocks = (num_elements + QK4_0 - 1) / QK4_0;
+
+    // Scatter byte offsets: even lanes -> dst[j], odd lanes -> dst[j + QK4_0/2]
+    // For 4 consecutive packed bytes producing [low0, high0, low1, high1, low2, high2, low3, high3]:
+    //   low_i  -> byte offset i*4       (positions 0,1,2,3 in first half)
+    //   high_i -> byte offset (16+i)*4  (positions 16,17,18,19 in second half)
+    const int32_t __attribute__((aligned(32))) scatter_offsets[8] = {
+        0*4, 16*4, 1*4, 17*4, 2*4, 18*4, 3*4, 19*4
+    };
+
+    // Gather indices: each byte loaded twice for low/high nibble extraction
+    const int32_t __attribute__((aligned(32))) gather_indices[8] = {0, 0, 1, 1, 2, 2, 3, 3};
+
+    uint64_t temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
+    __asm__ volatile ("mov.m.x m0, x0, 0xFF");          // Enable all 8 elements
+
+    // Load constant vectors once — shared across all blocks and iterations
+    __asm__ volatile (
+        "flq2        f4, 0(%0)    \n\t" // f4 = scatter offsets
+        "flq2        f1, 0(%1)    \n\t" // f1 = gather indices {0,0,1,1,2,2,3,3}
+        :: "r"(scatter_offsets), "r"(gather_indices)
+        : "f1", "f4"
+    );
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const block_q4_0* block = &src_blocks[block_idx];
+        const uint8_t* qs = block->qs;
+        float* block_dst = dst + block_idx * QK4_0;
+
+        float scale = fp16_to_fp32(block->d);
+        float bias = -8.0f * scale;
+
+        // Per-block: broadcast scale and bias
+        __asm__ volatile (
+            "fbcx.ps     f0, %0       \n\t" // f0 = broadcast(scale)
+            "fbcx.ps     f3, %1       \n\t" // f3 = broadcast(-8 * scale)
+            :: "r"(scale), "r"(bias)
+            : "f0", "f3"
+        );
+
+        // 4 iterations x 4 packed bytes = 16 bytes = full block -> 32 floats
+        for (int i = 0; i < 4; i++) {
+            __asm__ volatile (
+                "fgb.ps      f2, f1(%0)    \n\t" // Gather: [b0,b0,b1,b1,b2,b2,b3,b3]
+                "mov.m.x     m0, x0, 0xAA  \n\t" // Odd lanes only (fills gather latency)
+                "fsrli.pi    f2, f2, 4     \n\t" // Odd lanes: byte >> 4 (high nibble)
+                "mov.m.x     m0, x0, 0xFF  \n\t" // Restore full mask
+                "fslli.pi    f2, f2, 28    \n\t" // Isolate low 4 bits: shift left 28
+                "fsrli.pi    f2, f2, 28    \n\t" //   then right 28 -> nibble in [3:0]
+                "fcvt.ps.pw  f2, f2, rne   \n\t" // Int32 -> Float32
+                "fmul.ps     f2, f2, f0    \n\t" // * scale
+                "fadd.ps     f2, f2, f3    \n\t" // + bias -> (nibble - 8) * scale
+                "fscw.ps     f2, f4(%1)    \n\t" // Scatter to GGML positions
+
+                :: "r"(qs), "r"(block_dst)
+                : "f2", "memory"
+            );
+
+            qs += 4;         // 4 packed bytes consumed
+            block_dst += 4;  // Advance base by 4 float positions
+        }
+    }
+
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));  // Restore mask
+}
+
+// Copy a row of Q8_0 data to F32 destination (with dequantization)
+static void copy_q8_0_row_cache_aligned(float* dst, const block_q8_0* src_blocks, int64_t num_elements) {
+    // Number of Q8_0 blocks needed for this row
+    const int64_t num_blocks = (num_elements + QK8_0 - 1) / QK8_0;  // Round up to handle partial blocks
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const int64_t elements_in_block = (block_idx == num_blocks - 1) ?
+            (num_elements - block_idx * QK8_0) : QK8_0;  // Handle last partial block
+
+        // Dequantize the block
+        float temp_buffer[QK8_0];
+        dequantize_q8_0_block_cache_aligned(&src_blocks[block_idx], temp_buffer);
+
+        // Copy dequantized values to destination
+        for (int64_t i = 0; i < elements_in_block; i++) {
+            dst[block_idx * QK8_0 + i] = temp_buffer[i];
+        }
+    }
+}
+
+
+// Vectorized dequantization of a Q4_K super-block (256 elements) to F32
+// Processes 8 groups of 32 elements, using ET SIMD for the inner loops.
+// Output is sequential (no scatter needed unlike Q4_0).
+static void copy_q4_K_row_cache_aligned(float* dst, const block_q4_K* src_blocks, int64_t num_elements) {
+    const int64_t num_blocks = (num_elements + QK_K - 1) / QK_K;
+
+    // Gather indices for sequential byte access: {0,1,2,3,4,5,6,7}
+    const int32_t __attribute__((aligned(32))) gather_indices[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+
+    uint64_t temp_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));  // Save current mask
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");            // Enable all 8 elements
+
+    // Load gather indices once — shared across all blocks
+    __asm__ volatile (
+        "flq2        f1, 0(%0)    \n\t" // f1 = gather indices {0,1,2,3,4,5,6,7}
+        :: "r"(gather_indices)
+        : "f1"
+    );
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const block_q4_K* block = &src_blocks[block_idx];
+        const uint8_t* qs = block->qs;
+        float* block_dst = dst + block_idx * QK_K;
+
+        const float d   = fp16_to_fp32(block->d);
+        const float min = fp16_to_fp32(block->dmin);
+
+        int is = 0;
+        for (int j = 0; j < QK_K; j += 64) {
+            // Extract per-group scales and mins (scalar — only 8 pairs per super-block)
+            uint8_t sc, m;
+            get_scale_min_k4(is + 0, block->scales, &sc, &m);
+            const float d1 = d * sc;
+            const float neg_m1 = -(min * m);
+            get_scale_min_k4(is + 1, block->scales, &sc, &m);
+            const float d2 = d * sc;
+            const float neg_m2 = -(min * m);
+
+            // Low nibbles: 32 elements using d1, neg_m1
+            __asm__ volatile (
+                "fbcx.ps     f0, %0       \n\t" // f0 = broadcast(d1)
+                "fbcx.ps     f3, %1       \n\t" // f3 = broadcast(-m1)
+                :: "r"(d1), "r"(neg_m1)
+                : "f0", "f3"
+            );
+
+            const uint8_t* qs_lo = qs;
+            float* dst_lo = block_dst + j;
+            for (int k = 0; k < 4; k++) {
+                __asm__ volatile (
+                    "fgb.ps      f2, f1(%0)   \n\t" // Gather 8 bytes, sign-extend to int32
+                    "fandi.pi    f2, f2, 0xF   \n\t" // Mask low nibble (imm10=15)
+                    "fcvt.ps.pw  f2, f2, rne   \n\t" // Int32 -> Float32
+                    "fmadd.ps    f2, f2, f0, f3\n\t" // d1 * nibble + (-m1)
+                    "fsq2        f2, 0(%1)     \n\t" // Store 8 floats
+                    :: "r"(qs_lo), "r"(dst_lo)
+                    : "f2", "memory"
+                );
+                qs_lo += 8;
+                dst_lo += 8;
+            }
+
+            // High nibbles: 32 elements using d2, neg_m2
+            __asm__ volatile (
+                "fbcx.ps     f0, %0       \n\t" // f0 = broadcast(d2)
+                "fbcx.ps     f3, %1       \n\t" // f3 = broadcast(-m2)
+                :: "r"(d2), "r"(neg_m2)
+                : "f0", "f3"
+            );
+
+            const uint8_t* qs_hi = qs;
+            float* dst_hi = block_dst + j + 32;
+            for (int k = 0; k < 4; k++) {
+                __asm__ volatile (
+                    "fgb.ps      f2, f1(%0)   \n\t" // Gather 8 bytes, sign-extend to int32
+                    "fsrli.pi    f2, f2, 4     \n\t" // Shift right 4: high nibble
+                    "fandi.pi    f2, f2, 0xF   \n\t" // Mask to 4 bits (clean any sign-ext artifacts)
+                    "fcvt.ps.pw  f2, f2, rne   \n\t" // Int32 -> Float32
+                    "fmadd.ps    f2, f2, f0, f3\n\t" // d2 * nibble + (-m2)
+                    "fsq2        f2, 0(%1)     \n\t" // Store 8 floats
+                    :: "r"(qs_hi), "r"(dst_hi)
+                    : "f2", "memory"
+                );
+                qs_hi += 8;
+                dst_hi += 8;
+            }
+
+            qs += 32; // Advance to next 32 packed bytes
+            is += 2;
+        }
+    }
+
+    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));  // Restore mask
+}
+
+// Determine the number of F32 elements per work unit for a given source type.
+// For F32: 1 cacheline (16 elements)
+// For quantized types: 1 quant block
+static int64_t get_elements_per_work_unit(int type) {
+    const int64_t elements_per_cacheline = CACHE_LINE_SIZE_BYTES / sizeof(float); // 16
+    switch (type) {
+        case GGML_TYPE_Q8_0: return QK8_0;  // 32 elements = 2 cachelines
+        case GGML_TYPE_Q4_0: return QK4_0;  // 32 elements = 2 cachelines
+        case GGML_TYPE_Q4_K: return QK_K;   // 256 elements = 16 cachelines
+        default:             return elements_per_cacheline; // 16 elements = 1 cacheline
+    }
+}
+static int get_row_f32_mc_cacheline_aligned(struct ggml_et_get_rows_params* params, void* env)
+{
+    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
+    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+    int num_threads = get_num_threads(kernel_env->shire_mask);
+
+    struct ggml_tensor* src0 = &params->src0;  // Data tensor
+    struct ggml_tensor* src1 = &params->src1;  // Row indices tensor (I32)
+    struct ggml_tensor* dst = &params->dst;    // Output tensor (F32)
+
+    const int64_t ne00 = src0->ne[0];  // Source columns (row width)
+    const int64_t ne01 = src0->ne[1];  // Source rows (total available rows)
+    const int64_t ne02 = src0->ne[2];  // Source batch dimension
+    const int64_t ne03 = src0->ne[3];  // Source outer batch dimension
+
+    const int64_t ne10 = src1->ne[0];  // Number of indices in dimension 0
+    const int64_t ne11 = src1->ne[1];  // Number of indices in dimension 1
+    const int64_t ne12 = src1->ne[2];  // Batch dimension for indices
+    const int64_t ne13 = src1->ne[3];  // Outer batch dimension for indices
+
+    const int64_t total_rows_to_extract = ne10 * ne11 * ne12 * ne13;
+
+    // Determine work unit size based on source type
+    const int64_t elements_per_wu = get_elements_per_work_unit(src0->type);
+    const int64_t wus_per_row = ne00 / elements_per_wu;
+    const int64_t total_wus = total_rows_to_extract * wus_per_row;
+
+    // Distribute work units across threads (contiguous ranges)
+    const int64_t wus_per_thread = (total_wus + num_threads - 1) / num_threads;
+    const int64_t wu_start = thread_id * wus_per_thread;
+    int64_t wu_end = wu_start + wus_per_thread;
+    if (wu_end > total_wus) wu_end = total_wus;
+
+    void* src0_data = src0->data;
+    int32_t* src1_data = (int32_t*)src1->data;
+    float* dst_data = (float*)dst->data;
+
+    int64_t wu = wu_start;
+    while (wu < wu_end) {
+        // Determine which row this work unit belongs to and offset within row
+        const int64_t row_idx = wu / wus_per_row;
+        const int64_t wu_in_row = wu % wus_per_row;
+
+        // How many work units to process in this row (batch contiguous WUs in same row)
+        int64_t wus_remaining_in_row = wus_per_row - wu_in_row;
+        int64_t wus_to_process = wu_end - wu;
+        if (wus_remaining_in_row < wus_to_process) wus_to_process = wus_remaining_in_row;
+
+        // Calculate multi-dimensional index for this row
+        const int64_t i = row_idx;
+        const int64_t i13_idx = i / (ne12 * ne11 * ne10);
+        const int64_t i12_idx = (i - i13_idx * ne12 * ne11 * ne10) / (ne11 * ne10);
+        const int64_t i11_idx = (i - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10) / ne10;
+        const int64_t i10_idx = i - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10 - i11_idx * ne10;
+
+        // Get the row index from src1
+        const int64_t index_offset = i13_idx * ne12 * ne11 * ne10 +
+                                    i12_idx * ne11 * ne10 +
+                                    i11_idx * ne10 +
+                                    i10_idx;
+        const int32_t row_index = src1_data[index_offset];
+
+        if (row_index < 0 || row_index >= ne01) {
+            return -1; // Index out of bounds
+        }
+
+        const int64_t batch_offset = i11_idx * ne01 * ne00 +
+                                     i12_idx * ne02 * ne01 * ne00 +
+                                     i13_idx * ne03 * ne02 * ne01 * ne00;
+
+        const int64_t elem_offset_in_row = wu_in_row * elements_per_wu;
+        const int64_t num_elements = wus_to_process * elements_per_wu;
+
+        float* dst_row = dst_data + row_idx * ne00 + elem_offset_in_row;
+
+        if (src0->type == GGML_TYPE_F32) {
+            // F32 source: direct copy of cacheline-aligned chunk
+            const float* src_row = (const float*)src0_data + row_index * ne00 + batch_offset + elem_offset_in_row;
+            copy_row_cache_align(dst_row, src_row, num_elements * sizeof(float));
+        }
+        else if (src0->type == GGML_TYPE_Q8_0) {
+            // Q8_0 source: dequantize work-unit-aligned blocks
+            const int64_t blocks_per_row = (ne00 + QK8_0 - 1) / QK8_0;
+            const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                           (batch_offset / ne00) * blocks_per_row;
+            const int64_t block_start = elem_offset_in_row / QK8_0;
+            const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset + block_start;
+            copy_q8_0_row_cache_aligned(dst_row, src_blocks, num_elements);
+        }
+        else if (src0->type == GGML_TYPE_Q4_0) {
+            // Q4_0 source: dequantize work-unit-aligned blocks
+            const int64_t blocks_per_row = (ne00 + QK4_0 - 1) / QK4_0;
+            const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                           (batch_offset / ne00) * blocks_per_row;
+            const int64_t block_start = elem_offset_in_row / QK4_0;
+            const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset + block_start;
+            copy_q4_0_row_cache_aligned(dst_row, src_blocks, num_elements);
+        }
+        else if (src0->type == GGML_TYPE_Q4_K) {
+            // Q4_K source: dequantize work-unit-aligned blocks
+            const int64_t blocks_per_row = (ne00 + QK_K - 1) / QK_K;
+            const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                           (batch_offset / ne00) * blocks_per_row;
+            const int64_t block_start = elem_offset_in_row / QK_K;
+            const block_q4_K* src_blocks = (const block_q4_K*)src0_data + src_block_offset + block_start;
+            copy_q4_K_row_cache_aligned(dst_row, src_blocks, num_elements);
+        }
+
+        wu += wus_to_process;
+    }
+
+    return 0;
 }
 
 // ========================================================================
 // OP: SET_ROWS  —  inverse of GET_ROWS (F32 src -> F32/F16 dst)
 // ========================================================================
-static void ggml_et_op_set_rows(void * env, struct ggml_node_meta_et * m) {
-    int tid, nth;
-    if (cg_thread_setup(env, &tid, &nth)) return;
 
-    const float * src0_data = (const float *)(uintptr_t)m->src0.data;
-    const int64_t * src1_data = (const int64_t *)(uintptr_t)m->src1.data;
-    void * dst_data = (void *)(uintptr_t)m->dst.data;
-    if (!src0_data || !src1_data || !dst_data) return;
+#define CACHE_LINE_SIZE_BYTES  64
+#define CACHE_LINE_F32_ELEMS  16   // 64 / 4
+#define CACHE_LINE_F16_ELEMS  32   // 64 / 2
 
-    const int64_t ne00 = m->src0.ne[0];
-    const int64_t ne01 = m->src0.ne[1];
-    const int64_t ne02 = m->src0.ne[2];
-    const int64_t ne03 = m->src0.ne[3];
-    const size_t nb01 = (size_t)m->src0.nb[1];
-    const size_t nb02 = (size_t)m->src0.nb[2];
-    const size_t nb03 = (size_t)m->src0.nb[3];
-    const size_t nb1 = (size_t)m->dst.nb[1];
-    const size_t nb2 = (size_t)m->dst.nb[2];
-    const size_t nb3 = (size_t)m->dst.nb[3];
-    const int64_t ne10 = m->src1.ne[0];
-    const int64_t ne11 = m->src1.ne[1];
-    const int64_t ne12 = m->src1.ne[2];
-    const size_t nb10 = (size_t)m->src1.nb[0];
-    const size_t nb11 = (size_t)m->src1.nb[1];
-    const size_t nb12 = (size_t)m->src1.nb[2];
-    const int dst_type = m->dst.type;
 
-    const int64_t total_rows = ne01 * ne02 * ne03;
-
-    for (int64_t rf = tid; rf < total_rows; rf += nth) {
-        int64_t i01 = rf % ne01;
-        int64_t tmp = rf / ne01;
-        int64_t i02 = tmp % ne02;
-        int64_t i03 = tmp / ne02;
-
-        int64_t i12 = i03 % ne12;
-        int64_t i11 = i02 % ne11;
-        int64_t idx_off = i01 * nb10 + i11 * nb11 + i12 * nb12;
-        int64_t dst_row_idx = *(int64_t *)((char *)src1_data + idx_off);
-
-        const float * src_row = (const float *)((const char *)src0_data + i01*nb01 + i02*nb02 + i03*nb03);
-        char * dst_row_base = (char *)dst_data + dst_row_idx*nb1 + i02*nb2 + i03*nb3;
-
-        if (dst_type == GGML_TYPE_F32) {
-            float * dp = (float *)dst_row_base;
-            for (int64_t k = 0; k < ne00; k++) {
-                atomic_store_f32((volatile float *)&dp[k], src_row[k]);
-            }
-        } else {
-            volatile uint16_t * dp = (volatile uint16_t *)dst_row_base;
-            for (int64_t k = 0; k < ne00; k++) {
-                atomic_store_f16(&dp[k], fp32_to_fp16(src_row[k]));
-            }
-        }
-    }
+// Copy exactly one cache line (64 bytes = 16 F32 elements) using wide loads/stores
+static void copy_cache_aligned_f32(float* dst, const float* src) {
+    __asm__ volatile (
+        "flq2 f0, 0(%[src]) \n\t"    // Load 32 bytes
+        "flq2 f1, 32(%[src]) \n\t"   // Load next 32 bytes
+        "fsq2 f0, 0(%[dst]) \n\t"    // Store 32 bytes
+        "fsq2 f1, 32(%[dst]) \n\t"   // Store next 32 bytes
+        :
+        : [src] "r"(src), [dst] "r"(dst)
+        : "f0", "f1", "memory"
+    );
 }
+
+// Convert and copy one dst cache line worth of F32->F16 (32 elements src -> 64 bytes dst)
+static void copy_cache_aligned_f16(uint16_t* dst, const float* src) {
+    unsigned long mask_temp;
+
+    // Build offset vector for consecutive 16-bit stores: [0, 2, 4, 6, 8, 10, 12, 14]
+    float offset_vec_storage[8];
+    uint32_t* offsets = (uint32_t*)offset_vec_storage;
+    for (int j = 0; j < 8; j++) {
+        offsets[j] = j * 2;
+    }
+
+    __asm__ volatile (
+        "mova.x.m  %[mask_temp]         \n\t"
+        "mov.m.x   m0, x0, 0xFF         \n\t"
+        "flw.ps    f1, 0(%[offsets])    \n\t"
+        : [mask_temp] "=&r"(mask_temp)
+        : [offsets] "r"(offset_vec_storage)
+        : "f1"
+    );
+
+    // 4 iterations of 8 elements = 32 F16 elements = 64 bytes = 1 cache line
+    for (int i = 0; i < 32; i += 8) {
+        __asm__ volatile (
+            "flw.ps    f2, 0(%[src_ptr])    \n\t"
+            "fcvt.f16.ps f3, f2             \n\t"
+            "fsch.ps   f3, f1(%[dst_ptr])   \n\t"
+            :
+            : [src_ptr] "r"(src + i), [dst_ptr] "r"(dst + i)
+            : "f2", "f3", "memory"
+        );
+    }
+
+    __asm__ volatile (
+        "mova.m.x  %[mask_temp]         \n\t"
+        :
+        : [mask_temp] "r"(mask_temp)
+    );
+}
+
 
 // ========================================================================
 // OP: CONT  —  make contiguous (F32 and F16)
 // ========================================================================
-static void ggml_et_op_cont(void * env, struct ggml_node_meta_et * m) {
-    int tid, nth;
-    if (cg_thread_setup(env, &tid, &nth)) return;
 
-    const void * src_data = (const void *)(uintptr_t)m->src0.data;
-    void * dst_data = (void *)(uintptr_t)m->dst.data;
-    if (!src_data || !dst_data) return;
-
-    const int64_t ne00 = m->src0.ne[0];
-    const int64_t ne01 = m->src0.ne[1];
-    const int64_t ne02 = m->src0.ne[2];
-    const int64_t ne03 = m->src0.ne[3];
-    const size_t nb00 = (size_t)m->src0.nb[0];
-    const size_t nb01 = (size_t)m->src0.nb[1];
-    const size_t nb02 = (size_t)m->src0.nb[2];
-    const size_t nb03 = (size_t)m->src0.nb[3];
-
-    const int64_t total_rows = ne01 * ne02 * ne03;
-    const int elem_size = (m->src0.type == GGML_TYPE_F16) ? 2 : 4;
-
-    for (int64_t row = tid; row < total_rows; row += nth) {
-        int64_t i01 = row % ne01;
-        int64_t i02 = (row / ne01) % ne02;
-        int64_t i03 = row / (ne01 * ne02);
-
-        const char * sp = (const char *)src_data + i01*nb01 + i02*nb02 + i03*nb03;
-        char * dp = (char *)dst_data + row * ne00 * elem_size;
-
-        if (nb00 == (size_t)elem_size) {
-            // Row is contiguous in source: bulk copy
-            for (int64_t i = 0; i < ne00 * elem_size; i++) dp[i] = sp[i];
-        } else {
-            // Non-contiguous
-            for (int64_t i00 = 0; i00 < ne00; i00++) {
-                const char * s = sp + i00 * nb00;
-                char * d = dp + i00 * elem_size;
-                for (int k = 0; k < elem_size; k++) d[k] = s[k];
-            }
-        }
+// Vectorized copy with scalar tail
+static inline void vec_copy_f32(float* dst, const float* src, int32_t n) {
+    int32_t i = 0;
+    const int32_t vec_end = (n / 8) * 8;
+    for (; i < vec_end; i += 8) {
+        __asm__ volatile(
+            "flw.ps f10, %[s]\n"
+            "fsw.ps f10, %[d]\n"
+            : [d] "=m"(*(float(*)[8])&dst[i])
+            : [s] "m"(*(const float(*)[8])&src[i])
+            : "f10"
+        );
+    }
+    for (; i < n; i++) {
+        dst[i] = src[i];
     }
 }
+
+// Scalar copy
+static inline void scalar_copy_f32(float* dst, const float* src, int32_t n) {
+    for (int32_t i = 0; i < n; i++) {
+        dst[i] = src[i];
+    }
+}
+
 
 // ========================================================================
 // OP: CPY  —  copy with type conversion (F32->F16, F32->F32)
@@ -2588,6 +2963,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
         
         void * src0_data = (void *)(uintptr_t)node_meta[i].src0.data;
         void * src1_data = (void *)(uintptr_t)node_meta[i].src1.data;
+        void * src2_data = (void *)(uintptr_t)node_meta[i].src2.data;
         void * dst_data  = (void *)(uintptr_t)node_meta[i].dst.data;
 
         // Basic null pointer checks
@@ -2597,8 +2973,12 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
         const int64_t ne0 = node_meta[i].dst.ne[0], ne1 = node_meta[i].dst.ne[1];
         const int64_t ne2 = node_meta[i].dst.ne[2], ne3 = node_meta[i].dst.ne[3];
+        const int64_t ne00 = node_meta[i].src0.ne[0], ne01 = node_meta[i].src0.ne[1];
+        const int64_t ne02 = node_meta[i].src0.ne[2], ne03 = node_meta[i].src0.ne[3];
         const int64_t ne10 = node_meta[i].src1.ne[0], ne11 = node_meta[i].src1.ne[1];
         const int64_t ne12 = node_meta[i].src1.ne[2], ne13 = node_meta[i].src1.ne[3];
+        const int64_t ne20 = node_meta[i].src2.ne[0], ne21 = node_meta[i].src2.ne[1];
+        const int64_t ne22 = node_meta[i].src2.ne[2], ne23 = node_meta[i].src2.ne[3];
 
         const size_t nb0 = (size_t)node_meta[i].dst.nb[0], nb1 = (size_t)node_meta[i].dst.nb[1];
         const size_t nb2 = (size_t)node_meta[i].dst.nb[2], nb3 = (size_t)node_meta[i].dst.nb[3];
@@ -2606,8 +2986,10 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
         const size_t nb02 = (size_t)node_meta[i].src0.nb[2], nb03 = (size_t)node_meta[i].src0.nb[3];
         const size_t nb10 = (size_t)node_meta[i].src1.nb[0], nb11 = (size_t)node_meta[i].src1.nb[1];
         const size_t nb12 = (size_t)node_meta[i].src1.nb[2], nb13 = (size_t)node_meta[i].src1.nb[3];
+        const size_t nb20 = (size_t)node_meta[i].src2.nb[0], nb21 = (size_t)node_meta[i].src2.nb[1];
+        const size_t nb22 = (size_t)node_meta[i].src2.nb[2], nb23 = (size_t)node_meta[i].src2.nb[3];
         
-        device_barrier(32);
+        // device_barrier(32);
 
         if(op == GGML_OP_ADD || op == GGML_OP_MUL || op == GGML_OP_SUB) {
             if (!src0_data || !src1_data || !dst_data) {
@@ -3080,22 +3462,20 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     // FA-F32
                     // -----------------------------------------------------
                     
-                    const int fa_thread_id = get_relative_thread_id(kernel_env->shire_mask);
-                    const int fa_num_threads = get_num_threads(kernel_env->shire_mask);
-                    if (fa_thread_id < 0 || fa_num_threads <= 0) {
-                        continue;
-                    }
+                    // For debugging: use single thread
+                    const int fa_thread_id = 0;
+                    const int fa_num_threads = 1;
 
                     // Use pre-extracted data pointers and metadata
                     const char * q_data   = (const char *)src0_data;
                     const char * k_data   = (const char *)src1_data;
-                    const char * v_data   = (const char *)src1_data;  // TODO: Use proper src2
+                    const char * v_data   = (const char *)src2_data;
                     char * fa_dst_data    = (char *)dst_data;
 
                     const int k_type = node_meta[i].src1.type;
                     const int v_type = node_meta[i].src2.type;
                     const int64_t k_nb0 = nb10;  // Pre-extracted K stride
-                    const int64_t v_nb0 = nb12;  // Pre-extracted V stride
+                    const int64_t v_nb0 = nb20;  // Pre-extracted V stride
 
                     // Use pre-extracted dimensions
                     const int64_t dk  = ne0;      // Q ne[0] = K ne[0]
@@ -3104,8 +3484,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const int64_t no  = ne3;      // Q ne[3]
                     const int64_t nk  = ne11;     // K ne[1]
                     const int64_t fa_nhk = ne12;  // K ne[2]
-                    // TODO: Need to extract V ne[0] when available
-                    const int64_t dv  = ne0;      // Assuming V ne[0] = dst ne[0] for now
+                    const int64_t dv  = ne20;     // V ne[0] (correct value head dimension)
 
                     if (dv > FA_DV_MAX) {
                         continue;
@@ -3114,8 +3493,15 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     // GQA: query heads per kv head
                     const int64_t gqa_ratio = fa_nhq / fa_nhk;
 
+                    // Extract scale from op_params
+                    const float scale_f32;
+                    memcpy((void*)&scale_f32, &node_meta[i].op_params[0], sizeof(float));
+                    
+                    // For FLASH_ATTN_EXT, mask information is stored in op_params[1] as has_mask flag
+                    // The actual mask tensor is not directly accessible in node_meta, so we assume no mask for now
+                    bool use_mask = false;  // Simplified - assume no mask until proper mask integration
+                    
                     const int64_t total_rows = nq * fa_nhq * no;
-                    const float scale_f32 = scale;  // Use extracted scale
 
                     // When dv is a multiple of 16 (64 bytes = cache line), output rows are
                     // cache-line aligned and we can use fast normal stores. Otherwise we must
@@ -3139,7 +3525,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
                         // Base byte offsets for K and V head+batch slice
                         const int64_t kv_base = ik2*nb12 + iq3*nb13;
-                        const int64_t vv_base = ik2*nb12 + iq3*nb13;  // TODO: Use proper V strides
+                        const int64_t vv_base = ik2*nb22 + iq3*nb23;
 
                             float acc[FA_DV_MAX];
                             for (int64_t d = 0; d < dv; ++d) {
@@ -3151,10 +3537,9 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
                             for (int64_t ik1 = 0; ik1 < nk; ++ik1) {
 
-                                // TODO: Implement proper mask handling when mask tensor is available
-                                // For now, skip mask processing
+                                // Skip mask processing for now - assume no mask
                                 const char * pk = k_data + ik1*nb11 + kv_base;
-                                const char * pv = v_data + ik1*nb11 + vv_base;  // TODO: Use proper V stride
+                                const char * pv = v_data + ik1*nb21 + vv_base;
 
                                 float s = dot_qk(pq, pk, dk, k_nb0, k_type) * scale_f32;
                                 const float Mold = M;
@@ -3200,10 +3585,367 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     }
             // flash_attn_ext(env, &node_meta[i]);
         } else if (op == GGML_OP_GET_ROWS) {
-            // ggml_et_op_get_rows(env, &node_meta[i]);
+            
+            struct ggml_et_get_rows_params params;
+            convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+            convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+            convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
+            if (params.dst.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I32 &&
+                (params.src0.type == GGML_TYPE_F32 || params.src0.type == GGML_TYPE_Q8_0 ||
+                    params.src0.type == GGML_TYPE_Q4_0 || params.src0.type == GGML_TYPE_Q4_K)) {
+                get_row_f32_mc_cacheline_aligned(&params, env);
+            }
+            if((node_meta[i].src0.type == GGML_TYPE_F32 || node_meta[i].src0.type == GGML_TYPE_Q8_0 || node_meta[i].src0.type == GGML_TYPE_Q4_0 || node_meta[i].src0.type == GGML_TYPE_Q4_K) && node_meta[i].src1.type == GGML_TYPE_I32 && node_meta[i].dst.type == GGML_TYPE_F32
+                && node_meta[i].dst.ne[0] % CACHE_ELEMENTS(sizeof(float)) == 0) {
+                return get_row_f32_mc_cacheline_aligned(&params, env);
+            }
+            
+            const int64_t total_rows_to_extract = ne10 * ne11 * ne12 * ne13;
+
+            // Naive single-threaded implementation - process all rows sequentially
+            // XXX: Do we really need a single-threaded implementation?
+            for (int64_t i = 0; i < total_rows_to_extract; i++) {
+                // Calculate multi-dimensional index for the current output position
+                const int64_t i13_idx = i / (ne12 * ne11 * ne10);
+                const int64_t i12_idx = (i - i13_idx * ne12 * ne11 * ne10) / (ne11 * ne10);
+                const int64_t i11_idx = (i - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10) / ne10;
+                const int64_t i10_idx = i - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10 - i11_idx * ne10;
+
+                // Get the row index from src1
+                const int64_t index_offset = i13_idx * ne12 * ne11 * ne10 +
+                                            i12_idx * ne11 * ne10 +
+                                            i11_idx * ne10 +
+                                            i10_idx;
+                const int32_t row_index = src1_data[index_offset];
+
+                if (row_index < 0 || row_index >= ne01) {
+                    continue; // Index out of bounds
+                }
+
+                const int64_t batch_offset = i11_idx * ne01 * ne00 +
+                                            i12_idx * ne02 * ne01 * ne00 +
+                                            i13_idx * ne03 * ne02 * ne01 * ne00;
+
+                const int64_t dst_offset = i;
+
+                if (node_meta[i].src0.type == GGML_TYPE_F32) {
+                    // F32 source: direct copy
+                    const float* src_row = (const float*)src0_data + row_index * ne00 + batch_offset;
+                    float* dst_row = dst_data + dst_offset * ne00;
+                    copy_f32_row(dst_row, src_row, ne00);
+
+                } else if (node_meta[i].src0.type == GGML_TYPE_Q8_0) {
+                    // Q8_0 source: dequantize while copying
+                    const int64_t blocks_per_row = (ne00 + QK8_0 - 1) / QK8_0;
+                    const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                                (batch_offset / ne00) * blocks_per_row;
+                    const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset;
+                    float* dst_row = dst_data + dst_offset * ne00;
+                    copy_q8_0_row(dst_row, src_blocks, ne00);
+                } else if (node_meta[i].src0.type == GGML_TYPE_Q4_0) {
+                    // Q4_0 source: dequantize while copying
+                    const int64_t blocks_per_row = (ne00 + QK4_0 - 1) / QK4_0;
+                    const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                                (batch_offset / ne00) * blocks_per_row;
+                    const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset;
+                    float* dst_row = dst_data + dst_offset * ne00;
+                    copy_q4_0_row(dst_row, src_blocks, ne00);
+                } else if (node_meta[i].src0.type == GGML_TYPE_Q4_K) {
+                    // Q4_K source: dequantize while copying
+                    const int64_t blocks_per_row = (ne00 + QK_K - 1) / QK_K;
+                    const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                                (batch_offset / ne00) * blocks_per_row;
+                    const block_q4_K* src_blocks = (const block_q4_K*)src0_data + src_block_offset;
+                    float* dst_row = dst_data + dst_offset * ne00;
+                    copy_q4_K_row(dst_row, src_blocks, ne00);
+                }
+            }
         } else if (op == GGML_OP_SET_ROWS) {
-            // ggml_et_op_set_rows(env, &node_meta[i]);
+            if (node_meta[i].src0.type == GGML_TYPE_F32 &&
+                node_meta[i].src1.type == GGML_TYPE_I64 &&
+                (node_meta[i].dst.type == GGML_TYPE_F32 || node_meta[i].dst.type == GGML_TYPE_F16)) {
+
+                if (ne10 != ne01) {
+                    return -1; // Number of indices must match number of source rows
+                }
+
+                const int64_t total_rows = ne01 * ne02 * ne03;
+
+                // Determine cache-line element count based on destination type
+                const int64_t dst_cl_elems = (node_meta[i].dst.type == GGML_TYPE_F16) ? CACHE_LINE_F16_ELEMS
+                                                                        : CACHE_LINE_F32_ELEMS;
+
+                // Check if rows are cache-line aligned in the destination
+                const bool row_cache_aligned = (ne00 >= dst_cl_elems) && (ne00 % dst_cl_elems == 0);
+
+                if (row_cache_aligned) {
+                    // Cache-aligned path: distribute dst cache lines across threads
+                    // Each thread owns complete cache lines -> no coherence conflicts
+                    const int64_t cls_per_row    = ne00 / dst_cl_elems;
+                    const int64_t total_cls      = total_rows * cls_per_row;
+                    const int64_t cls_per_thread = (total_cls + num_threads - 1) / num_threads;
+                    const int64_t my_start       = thread_id * cls_per_thread;
+                    int64_t       my_end         = my_start + cls_per_thread;
+                    if (my_end > total_cls) my_end = total_cls;
+                    if (my_start >= total_cls) return 0;
+
+                    for (int64_t cl = my_start; cl < my_end; cl++) {
+                        // Map flat cache-line index -> (row, offset within row)
+                        const int64_t row_flat  = cl / cls_per_row;
+                        const int64_t cl_in_row = cl % cls_per_row;
+
+                        // Decompose flat row -> (i03, i02, i01)
+                        const int64_t i01 = row_flat % ne01;
+                        const int64_t tmp = row_flat / ne01;
+                        const int64_t i02 = tmp % ne02;
+                        const int64_t i03 = tmp / ne02;
+
+                        // Look up destination row index
+                        const int64_t i12 = i03 % ne12;
+                        const int64_t i11 = i02 % ne11;
+                        const int64_t i10 = i01;
+                        const int64_t index_byte_offset = i10*nb10 + i11*nb11 + i12*nb12;
+                        const int64_t dst_row_index = *(int64_t*)((char*)src1_data + index_byte_offset);
+
+                        if (dst_row_index < 0 || dst_row_index >= ne1) {
+                            continue;
+                        }
+
+                        // Source pointer: row base + cache-line offset (always F32 source)
+                        const int64_t elem_offset = cl_in_row * dst_cl_elems;
+                        const float* src_ptr = (const float*)((char*)src0_data + i01*nb01 + i02*nb02 + i03*nb03) + elem_offset;
+
+                        // Destination pointer: scattered row base + cache-line offset
+                        char* dst_row_base = (char*)dst_data + dst_row_index*nb1 + i02*nb2 + i03*nb3;
+
+                        if (node_meta[i].dst.type == GGML_TYPE_F32) {
+                            float* dst_ptr = (float*)dst_row_base + elem_offset;
+                            copy_cache_aligned_f32(dst_ptr, src_ptr);
+                        } else {
+                            uint16_t* dst_ptr = (uint16_t*)dst_row_base + elem_offset;
+                            copy_cache_aligned_f16(dst_ptr, src_ptr);
+                        }
+                    }
+                } else {
+                    // Non-aligned path: distribute rows across threads, atomic stores
+                    // amoswapg.w / shg bypass local caches -> safe on non-coherent HW
+                    for (int64_t row_flat = thread_id; row_flat < total_rows; row_flat += num_threads) {
+                        const int64_t i01 = row_flat % ne01;
+                        const int64_t tmp = row_flat / ne01;
+                        const int64_t i02 = tmp % ne02;
+                        const int64_t i03 = tmp / ne02;
+
+                        // Look up destination row index
+                        const int64_t i12 = i03 % ne12;
+                        const int64_t i11 = i02 % ne11;
+                        const int64_t i10 = i01;
+                        const int64_t index_byte_offset = i10*nb10 + i11*nb11 + i12*nb12;
+                        const int64_t dst_row_index = *(int64_t*)((char*)src1_data + index_byte_offset);
+
+                        if (dst_row_index < 0 || dst_row_index >= ne1) {
+                            continue;
+                        }
+
+                        const float* src_row = (const float*)((char*)src0_data + i01*nb01 + i02*nb02 + i03*nb03);
+                        char* dst_row_base = (char*)dst_data + dst_row_index*nb1 + i02*nb2 + i03*nb3;
+
+                        if (node_meta[i].dst.type == GGML_TYPE_F32) {
+                            volatile float* dst_row = (volatile float*)dst_row_base;
+                            for (int64_t i = 0; i < ne00; i++) {
+                                atomic_store_f32(dst_row + i, src_row[i]);
+                            }
+                        } else {
+                            volatile uint16_t* dst_row = (volatile uint16_t*)dst_row_base;
+                            for (int64_t i = 0; i < ne00; i++) {
+                                atomic_store_f16(dst_row + i, fp32_to_fp16(src_row[i]));
+                            }
+                        }
+                    }
+                }
+
+            }
         } else if (op == GGML_OP_CONT) {
+            if (node_meta[i].dst.type != node_meta[i].src0.type) {
+                continue;
+            }
+            if (node_meta[i].dst.type == GGML_TYPE_F32){
+                const int64_t total_elements = ne00 * ne01 * ne02 * ne03;
+                if (total_elements == 0) {
+                    continue;
+                }
+                const bool src_contiguous = ggml_tensor_is_contiguous(src0, 4);
+                //==========================================================================
+                // Fast path: src is contiguous: flat vectorized copy by cache lines
+                //==========================================================================
+                if (src_contiguous) {
+                    const int64_t elems_per_cl = 16;
+                    const int64_t total_cl = (total_elements + elems_per_cl - 1) / elems_per_cl;
+
+                    const int64_t cl_per_thread = (total_cl + num_threads - 1) / num_threads;
+                    const int64_t cl_start = thread_id * cl_per_thread;
+                    int64_t cl_end = cl_start + cl_per_thread;
+                    if (cl_end > total_cl) { cl_end = total_cl; }
+                    if (cl_start >= total_cl) { continue; }
+
+                    const int64_t es = cl_start * elems_per_cl;
+                    int64_t ee = cl_end * elems_per_cl;
+                    if (ee > total_elements) { ee = total_elements; }
+
+                    vec_copy_f32(dst_data + es, src0_data + es, (int32_t)(ee - es));
+                    continue;
+                }
+
+                //==========================================================================
+                // Non-contiguous paths: require nb00==4 (dim 0 contiguous in src)
+                //==========================================================================
+                if (nb00 != 4) {
+                    // Fully non-contiguous scalar fallback — distribute by cache lines
+                    const int64_t elems_per_cl = 16;
+                    const int64_t total_cl = (total_elements + elems_per_cl - 1) / elems_per_cl;
+
+                    const int64_t cl_per_thread = (total_cl + num_threads - 1) / num_threads;
+                    const int64_t cl_start = thread_id * cl_per_thread;
+                    int64_t cl_end = cl_start + cl_per_thread;
+                    if (cl_end > total_cl) { cl_end = total_cl; }
+                    if (cl_start >= total_cl) { continue; }
+
+                    const int64_t es = cl_start * elems_per_cl;
+                    int64_t ee = cl_end * elems_per_cl;
+                    if (ee > total_elements) { ee = total_elements; }
+
+                    for (int64_t idx = es; idx < ee; idx++) {
+                        const int64_t i00 = idx % ne00;
+                        const int64_t rem1 = idx / ne00;
+                        const int64_t i01 = rem1 % ne01;
+                        const int64_t rem2 = rem1 / ne01;
+                        const int64_t i02 = rem2 % ne02;
+                        const int64_t i03 = rem2 / ne02;
+
+                        const float* sp = (const float*)((const char*)src0_data +
+                                        i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+                        dst_data[idx] = *sp;
+                    }
+                    continue;
+                }
+
+                // nb00 == 4 from here: dim 0 is contiguous in src
+
+                //==========================================================================
+                // Aligned path: ne00 % 16 == 0: rows are cache-line aligned, distribute rows
+                //==========================================================================
+                if (ne00 % 16 == 0) {
+                    const int64_t total_rows = ne01 * ne02 * ne03;
+                    const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
+                    const int64_t start_row = thread_id * rows_per_thread;
+                    const int64_t end_row = (start_row + rows_per_thread < total_rows)
+                                        ? (start_row + rows_per_thread) : total_rows;
+
+                    if (start_row >= total_rows) { continue; }
+
+                    for (int64_t ir = start_row; ir < end_row; ir++) {
+                        const int64_t i03 = ir / (ne02 * ne01);
+                        const int64_t i02 = (ir - i03 * ne02 * ne01) / ne01;
+                        const int64_t i01 = ir - i03 * ne02 * ne01 - i02 * ne01;
+
+                        const float* src_row = (const float*)((const char*)src0_data +
+                                            i01*nb01 + i02*nb02 + i03*nb03);
+                        float* dst_row = dst_data + ir * ne00;
+
+                        vec_copy_f32(dst_row, src_row, (int32_t)ne00);
+                    }
+                    continue;
+                }
+
+                //==========================================================================
+                // Unaligned path: ne00 % 16 != 0, nb00 == 4
+                // Distribute cache-line-aligned chunks of dst, handle partial rows at edges
+                //==========================================================================
+                {
+                    const int64_t elems_per_cl = 16;
+                    const int64_t total_cl = (total_elements + elems_per_cl - 1) / elems_per_cl;
+
+                    const int64_t cl_per_thread = (total_cl + num_threads - 1) / num_threads;
+                    const int64_t cl_start = thread_id * cl_per_thread;
+                    int64_t cl_end = cl_start + cl_per_thread;
+                    if (cl_end > total_cl) { cl_end = total_cl; }
+                    if (cl_start >= total_cl) { continue; }
+
+                    const int64_t es = cl_start * elems_per_cl;
+                    int64_t ee = cl_end * elems_per_cl;
+                    if (ee > total_elements) { ee = total_elements; }
+
+                    int64_t pos = es;
+
+                    // Compute starting row coordinates
+                    int64_t row_idx = pos / ne00;
+                    int64_t col     = pos % ne00;
+
+                    while (pos < ee) {
+                        // Decompose row_idx -> (i01, i02, i03)
+                        const int64_t i03 = row_idx / (ne02 * ne01);
+                        const int64_t i02 = (row_idx - i03 * ne02 * ne01) / ne01;
+                        const int64_t i01 = row_idx - i03 * ne02 * ne01 - i02 * ne01;
+
+                        const float* src_row = (const float*)((const char*)src0_data +
+                                            i01*nb01 + i02*nb02 + i03*nb03);
+
+                        // How many elements left in this row and in our chunk
+                        int64_t row_remaining = ne00 - col;
+                        int64_t chunk_remaining = ee - pos;
+                        int32_t n = (int32_t)(row_remaining < chunk_remaining ? row_remaining : chunk_remaining);
+
+                        vec_copy_f32(dst_data + pos, src_row + col, n);
+
+                        pos += n;
+                        col = 0;  // subsequent rows start at column 0
+                        row_idx++;
+                    }
+                }
+            } else if (node_meta[i].dst.type != GGML_TYPE_F16) {
+                const int64_t src_elements = ne00 * ne01 * ne20 * ne03;
+                const int64_t dst_elements = ne0 * ne1 * ne2 * ne3;
+                if (src_elements != dst_elements) {
+                    continue; // Element count mismatch
+                }
+                // Parallelize by rows (dimension 1)
+                const int64_t total_rows = ne01;
+                const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
+                const int64_t start_row = thread_id * rows_per_thread;
+                const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
+
+                if (start_row >= total_rows) {
+                    continue;
+                }
+
+                // Iterate over source tensor dimensions
+                for (int64_t i03 = 0; i03 < ne03; i03++) {
+                    for (int64_t i02 = 0; i02 < ne02; i02++) {
+                        // Calculate base linear index for this (i03, i02) slice in destination
+                        const int64_t dst_linear_base = i03 * ne02 * ne01 * ne00 + i02 * ne01 * ne00;
+
+                        // Process this thread's assigned rows
+                        for (int64_t i01 = start_row; i01 < end_row; i01++) {
+                            // Linear index for start of this row in destination
+                            const int64_t dst_linear_row_base = dst_linear_base + i01 * ne00;
+
+                            // Inner loop over dimension 0
+                            for (int64_t i00 = 0; i00 < ne00; i00++) {
+                                // Source offset using non-contiguous strides
+                                const int64_t src_offset_bytes = i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03;
+                                const uint16_t* src_ptr = (const uint16_t*)((const char*)src0_data + src_offset_bytes);
+
+                                // Destination linear index (contiguous layout)
+                                const int64_t dst_linear_idx = dst_linear_row_base + i00;
+
+                                // Use atomic store for thread safety
+                                atomic_store_f16((volatile uint16_t*)&dst_data[dst_linear_idx], *src_ptr);
+                            }
+                        }
+                    }
+                }
+            } else {
+                continue;
+            }
             // ggml_et_op_cont(env, &node_meta[i]);
         } else if (op == GGML_OP_MUL_MAT) {
             // ggml_et_op_mul_mat(env, &node_meta[i]);
