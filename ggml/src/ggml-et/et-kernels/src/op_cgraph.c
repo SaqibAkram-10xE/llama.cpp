@@ -3933,7 +3933,13 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                         node_meta[i].src0.ne[1] % 16 == 0 &&
                         node_meta[i].src1.ne[0] != 1) {
                 // F16 x F16 matrix multiplication with matrix engine
-                uint64_t local_minion = (thread_id >> 1) & 0x1F;
+                uint64_t hart_id = get_hart_id();
+                uint64_t shire_id = get_shire_id();
+ 
+                if (shire_id >= NUM_COMPUTE_SHIRES) continue;
+                if (hart_id & 1) continue;
+ 
+                uint64_t local_minion = (hart_id >> 1) & 0x1F;
                 uint64_t my_minion_id = get_minion_id();
 
                 const int64_t K = node_meta[i].src0.ne[0];
@@ -4150,7 +4156,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 const uint64_t per_thread = 16;
                 const uint64_t threads_stride = per_thread * effective_num_threads;
 
-                if (effective_thread_id * per_thread >= total_elements) return 0;
+                if (effective_thread_id * per_thread >= total_elements) continue;
 
                 // Broadcasting support
                 const int64_t r2 = ne12 / ne02;
@@ -4200,9 +4206,16 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                         node_meta[i].src1.type == GGML_TYPE_F32 &&
                         node_meta[i].src0.ne[0] % 16 == 0 &&
                         node_meta[i].src0.ne[1] % 16 == 0 &&
-                        node_meta[i].src1.ne[0] != 1) { // GEMV is faster with the generic path
+                        node_meta[i].src1.ne[0] != 1) { 
+                // GEMV is faster with the generic path
                 // F32 x F32 matrix multiplication with matrix engine
-                uint64_t local_minion = (thread_id >> 1) & 0x1F;
+                uint64_t hart_id = get_hart_id();
+                uint64_t shire_id = get_shire_id();
+
+                if (shire_id >= NUM_COMPUTE_SHIRES) continue;
+                if (hart_id & 1) continue;
+
+                uint64_t local_minion = (hart_id >> 1) & 0x1F;
                 uint64_t my_minion_id = get_minion_id();
 
                 const int64_t K = node_meta[i].src0.ne[0];
