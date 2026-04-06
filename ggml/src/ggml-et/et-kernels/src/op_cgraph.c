@@ -59,6 +59,21 @@ struct ggml_cgraph_et {
 // ========================================================================
 // Helpers
 // ========================================================================
+// Forward declarations for ROPE helper functions
+static inline void compute_rope_cache(
+    float * cos_cache, float * sin_cache,
+    int32_t n_dims, float theta_scale, int32_t pos,
+    const float * freq_factors, float freq_scale,
+    const float corr_dims[2], float ext_factor, float attn_factor);
+
+static inline void compute_imrope_cache(
+    float * cos_cache, float * sin_cache,
+    int32_t n_dims, float theta_scale,
+    int32_t pos_t, int32_t pos_h, int32_t pos_w, int32_t pos_e,
+    const int32_t sections[4],
+    const float * freq_factors, float freq_scale,
+    const float corr_dims[2], float ext_factor, float attn_factor);
+
 static inline void convert_to_ggml_tensor(struct ggml_tensor * d,
                                            struct ggml_tensor_et * s,
                                            enum ggml_op op) {
@@ -1601,6 +1616,190 @@ static inline void rope_sincos_block8(
     }
 }
 
+int rope_f32_impl(struct ggml_et_rope_params* params, void* env) {
+    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
+
+    if (!kernel_env) {
+        return -1;
+    }
+
+    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+    int num_threads = get_num_threads(kernel_env->shire_mask);
+
+    if (thread_id < 0) {
+        return -1;
+    }
+
+    if (params == 0 || ((uint64_t)params & 0x7) != 0) {
+        return -1;
+    }
+
+    struct ggml_tensor* src0 = &params->src0;
+    struct ggml_tensor* src1 = &params->src1;
+    struct ggml_tensor* src2 = &params->src2;
+    struct ggml_tensor* dst  = &params->dst;
+
+    if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_I32 || dst->type != GGML_TYPE_F32) {
+        return -1;
+    }
+
+    const float* src0_data    = (const float*)src0->data;
+    const int32_t* src1_data  = (const int32_t*)src1->data;
+    const float* freq_factors = (src2 && src2->data) ? (const float*)src2->data : NULL;
+    float* dst_data           = (float*)dst->data;
+
+    if (!src0_data || !src1_data || !dst_data) {
+        return -1;
+    }
+
+    const int64_t head_dim = src0->ne[0];
+    const int64_t heads    = src0->ne[1];
+    const int64_t seq_len  = src0->ne[2];
+    const int64_t batch    = src0->ne[3];
+
+    const rope_params_t* rope_params = &params->rope_params;
+    const int32_t n_dims   = rope_params->n_dims;
+    const float freq_base  = rope_params->freq_base;
+    const float freq_scale = rope_params->freq_scale;
+    const int32_t mode     = rope_params->mode;
+
+    if (n_dims <= 0 || n_dims > head_dim || (n_dims & 1) != 0) {
+        return -1;
+    }
+
+    if (n_dims / 2 > MAX_ROPE_HALF_DIMS) {
+        return -1;
+    }
+
+    float cos_cache[MAX_ROPE_HALF_DIMS];
+    float sin_cache[MAX_ROPE_HALF_DIMS];
+
+    float corr_dims[2];
+    rope_yarn_corr_dims(
+        n_dims,
+        rope_params->n_ctx_orig,
+        freq_base,
+        rope_params->beta_fast,
+        rope_params->beta_slow,
+        corr_dims
+    );
+
+    // Distribute by individual heads: total = batch * seq_len * heads.
+    const int64_t total_heads = batch * seq_len * heads;
+    const int64_t start_wu = (total_heads * thread_id) / num_threads;
+    const int64_t end_wu   = (total_heads * (thread_id + 1)) / num_threads;
+
+    if (start_wu >= end_wu) {
+        return 0;
+    }
+
+    const float theta_scale = et_powf(freq_base, et_fdiv(-2.0f, (float)n_dims));
+    const int32_t half_dims = n_dims / 2;
+    const int is_neox   = (mode & GGML_ROPE_TYPE_NEOX) != 0;
+    const int is_imrope = (mode == GGML_ROPE_TYPE_IMROPE);
+    const int use_neox_rotation = is_neox || is_imrope;
+
+    // For IMROPE position cache invalidation: track all 4 channels
+    int32_t last_pos   = -1;
+    int32_t last_pos_h = -1;
+    int32_t last_pos_w = -1;
+    int32_t last_pos_e = -1;
+
+    for (int64_t wu = start_wu; wu < end_wu; ++wu) {
+        const int64_t h = wu % heads;
+        const int64_t s = (wu / heads) % seq_len;
+        const int64_t b = wu / (heads * seq_len);
+
+        if (is_imrope) {
+            // IMROPE: src1 layout is [p_t(0..S-1), p_h(0..S-1), p_w(0..S-1), p_e(0..S-1)]
+            const int32_t pt = src1_data[s]              + rope_params->n_past;
+            const int32_t ph = src1_data[s + seq_len]    + rope_params->n_past;
+            const int32_t pw = src1_data[s + seq_len * 2] + rope_params->n_past;
+            const int32_t pe = src1_data[s + seq_len * 3] + rope_params->n_past;
+
+            if (pt != last_pos || ph != last_pos_h || pw != last_pos_w || pe != last_pos_e) {
+                compute_imrope_cache(
+                    cos_cache, sin_cache,
+                    n_dims, theta_scale,
+                    pt, ph, pw, pe,
+                    rope_params->sections,
+                    freq_factors, freq_scale,
+                    corr_dims, rope_params->ext_factor, rope_params->attn_factor
+                );
+                last_pos   = pt;
+                last_pos_h = ph;
+                last_pos_w = pw;
+                last_pos_e = pe;
+            }
+        } else {
+            const int32_t pos = src1_data[s] + rope_params->n_past;
+
+            if (pos != last_pos) {
+                compute_rope_cache(
+                    cos_cache, sin_cache,
+                    n_dims, theta_scale, pos,
+                    freq_factors, freq_scale,
+                    corr_dims, rope_params->ext_factor, rope_params->attn_factor
+                );
+                last_pos = pos;
+            }
+        }
+
+        const float* head_src = (const float*)((const char*)src0_data +
+            b * src0->nb[3] + s * src0->nb[2] + h * src0->nb[1]);
+
+        float* head_dst = (float*)((char*)dst_data +
+            b * dst->nb[3] + s * dst->nb[2] + h * dst->nb[1]);
+
+        // Copy dimensions beyond n_dims unchanged
+        for (int64_t d = n_dims; d < head_dim; ++d) {
+            head_dst[d] = head_src[d];
+        }
+
+        if (use_neox_rotation) {
+            // NEOX/IMROPE: pairs at (i, i+half_dims)
+            uint64_t temp_mask;
+            __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));
+            __asm__ volatile("mov.m.x m0, x0, 0xFF");
+
+            for (int32_t dim_idx = 0; dim_idx < half_dims; dim_idx += 8) {
+                __asm__ volatile(
+                    "flw.ps f0, %[x0_src]       \n\t"
+                    "flw.ps f1, %[x1_src]       \n\t"
+                    "flw.ps f2, %[sin_cache]    \n\t"
+                    "flw.ps f3, %[cos_cache]    \n\t"
+                    "fmul.ps f4, f0, f3         \n\t"
+                    "fmul.ps f5, f0, f2         \n\t"
+                    "fnmsub.ps f4, f1, f2, f4   \n\t"
+                    "fmadd.ps f5, f1, f3, f5    \n\t"
+                    "fsw.ps f4, %[x0_dst]       \n\t"
+                    "fsw.ps f5, %[x1_dst]       \n\t"
+                    : [x0_dst] "=m"(*(float(*)[8])&head_dst[dim_idx]),
+                      [x1_dst] "=m"(*(float(*)[8])&head_dst[dim_idx + half_dims])
+                    : [x0_src] "m"(*(const float(*)[8])&head_src[dim_idx]),
+                      [x1_src] "m"(*(const float(*)[8])&head_src[dim_idx + half_dims]),
+                      [sin_cache] "m"(*(const float(*)[8])&sin_cache[dim_idx]),
+                      [cos_cache] "m"(*(const float(*)[8])&cos_cache[dim_idx])
+                    : "f0", "f1", "f2", "f3", "f4", "f5", "memory"
+                );
+            }
+
+            __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
+        } else {
+            // Standard: adjacent pairs (2i, 2i+1)
+            for (int32_t pair_idx = 0; pair_idx < half_dims; ++pair_idx) {
+                const int32_t dim_in_head = pair_idx * 2;
+                const float x0 = head_src[dim_in_head];
+                const float x1 = head_src[dim_in_head + 1];
+
+                head_dst[dim_in_head]     = x0 * cos_cache[pair_idx] - x1 * sin_cache[pair_idx];
+                head_dst[dim_in_head + 1] = x0 * sin_cache[pair_idx] + x1 * cos_cache[pair_idx];
+            }
+        }
+    }
+
+    return 0;
+}
 //------------------------------------------------------------------------------
 // Cache build
 //------------------------------------------------------------------------------
@@ -3337,7 +3536,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 }
             
             } // end of else block for slow path
-            
+        
         } else if (op == GGML_OP_GLU) {
             if (!src0_data || !dst_data) continue;
             const bool is_split_mode = node_meta[i].src1.data != 0;
@@ -4717,180 +4916,32 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             }
             // ggml_et_op_mul_mat(env, &node_meta[i]);
         } else if (op == GGML_OP_ROPE) {
-            const float* freq_factors = (node_meta[i].src2.data) ? (const float*)src2_data : NULL;
-            
-            if ((node_meta[i].src0.type != GGML_TYPE_F32) || 
-                (node_meta[i].src1.type != GGML_TYPE_I32) ||
-                (node_meta[i].dst.type != GGML_TYPE_F32)){
-                continue; // Only support F32 for now
-            }
 
-            if (!src0_data || !src1_data || !dst_data) {
-                continue;
-            }
-
-            const int64_t head_dim = ne00;  // src0 head dimension
-            const int64_t heads    = ne01;  // src0 heads
-            const int64_t seq_len  = ne02;  // src0 sequence length
-            const int64_t batch    = ne03;  // src0 batch
-
-            // Extract rope parameters from op_params
-            int32_t rope_n_past, rope_n_dims, rope_mode, rope_n_ctx, rope_n_ctx_orig;
-            float rope_freq_base, rope_freq_scale, rope_ext_factor, rope_attn_factor, rope_beta_fast, rope_beta_slow;
-            int32_t rope_sections[4];
-            
-            memcpy(&rope_n_past,       &node_meta[i].op_params[0], sizeof(int32_t));
-            memcpy(&rope_n_dims,       &node_meta[i].op_params[1], sizeof(int32_t));
-            memcpy(&rope_mode,         &node_meta[i].op_params[2], sizeof(int32_t));
-            memcpy(&rope_n_ctx,        &node_meta[i].op_params[3], sizeof(int32_t));
-            memcpy(&rope_n_ctx_orig,   &node_meta[i].op_params[4], sizeof(int32_t));
-            memcpy(&rope_freq_base,    &node_meta[i].op_params[5], sizeof(float));
-            memcpy(&rope_freq_scale,   &node_meta[i].op_params[6], sizeof(float));
-            memcpy(&rope_ext_factor,   &node_meta[i].op_params[7], sizeof(float));
-            memcpy(&rope_attn_factor,  &node_meta[i].op_params[8], sizeof(float));
-            memcpy(&rope_beta_fast,    &node_meta[i].op_params[9], sizeof(float));
-            memcpy(&rope_beta_slow,    &node_meta[i].op_params[10], sizeof(float));
-            memcpy(&rope_sections,     &node_meta[i].op_params[11], 4 * sizeof(int32_t));
+            struct ggml_et_rope_params params;
+            convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+            convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+            convert_to_ggml_tensor(&params.src2, &node_meta[i].src2, GGML_OP_NONE);
+            convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_ROPE);
+            memcpy(&params.rope_params.n_past, &node_meta[i].op_params[0], sizeof(int32_t));
+            memcpy(&params.rope_params.n_dims, &node_meta[i].op_params[1], sizeof(int32_t));
+            memcpy(&params.rope_params.mode, &node_meta[i].op_params[2], sizeof(int32_t));
+            memcpy(&params.rope_params.n_ctx, &node_meta[i].op_params[3], sizeof(int32_t));
+            memcpy(&params.rope_params.n_ctx_orig, &node_meta[i].op_params[4], sizeof(int32_t));
+            memcpy(&params.rope_params.freq_base, &node_meta[i].op_params[5], sizeof(float));
+            memcpy(&params.rope_params.freq_scale, &node_meta[i].op_params[6], sizeof(float));
+            memcpy(&params.rope_params.ext_factor, &node_meta[i].op_params[7], sizeof(float));
+            memcpy(&params.rope_params.attn_factor, &node_meta[i].op_params[8], sizeof(float));
+            memcpy(&params.rope_params.beta_fast, &node_meta[i].op_params[9], sizeof(float));
+            memcpy(&params.rope_params.beta_slow, &node_meta[i].op_params[10], sizeof(float));
             for (int j = 0; j < 4; j++) {
-                memcpy(&rope_sections[j], &node_meta[i].op_params[11 + j], sizeof(int32_t));
+                memcpy(&params.rope_params.sections[j], &node_meta[i].op_params[11 + j], sizeof(int32_t));
             }
-            if (rope_n_dims <= 0 || rope_n_dims > head_dim || (rope_n_dims & 1) != 0) {
-                continue;
-            }
-
-            if (rope_n_dims / 2 > MAX_ROPE_HALF_DIMS) {
-                continue;
+            if (params.dst.type == GGML_TYPE_F32 &&
+                params.src0.type == GGML_TYPE_F32 &&
+                params.src1.type == GGML_TYPE_I32) {
+                rope_f32_impl(&params, env);
             }
 
-            float cos_cache[MAX_ROPE_HALF_DIMS];
-            float sin_cache[MAX_ROPE_HALF_DIMS];
-
-            float corr_dims[2];
-            rope_yarn_corr_dims(
-                rope_n_dims,
-                rope_n_ctx_orig,
-                rope_freq_base,
-                rope_beta_fast,
-                rope_beta_slow,
-                corr_dims
-            );
-
-            // Distribute by individual heads: total = batch * seq_len * heads.
-            const int64_t total_heads = batch * seq_len * heads;
-            const int64_t start_wu = (total_heads * thread_id) / num_threads;
-            const int64_t end_wu   = (total_heads * (thread_id + 1)) / num_threads;
-
-            if (start_wu >= end_wu) {
-                continue;
-            }
-
-            const float theta_scale = et_powf(rope_freq_base, et_fdiv(-2.0f, (float)rope_n_dims));
-            const int32_t half_dims = rope_n_dims / 2;
-            const int is_neox   = (rope_mode & GGML_ROPE_TYPE_NEOX) != 0;
-            const int is_imrope = (rope_mode == GGML_ROPE_TYPE_IMROPE);
-            const int use_neox_rotation = is_neox || is_imrope;
-
-            // For IMROPE position cache invalidation: track all 4 channels
-            int32_t last_pos   = -1;
-            int32_t last_pos_h = -1;
-            int32_t last_pos_w = -1;
-            int32_t last_pos_e = -1;
-
-            for (int64_t wu = start_wu; wu < end_wu; ++wu) {
-                const int64_t h = wu % heads;
-                const int64_t s = (wu / heads) % seq_len;
-                const int64_t b = wu / (heads * seq_len);
-
-                if (is_imrope) {
-                    // IMROPE: src1 layout is [p_t(0..S-1), p_h(0..S-1), p_w(0..S-1), p_e(0..S-1)]
-                    const int32_t* pos_data = (const int32_t*)src1_data;
-                    const int32_t pt = pos_data[s]              + rope_n_past;
-                    const int32_t ph = pos_data[s + seq_len]    + rope_n_past;
-                    const int32_t pw = pos_data[s + seq_len * 2] + rope_n_past;
-                    const int32_t pe = pos_data[s + seq_len * 3] + rope_n_past;
-
-                    if (pt != last_pos || ph != last_pos_h || pw != last_pos_w || pe != last_pos_e) {
-                        compute_imrope_cache(
-                            cos_cache, sin_cache,
-                            rope_n_dims, theta_scale,
-                            pt, ph, pw, pe,
-                            rope_sections,
-                            freq_factors, rope_freq_scale,
-                            corr_dims, rope_ext_factor, rope_attn_factor
-                        );
-                        last_pos   = pt;
-                        last_pos_h = ph;
-                        last_pos_w = pw;
-                        last_pos_e = pe;
-                    }
-                } else {
-                    const int32_t* pos_data = (const int32_t*)src1_data;
-                    const int32_t pos = pos_data[s] + rope_n_past;
-
-                    if (pos != last_pos) {
-                        compute_rope_cache(
-                            cos_cache, sin_cache,
-                            rope_n_dims, theta_scale, pos,
-                            freq_factors, rope_freq_scale,
-                            corr_dims, rope_ext_factor, rope_attn_factor
-                        );
-                        last_pos = pos;
-                    }
-                }
-
-                const float* head_src = (const float*)((const char*)src0_data +
-                    b * nb03 + s * nb02 + h * nb01);
-
-                float* head_dst = (float*)((char*)dst_data +
-                    b * nb3 + s * nb2 + h * nb1);
-
-                // Copy dimensions beyond n_dims unchanged
-                for (int64_t d = rope_n_dims; d < head_dim; ++d) {
-                    head_dst[d] = head_src[d];
-                }
-
-                
-                if (use_neox_rotation) {
-                    // NEOX/IMROPE: pairs at (i, i+half_dims)
-                    uint64_t temp_mask;
-                    __asm__ volatile("mova.x.m %0" : "=r"(temp_mask));
-                    __asm__ volatile("mov.m.x m0, x0, 0xFF");
-
-                    for (int32_t dim_idx = 0; dim_idx < half_dims; dim_idx += 8) {
-                        __asm__ volatile(
-                            "flw.ps f0, %[x0_src]       \n\t"
-                            "flw.ps f1, %[x1_src]       \n\t"
-                            "flw.ps f2, %[sin_cache]    \n\t"
-                            "flw.ps f3, %[cos_cache]    \n\t"
-                            "fmul.ps f4, f0, f3         \n\t"
-                            "fmul.ps f5, f0, f2         \n\t"
-                            "fnmsub.ps f4, f1, f2, f4   \n\t"
-                            "fmadd.ps f5, f1, f3, f5    \n\t"
-                            "fsw.ps f4, %[x0_dst]       \n\t"
-                            "fsw.ps f5, %[x1_dst]       \n\t"
-                            : [x0_dst] "=m"(*(float(*)[8])&head_dst[dim_idx]),
-                            [x1_dst] "=m"(*(float(*)[8])&head_dst[dim_idx + half_dims])
-                            : [x0_src] "m"(*(const float(*)[8])&head_src[dim_idx]),
-                            [x1_src] "m"(*(const float(*)[8])&head_src[dim_idx + half_dims]),
-                            [sin_cache] "m"(*(const float(*)[8])&sin_cache[dim_idx]),
-                            [cos_cache] "m"(*(const float(*)[8])&cos_cache[dim_idx])
-                            : "f0", "f1", "f2", "f3", "f4", "f5", "memory"
-                        );
-                    }
-
-                    __asm__ volatile("mova.m.x %0" :: "r"(temp_mask));
-                } else {
-                    // Standard: adjacent pairs (2i, 2i+1)
-                    for (int32_t pair_idx = 0; pair_idx < half_dims; ++pair_idx) {
-                        const int32_t dim_in_head = pair_idx * 2;
-                        const float x0 = head_src[dim_in_head];
-                        const float x1 = head_src[dim_in_head + 1];
-
-                        head_dst[dim_in_head]     = x0 * cos_cache[pair_idx] - x1 * sin_cache[pair_idx];
-                        head_dst[dim_in_head + 1] = x0 * sin_cache[pair_idx] + x1 * cos_cache[pair_idx];
-                    }
-                }
-            }
             // ggml_et_op_rope(env, &node_meta[i]);
         } else if (op == GGML_OP_RMS_NORM) {
 
