@@ -5142,35 +5142,35 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             }
             // ggml_et_op_rms_norm(env, &node_meta[i]);
         } else if (op == GGML_OP_SQR) {
-            // ggml_et_op_sqr(env, &node_meta[i]);
+            ggml_et_op_sqr(env, &node_meta[i]);
         } else if (op == GGML_OP_UNARY) {
-            // ggml_et_op_unary(env, &node_meta[i]);
+            ggml_et_op_unary(env, &node_meta[i]);
         } else if (op == GGML_OP_SUM_ROWS) {
-            // ggml_et_op_sum_rows(env, &node_meta[i]);
+            ggml_et_op_sum_rows(env, &node_meta[i]);
         } else if (op == GGML_OP_CUMSUM) {
-            // ggml_et_op_cumsum(env, &node_meta[i]);
+            ggml_et_op_cumsum(env, &node_meta[i]);
         } else if (op == GGML_OP_MUL_MAT_ID) {
-            // ggml_et_op_mul_mat_id(env, &node_meta[i]);
+            ggml_et_op_mul_mat_id(env, &node_meta[i]);
         } else if (op == GGML_OP_NORM) {
-            // ggml_et_op_norm(env, &node_meta[i]);
+            ggml_et_op_norm(env, &node_meta[i]);
         } else if (op == GGML_OP_L2_NORM) {
-            // ggml_et_op_l2_norm(env, &node_meta[i]);
+            ggml_et_op_l2_norm(env, &node_meta[i]);
         } else if (op == GGML_OP_SCALE) {
-            // ggml_et_op_scale(env, &node_meta[i]);
+            ggml_et_op_scale(env, &node_meta[i]);
         } else if (op == GGML_OP_CPY) {
-            // ggml_et_op_cpy(env, &node_meta[i]);
+            ggml_et_op_cpy(env, &node_meta[i]);
         } else if (op == GGML_OP_CONCAT) {
-            // ggml_et_op_concat(env, &node_meta[i]);
+            ggml_et_op_concat(env, &node_meta[i]);
         } else if (op == GGML_OP_REPEAT) {
-            // ggml_et_op_repeat(env, &node_meta[i]);
+            ggml_et_op_repeat(env, &node_meta[i]);
         } else if (op == GGML_OP_PAD) {
-            // ggml_et_op_pad(env, &node_meta[i]);
+            ggml_et_op_pad(env, &node_meta[i]);
         } else if (op == GGML_OP_SET) {
-            // ggml_et_op_set(env, &node_meta[i]);
+            ggml_et_op_set(env, &node_meta[i]);
         } else if (op == GGML_OP_FILL) {
-            // ggml_et_op_fill(env, &node_meta[i]);
+            ggml_et_op_fill(env, &node_meta[i]);
         } else if (op == GGML_OP_DIAG) {
-            // ggml_et_op_diag(env, &node_meta[i]);
+            ggml_et_op_diag(env, &node_meta[i]);
         } else if (op == GGML_OP_RESHAPE || op == GGML_OP_VIEW || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE) {
             // No-op operations
         } else {
