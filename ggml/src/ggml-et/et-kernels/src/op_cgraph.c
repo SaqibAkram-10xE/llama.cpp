@@ -16,6 +16,19 @@
 #include "ggml_tensor.h"
 #include "tensor.h"
 
+// Forward declaration for ggml_et_get_rows_params
+struct ggml_et_get_rows_params {
+    struct ggml_tensor src0;     // Data tensor (F32 or Q8_0)
+    struct ggml_tensor src1;     // Row indices tensor (I32)
+    struct ggml_tensor dst;      // Output tensor (F32)
+};
+
+// Cache-related definitions
+#define CACHE_LINE_SIZE_BYTES 64
+#define CACHE_ELEMENTS(elem_size) (CACHE_LINE_SIZE_BYTES / (elem_size))
+
+// Helper function declarations - these functions are already defined elsewhere in the file
+
 
 // ========================================================================
 // Compact tensor metadata (ABI-compatible with host ggml_tensor_et)
@@ -2318,7 +2331,7 @@ static void ggml_et_op_cpy(void * env, struct ggml_node_meta_et * m) {
         }
     } else {
         // F32->F32 (or same-type copy via CONT)
-        ggml_et_op_cont(env, m);
+        // ggml_et_op_cont(env, m);
     }
 }
 
@@ -2931,9 +2944,6 @@ normalize_store_vec(float * out, float * acc, int64_t dv, float inv, int use_fas
     __asm__ volatile("mova.m.x %0" :: "r"(old_mask));
 }
 
-
-
-
 // ========================================================================
 // Entry point — graph execution loop
 // ========================================================================
@@ -2977,8 +2987,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
         const int64_t ne02 = node_meta[i].src0.ne[2], ne03 = node_meta[i].src0.ne[3];
         const int64_t ne10 = node_meta[i].src1.ne[0], ne11 = node_meta[i].src1.ne[1];
         const int64_t ne12 = node_meta[i].src1.ne[2], ne13 = node_meta[i].src1.ne[3];
-        const int64_t ne20 = node_meta[i].src2.ne[0], ne21 = node_meta[i].src2.ne[1];
-        const int64_t ne22 = node_meta[i].src2.ne[2], ne23 = node_meta[i].src2.ne[3];
+        const int64_t ne20 = node_meta[i].src2.ne[0]; // Used in FLASH_ATTN_EXT
 
         const size_t nb0 = (size_t)node_meta[i].dst.nb[0], nb1 = (size_t)node_meta[i].dst.nb[1];
         const size_t nb2 = (size_t)node_meta[i].dst.nb[2], nb3 = (size_t)node_meta[i].dst.nb[3];
@@ -3586,23 +3595,24 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             // flash_attn_ext(env, &node_meta[i]);
         } else if (op == GGML_OP_GET_ROWS) {
             
-            struct ggml_et_get_rows_params params;
-            convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
-            convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-            convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
-            if (params.dst.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I32 &&
-                (params.src0.type == GGML_TYPE_F32 || params.src0.type == GGML_TYPE_Q8_0 ||
-                    params.src0.type == GGML_TYPE_Q4_0 || params.src0.type == GGML_TYPE_Q4_K)) {
-                get_row_f32_mc_cacheline_aligned(&params, env);
-            }
             if((node_meta[i].src0.type == GGML_TYPE_F32 || node_meta[i].src0.type == GGML_TYPE_Q8_0 || node_meta[i].src0.type == GGML_TYPE_Q4_0 || node_meta[i].src0.type == GGML_TYPE_Q4_K) && node_meta[i].src1.type == GGML_TYPE_I32 && node_meta[i].dst.type == GGML_TYPE_F32
                 && node_meta[i].dst.ne[0] % CACHE_ELEMENTS(sizeof(float)) == 0) {
-                return get_row_f32_mc_cacheline_aligned(&params, env);
+                struct ggml_et_get_rows_params params;
+                convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
+                get_row_f32_mc_cacheline_aligned(&params, env);
+                continue;
             }
             
             const int64_t total_rows_to_extract = ne10 * ne11 * ne12 * ne13;
 
             // Naive single-threaded implementation - process all rows sequentially
+            // Only thread 0 should execute this to avoid race conditions
+            if (thread_id != 0) {
+                continue;
+            }
+            
             // XXX: Do we really need a single-threaded implementation?
             for (int64_t i = 0; i < total_rows_to_extract; i++) {
                 // Calculate multi-dimensional index for the current output position
@@ -3616,10 +3626,10 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                                             i12_idx * ne11 * ne10 +
                                             i11_idx * ne10 +
                                             i10_idx;
-                const int32_t row_index = src1_data[index_offset];
+                const int32_t row_index = ((const int32_t*)src1_data)[index_offset];
 
                 if (row_index < 0 || row_index >= ne01) {
-                    continue; // Index out of bounds
+                    return -1; // Index out of bounds
                 }
 
                 const int64_t batch_offset = i11_idx * ne01 * ne00 +
@@ -3631,7 +3641,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 if (node_meta[i].src0.type == GGML_TYPE_F32) {
                     // F32 source: direct copy
                     const float* src_row = (const float*)src0_data + row_index * ne00 + batch_offset;
-                    float* dst_row = dst_data + dst_offset * ne00;
+                    float* dst_row = (float*)dst_data + dst_offset * ne00;
                     copy_f32_row(dst_row, src_row, ne00);
 
                 } else if (node_meta[i].src0.type == GGML_TYPE_Q8_0) {
@@ -3640,7 +3650,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const int64_t src_block_offset = (row_index * blocks_per_row) +
                                                 (batch_offset / ne00) * blocks_per_row;
                     const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset;
-                    float* dst_row = dst_data + dst_offset * ne00;
+                    float* dst_row = (float*)dst_data + dst_offset * ne00;
                     copy_q8_0_row(dst_row, src_blocks, ne00);
                 } else if (node_meta[i].src0.type == GGML_TYPE_Q4_0) {
                     // Q4_0 source: dequantize while copying
@@ -3648,7 +3658,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const int64_t src_block_offset = (row_index * blocks_per_row) +
                                                 (batch_offset / ne00) * blocks_per_row;
                     const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset;
-                    float* dst_row = dst_data + dst_offset * ne00;
+                    float* dst_row = (float*)dst_data + dst_offset * ne00;
                     copy_q4_0_row(dst_row, src_blocks, ne00);
                 } else if (node_meta[i].src0.type == GGML_TYPE_Q4_K) {
                     // Q4_K source: dequantize while copying
@@ -3656,7 +3666,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const int64_t src_block_offset = (row_index * blocks_per_row) +
                                                 (batch_offset / ne00) * blocks_per_row;
                     const block_q4_K* src_blocks = (const block_q4_K*)src0_data + src_block_offset;
-                    float* dst_row = dst_data + dst_offset * ne00;
+                    float* dst_row = (float*)dst_data + dst_offset * ne00;
                     copy_q4_K_row(dst_row, src_blocks, ne00);
                 }
             }
@@ -3773,7 +3783,14 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 if (total_elements == 0) {
                     continue;
                 }
-                const bool src_contiguous = ggml_tensor_is_contiguous(src0, 4);
+                // Create a ggml_tensor structure for src0 to check contiguity
+                struct ggml_tensor src0_tensor = {
+                    .ne = {ne00, ne01, ne02, ne03},
+                    .nb = {nb00, nb01, nb02, nb03},
+                    .type = node_meta[i].src0.type,
+                    .data = src0_data
+                };
+                const bool src_contiguous = ggml_tensor_is_contiguous(&src0_tensor, 4);
                 //==========================================================================
                 // Fast path: src is contiguous: flat vectorized copy by cache lines
                 //==========================================================================
@@ -3791,7 +3808,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     int64_t ee = cl_end * elems_per_cl;
                     if (ee > total_elements) { ee = total_elements; }
 
-                    vec_copy_f32(dst_data + es, src0_data + es, (int32_t)(ee - es));
+                    vec_copy_f32((float*)((char*)dst_data + es * sizeof(float)), (float*)((char*)src0_data + es * sizeof(float)), (int32_t)(ee - es));
                     continue;
                 }
 
@@ -3823,7 +3840,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
                         const float* sp = (const float*)((const char*)src0_data +
                                         i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-                        dst_data[idx] = *sp;
+                        ((float*)dst_data)[idx] = *sp;
                     }
                     continue;
                 }
@@ -3849,7 +3866,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
                         const float* src_row = (const float*)((const char*)src0_data +
                                             i01*nb01 + i02*nb02 + i03*nb03);
-                        float* dst_row = dst_data + ir * ne00;
+                        float* dst_row = (float*)((char*)dst_data + ir * ne00 * sizeof(float));
 
                         vec_copy_f32(dst_row, src_row, (int32_t)ne00);
                     }
@@ -3894,53 +3911,161 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                         int64_t chunk_remaining = ee - pos;
                         int32_t n = (int32_t)(row_remaining < chunk_remaining ? row_remaining : chunk_remaining);
 
-                        vec_copy_f32(dst_data + pos, src_row + col, n);
+                        vec_copy_f32((float*)((char*)dst_data + pos * sizeof(float)), src_row + col, n);
 
                         pos += n;
                         col = 0;  // subsequent rows start at column 0
                         row_idx++;
                     }
                 }
-            } else if (node_meta[i].dst.type != GGML_TYPE_F16) {
-                const int64_t src_elements = ne00 * ne01 * ne20 * ne03;
-                const int64_t dst_elements = ne0 * ne1 * ne2 * ne3;
-                if (src_elements != dst_elements) {
-                    continue; // Element count mismatch
+            } else if (node_meta[i].dst.type == GGML_TYPE_F16) {
+                // F16 CONT implementation - similar to F32 but with half-precision handling
+                const int64_t total_elements = ne00 * ne01 * ne02 * ne03;
+                if (total_elements == 0) {
+                    continue;
                 }
-                // Parallelize by rows (dimension 1)
-                const int64_t total_rows = ne01;
-                const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
-                const int64_t start_row = thread_id * rows_per_thread;
-                const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
+                // Create a ggml_tensor structure for src0 to check contiguity
+                struct ggml_tensor src0_tensor = {
+                    .ne = {ne00, ne01, ne02, ne03},
+                    .nb = {nb00, nb01, nb02, nb03},
+                    .type = node_meta[i].src0.type,
+                    .data = src0_data
+                };
+                const bool src_contiguous = ggml_tensor_is_contiguous(&src0_tensor, 4);
+                //==========================================================================
+                // Fast path: src is contiguous: flat vectorized copy by cache lines
+                //==========================================================================
+                if (src_contiguous) {
+                    const int64_t elems_per_cl = 16;
+                    const int64_t total_cl = (total_elements + elems_per_cl - 1) / elems_per_cl;
 
-                if (start_row >= total_rows) {
+                    const int64_t cl_per_thread = (total_cl + num_threads - 1) / num_threads;
+                    const int64_t cl_start = thread_id * cl_per_thread;
+                    int64_t cl_end = cl_start + cl_per_thread;
+                    if (cl_end > total_cl) { cl_end = total_cl; }
+                    if (cl_start >= total_cl) { continue; }
+
+                    const int64_t es = cl_start * elems_per_cl;
+                    int64_t ee = cl_end * elems_per_cl;
+                    if (ee > total_elements) { ee = total_elements; }
+
+                    // Copy F16 elements directly
+                    for (int64_t i = es; i < ee; i++) {
+                        ((uint16_t*)dst_data)[i] = ((const uint16_t*)src0_data)[i];
+                    }
                     continue;
                 }
 
-                // Iterate over source tensor dimensions
-                for (int64_t i03 = 0; i03 < ne03; i03++) {
-                    for (int64_t i02 = 0; i02 < ne02; i02++) {
-                        // Calculate base linear index for this (i03, i02) slice in destination
-                        const int64_t dst_linear_base = i03 * ne02 * ne01 * ne00 + i02 * ne01 * ne00;
+                //==========================================================================
+                // Non-contiguous paths: require nb00==2 (dim 0 contiguous in src for F16)
+                //==========================================================================
+                if (nb00 != 2) {
+                    // Fully non-contiguous scalar fallback — distribute by cache lines
+                    const int64_t elems_per_cl = 16;
+                    const int64_t total_cl = (total_elements + elems_per_cl - 1) / elems_per_cl;
 
-                        // Process this thread's assigned rows
-                        for (int64_t i01 = start_row; i01 < end_row; i01++) {
-                            // Linear index for start of this row in destination
-                            const int64_t dst_linear_row_base = dst_linear_base + i01 * ne00;
+                    const int64_t cl_per_thread = (total_cl + num_threads - 1) / num_threads;
+                    const int64_t cl_start = thread_id * cl_per_thread;
+                    int64_t cl_end = cl_start + cl_per_thread;
+                    if (cl_end > total_cl) { cl_end = total_cl; }
+                    if (cl_start >= total_cl) { continue; }
 
-                            // Inner loop over dimension 0
-                            for (int64_t i00 = 0; i00 < ne00; i00++) {
-                                // Source offset using non-contiguous strides
-                                const int64_t src_offset_bytes = i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03;
-                                const uint16_t* src_ptr = (const uint16_t*)((const char*)src0_data + src_offset_bytes);
+                    const int64_t es = cl_start * elems_per_cl;
+                    int64_t ee = cl_end * elems_per_cl;
+                    if (ee > total_elements) { ee = total_elements; }
 
-                                // Destination linear index (contiguous layout)
-                                const int64_t dst_linear_idx = dst_linear_row_base + i00;
+                    for (int64_t idx = es; idx < ee; idx++) {
+                        const int64_t i00 = idx % ne00;
+                        const int64_t rem1 = idx / ne00;
+                        const int64_t i01 = rem1 % ne01;
+                        const int64_t rem2 = rem1 / ne01;
+                        const int64_t i02 = rem2 % ne02;
+                        const int64_t i03 = rem2 / ne02;
 
-                                // Use atomic store for thread safety
-                                atomic_store_f16((volatile uint16_t*)&dst_data[dst_linear_idx], *src_ptr);
-                            }
+                        const uint16_t* sp = (const uint16_t*)((const char*)src0_data +
+                                        i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
+                        ((uint16_t*)dst_data)[idx] = *sp;
+                    }
+                    continue;
+                }
+
+                // nb00 == 2 from here: dim 0 is contiguous in src for F16
+
+                //==========================================================================
+                // Aligned path: ne00 % 16 == 0: rows are cache-line aligned, distribute rows
+                //==========================================================================
+                if (ne00 % 16 == 0) {
+                    const int64_t total_rows = ne01 * ne02 * ne03;
+                    const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
+                    const int64_t start_row = thread_id * rows_per_thread;
+                    const int64_t end_row = (start_row + rows_per_thread < total_rows)
+                                        ? (start_row + rows_per_thread) : total_rows;
+
+                    if (start_row >= total_rows) { continue; }
+
+                    for (int64_t ir = start_row; ir < end_row; ir++) {
+                        const int64_t i03 = ir / (ne02 * ne01);
+                        const int64_t i02 = (ir - i03 * ne02 * ne01) / ne01;
+                        const int64_t i01 = ir - i03 * ne02 * ne01 - i02 * ne01;
+
+                        const uint16_t* src_row = (const uint16_t*)((const char*)src0_data +
+                                            i01*nb01 + i02*nb02 + i03*nb03);
+                        uint16_t* dst_row = (uint16_t*)((char*)dst_data + ir * ne00 * sizeof(uint16_t));
+
+                        // Copy row elements
+                        for (int64_t i = 0; i < ne00; i++) {
+                            dst_row[i] = src_row[i];
                         }
+                    }
+                    continue;
+                }
+
+                //==========================================================================
+                // Unaligned path: ne00 % 16 != 0, nb00 == 2
+                // Distribute cache-line-aligned chunks of dst, handle partial rows at edges
+                //==========================================================================
+                {
+                    const int64_t elems_per_cl = 16;
+                    const int64_t total_cl = (total_elements + elems_per_cl - 1) / elems_per_cl;
+
+                    const int64_t cl_per_thread = (total_cl + num_threads - 1) / num_threads;
+                    const int64_t cl_start = thread_id * cl_per_thread;
+                    int64_t cl_end = cl_start + cl_per_thread;
+                    if (cl_end > total_cl) { cl_end = total_cl; }
+                    if (cl_start >= total_cl) { continue; }
+
+                    const int64_t es = cl_start * elems_per_cl;
+                    int64_t ee = cl_end * elems_per_cl;
+                    if (ee > total_elements) { ee = total_elements; }
+
+                    int64_t pos = es;
+
+                    // Compute starting row coordinates
+                    int64_t row_idx = pos / ne00;
+                    int64_t col     = pos % ne00;
+
+                    while (pos < ee) {
+                        // Decompose row_idx -> (i01, i02, i03)
+                        const int64_t i03 = row_idx / (ne02 * ne01);
+                        const int64_t i02 = (row_idx - i03 * ne02 * ne01) / ne01;
+                        const int64_t i01 = row_idx - i03 * ne02 * ne01 - i02 * ne01;
+
+                        const uint16_t* src_row = (const uint16_t*)((const char*)src0_data +
+                                            i01*nb01 + i02*nb02 + i03*nb03);
+
+                        // How many elements left in this row and in our chunk
+                        int64_t row_remaining = ne00 - col;
+                        int64_t chunk_remaining = ee - pos;
+                        int32_t n = (int32_t)(row_remaining < chunk_remaining ? row_remaining : chunk_remaining);
+
+                        // Copy elements
+                        for (int32_t i = 0; i < n; i++) {
+                            ((uint16_t*)((char*)dst_data + pos * sizeof(uint16_t)))[i] = src_row[col + i];
+                        }
+
+                        pos += n;
+                        col = 0;  // subsequent rows start at column 0
+                        row_idx++;
                     }
                 }
             } else {
