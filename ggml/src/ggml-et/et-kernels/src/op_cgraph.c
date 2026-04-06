@@ -1510,133 +1510,49 @@ static void ggml_et_op_rope(void * env, struct ggml_node_meta_et * m) {
 // OP: MUL_MAT  —  C[M,N] = A[M,K] * B[K,N]
 // Supports Q8_0, F16, F32 weight types; F32 activations
 // ========================================================================
-static void ggml_et_op_mul_mat(void * env, struct ggml_node_meta_et * m) {
-    int tid, nth;
-    if (cg_thread_setup(env, &tid, &nth)) return;
+#define NUM_COMPUTE_SHIRES 32
+#define MINIONS_PER_SHIRE  32
 
-    // Use only even threads to avoid minion resource contention
-    if (tid & 1) return;
-    int etid = tid / 2;
-    int enth = (nth + 1) / 2;
+#define TILE_M 16
+#define TILE_N 16
+#define TILE_K 32
 
-    const int64_t K    = m->src0.ne[0];
-    const int64_t M    = m->src0.ne[1];
-    const int64_t N    = m->src1.ne[1];
-    const int64_t ne02 = m->src0.ne[2], ne03 = m->src0.ne[3];
-    const int64_t ne12 = m->src1.ne[2], ne13 = m->src1.ne[3];
-    const int64_t ne2  = m->dst.ne[2],  ne3  = m->dst.ne[3];
+#define CACHEOP_MAX 0
+#define REP_RATE    0
 
-    const size_t nb01 = (size_t)m->src0.nb[1], nb02 = (size_t)m->src0.nb[2], nb03 = (size_t)m->src0.nb[3];
-    const size_t nb11 = (size_t)m->src1.nb[1], nb12 = (size_t)m->src1.nb[2], nb13 = (size_t)m->src1.nb[3];
-    const size_t nb1  = (size_t)m->dst.nb[1],  nb2  = (size_t)m->dst.nb[2],  nb3  = (size_t)m->dst.nb[3];
+#define A_L1_START 0   // SCP lines  0..15 for A
+#define B_L1_START 16  // SCP lines 16..31 for B
 
-    const int64_t r2 = ne12 / ne02;
-    const int64_t r3 = ne13 / ne03;
+typedef uint16_t et_fp16_t;
 
-    const void * src0_data = (const void *)(uintptr_t)m->src0.data;
-    const float * src1_data = (const float *)(uintptr_t)m->src1.data;
-    float * dst_data = (float *)(uintptr_t)m->dst.data;
-    if (!src0_data || !src1_data || !dst_data) return;
 
-    const int src0_type = m->src0.type;
+#define NUM_COMPUTE_SHIRES 32
+#define MINIONS_PER_SHIRE  32
+#define TILE_K_TFMA_F32    16
+#define TILE_M_TFMA_F32    16
 
-    const uint64_t total_elems = (uint64_t)M * N * ne2 * ne3;
-    const uint64_t per_thread = 16;
-    const uint64_t stride = per_thread * enth;
+/* ── Tuning knobs ───────────────────────────────────────────────────── */
+#define TILE_N_TFMA_F32             16
+#define CACHEOP_MAX_TFMA_F32        0
+#define REP_RATE_TFMA_F32           0
+/* ─────────────────────────────────────────────────────────────────── */
 
-    if (src0_type == GGML_TYPE_Q8_0) {
-        const int64_t K_blocks = K / 32;
-        for (uint64_t base = etid * per_thread; base < total_elems; base += stride) {
-            for (uint64_t j = 0; j < per_thread && base + j < total_elems; j++) {
-                uint64_t idx = base + j;
-                int64_t i3 = idx / (M * N * ne2);
-                int64_t rem3 = idx % (M * N * ne2);
-                int64_t i2 = rem3 / (M * N);
-                int64_t rem2 = rem3 % (M * N);
-                int64_t n = rem2 / M;
-                int64_t mm = rem2 % M;
 
-                int64_t i03 = i3 / r3, i02 = i2 / r2;
-                int64_t i13 = (ne13 > 1) ? i3 : 0;
-                int64_t i12 = (ne12 > 1) ? i2 : 0;
-
-                const block_q8_0 * q_row = (const block_q8_0 *)((const char *)src0_data + mm * nb01 + i02 * nb02 + i03 * nb03);
-                const float * b_col = (const float *)((const char *)src1_data + n * nb11 + i12 * nb12 + i13 * nb13);
-                float sum = compute_row_dot_q8_0(q_row, b_col, K_blocks);
-
-                volatile float * c = (volatile float *)((char *)dst_data + mm * sizeof(float) + n * nb1 + i2 * nb2 + i3 * nb3);
-                atomic_store_f32(c, sum);
-            }
-        }
-    } else if (src0_type == GGML_TYPE_F16) {
-        const int64_t K_blocks = K / QK_F16;
-        const int64_t K_rem = K % QK_F16;
-        for (uint64_t base = etid * per_thread; base < total_elems; base += stride) {
-            for (uint64_t j = 0; j < per_thread && base + j < total_elems; j++) {
-                uint64_t idx = base + j;
-                int64_t i3 = idx / (M * N * ne2);
-                int64_t rem3 = idx % (M * N * ne2);
-                int64_t i2 = rem3 / (M * N);
-                int64_t rem2 = rem3 % (M * N);
-                int64_t n = rem2 / M;
-                int64_t mm = rem2 % M;
-
-                int64_t i03 = i3 / r3, i02 = i2 / r2;
-                int64_t i13 = (ne13 > 1) ? i3 : 0;
-                int64_t i12 = (ne12 > 1) ? i2 : 0;
-
-                const uint16_t * f16_row = (const uint16_t *)((const char *)src0_data + mm * nb01 + i02 * nb02 + i03 * nb03);
-                float sum = 0.0f;
-                for (int64_t kb = 0; kb < K_blocks; kb++) {
-                    const float * bp = (const float *)((const char *)src1_data + kb * QK_F16 * sizeof(float) + n * nb11 + i12 * nb12 + i13 * nb13);
-                    sum += compute_block_dot_product_f16_naive(&f16_row[kb * QK_F16], bp);
-                }
-                if (K_rem > 0) {
-                    int64_t off = K_blocks * QK_F16;
-                    const float * bp = (const float *)((const char *)src1_data + off * sizeof(float) + n * nb11 + i12 * nb12 + i13 * nb13);
-                    sum += compute_block_dot_product_f16_partial(&f16_row[off], bp, K_rem);
-                }
-
-                volatile float * c = (volatile float *)((char *)dst_data + mm * sizeof(float) + n * nb1 + i2 * nb2 + i3 * nb3);
-                atomic_store_f32(c, sum);
-            }
-        }
-    } else {
-        // F32
-        const int64_t K_blocks = K / QK_F32;
-        const int64_t K_rem = K % QK_F32;
-        for (uint64_t base = etid * per_thread; base < total_elems; base += stride) {
-            for (uint64_t j = 0; j < per_thread && base + j < total_elems; j++) {
-                uint64_t idx = base + j;
-                int64_t i3 = idx / (M * N * ne2);
-                int64_t rem3 = idx % (M * N * ne2);
-                int64_t i2 = rem3 / (M * N);
-                int64_t rem2 = rem3 % (M * N);
-                int64_t n = rem2 / M;
-                int64_t mm = rem2 % M;
-
-                int64_t i03 = i3 / r3, i02 = i2 / r2;
-                int64_t i13 = (ne13 > 1) ? i3 : 0;
-                int64_t i12 = (ne12 > 1) ? i2 : 0;
-
-                const float * f32_row = (const float *)((const char *)src0_data + mm * nb01 + i02 * nb02 + i03 * nb03);
-                float sum = 0.0f;
-                for (int64_t kb = 0; kb < K_blocks; kb++) {
-                    const float * bp = (const float *)((const char *)src1_data + kb * QK_F32 * sizeof(float) + n * nb11 + i12 * nb12 + i13 * nb13);
-                    sum += compute_block_dot_product_f32(&f32_row[kb * QK_F32], bp);
-                }
-                if (K_rem > 0) {
-                    int64_t off = K_blocks * QK_F32;
-                    const float * bp = (const float *)((const char *)src1_data + off * sizeof(float) + n * nb11 + i12 * nb12 + i13 * nb13);
-                    sum += compute_block_dot_product_f32_partial(&f32_row[off], bp, K_rem);
-                }
-
-                volatile float * c = (volatile float *)((char *)dst_data + mm * sizeof(float) + n * nb1 + i2 * nb2 + i3 * nb3);
-                atomic_store_f32(c, sum);
-            }
+static inline void __attribute__((always_inline))
+pack_b_interleaved(et_fp16_t *out,
+                   const char *src0_batch,
+                   int64_t mb, int64_t kb, int64_t nb1_0)
+{
+    for (int j = 0; j < TILE_M; ++j) {
+        const et_fp16_t *row =
+            (const et_fp16_t *)(src0_batch + (mb + j) * nb1_0) + kb;
+        for (int l = 0; l < TILE_K / 2; ++l) {
+            out[l * 32 + j * 2 + 0] = row[2 * l + 0];
+            out[l * 32 + j * 2 + 1] = row[2 * l + 1];
         }
     }
 }
+
 
 // ========================================================================
 // OP: MUL_MAT_ID  —  Mixture of Experts matmul
@@ -2970,7 +2886,8 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
        
         int thread_id = get_relative_thread_id(kernel_env->shire_mask);
         int num_threads = get_num_threads(kernel_env->shire_mask);
-        
+        uint64_t shire_id = get_shire_id();
+
         void * src0_data = (void *)(uintptr_t)node_meta[i].src0.data;
         void * src1_data = (void *)(uintptr_t)node_meta[i].src1.data;
         void * src2_data = (void *)(uintptr_t)node_meta[i].src2.data;
@@ -3970,6 +3887,525 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             }
             // ggml_et_op_cont(env, &node_meta[i]);
         } else if (op == GGML_OP_MUL_MAT) {
+            if (node_meta[i].dst.type == GGML_TYPE_F32 &&
+                node_meta[i].src0.type == GGML_TYPE_Q8_0 &&
+                node_meta[i].src1.type == GGML_TYPE_F32) {
+                    // Q8_0 x F32 matrix multiplication
+                    const int64_t K = node_meta[i].src0.ne[0];
+                    const int64_t M = node_meta[i].src0.ne[1];
+                    const int64_t N = node_meta[i].src1.ne[1];
+                    // ne02, ne03, ne12, ne13, ne2, ne3 already defined above
+                    
+                    const int64_t K_blocks = K / 32;
+                    const int64_t r2 = ne12 / ne02;
+                    const int64_t r3 = ne13 / ne03;
+                    // src0_data, src1_data, dst_data already defined above
+                    
+                    for (int64_t i3 = 0; i3 < ne3; i3++) {
+                        const int64_t i03 = i3 / r3;
+                        char* dst_ptr3 = (char*)dst_data + i3 * nb3;
+
+                        for (int64_t i2 = 0; i2 < ne2; i2++) {
+                            const int64_t i02 = i2 / r2;
+                            const char* src0_ptr2 = (const char*)src0_data + i02 * nb02 + i03 * nb03;
+                            const char* src1_ptr2 = (const char*)src1_data + i2 * nb12 + i3 * nb13;
+                            char* dst_ptr2 = dst_ptr3 + i2 * nb2;
+
+                            for (int64_t n = 0; n < N; n++) {
+                                const float* b_col_base = (const float*)(src1_ptr2 + n * nb11);
+
+                                for (int64_t m = thread_id; m < M; m += num_threads) {
+                                    const block_q8_0* q_row = (const block_q8_0*)(src0_ptr2 + m * nb01);
+                                    float sum = compute_row_dot_q8_0(q_row, b_col_base, K_blocks);
+
+                                    float* dst_entry = (float*)(dst_ptr2 + n * nb1 + m * sizeof(float));
+                                    atomic_store_f32((volatile float*)dst_entry, sum);
+                                }
+                            }
+                        }
+                    }
+                continue;
+
+            } else if (node_meta[i].dst.type == GGML_TYPE_F32 &&
+                        node_meta[i].src0.type == GGML_TYPE_F16 &&
+                        node_meta[i].src1.type == GGML_TYPE_F16 &&
+                        node_meta[i].src0.ne[0] % 16 == 0 &&
+                        node_meta[i].src0.ne[1] % 16 == 0 &&
+                        node_meta[i].src1.ne[0] != 1) {
+                // F16 x F16 matrix multiplication with matrix engine
+                uint64_t local_minion = (thread_id >> 1) & 0x1F;
+                uint64_t my_minion_id = get_minion_id();
+
+                const int64_t K = node_meta[i].src0.ne[0];
+                const int64_t M = node_meta[i].src0.ne[1];
+                const int64_t N = node_meta[i].src1.ne[1];
+                // ne02, ne03 (ne2_0, ne3_0) and ne12, ne13 (ne2_1, ne3_1) already defined above
+                // nb01, nb02, nb03, nb11, nb12, nb13, nb1, nb2, nb3 already defined above
+                // src0_data, src1_data, dst_data already defined above
+
+                const char *src0_base = (const char *) src0_data;
+                const char *src1_base = (const char *) src1_data;
+                char       *dst_base  = (char *) dst_data;
+
+                setup_cache_scp();
+            #if CACHEOP_MAX > 0 || REP_RATE > 0
+                ucache_control(1, REP_RATE, CACHEOP_MAX);
+            #endif
+                CLEAR_TENSOR_ERROR;
+
+                if ((M % TILE_M) != 0) continue;
+                if ((K % TILE_K) != 0) continue;
+
+                const int64_t m_tiles = M / TILE_M;
+                const int64_t n_tiles = (N + TILE_N - 1) / TILE_N;
+                const int64_t batch_count = ne12 * ne13;  // ne12, ne13 already defined
+                const int64_t base_tiles = m_tiles * n_tiles * batch_count;
+
+                const int64_t r2 = ne12 / ne02;
+                const int64_t r3 = ne13 / ne03;
+
+                const int64_t total_harts = NUM_COMPUTE_SHIRES * MINIONS_PER_SHIRE;
+                const int64_t k_steps = K / TILE_K;
+
+                int64_t k_splits = 1;
+                if (base_tiles < total_harts) {
+                    k_splits = (total_harts + base_tiles - 1) / base_tiles;
+                    int64_t ks = 1;
+                    while (ks * 2 <= k_splits && ks * 2 <= 32 && k_steps % (ks * 2) == 0) {
+                        ks *= 2;
+                    }
+                    k_splits = ks;
+                }
+
+                const int64_t tiles_per_shire = MINIONS_PER_SHIRE / k_splits;
+                const int64_t k_split = local_minion % k_splits;
+                const int64_t local_tile_idx = local_minion / k_splits;
+                const int64_t tiles_stride = (int64_t)NUM_COMPUTE_SHIRES * tiles_per_shire;
+
+                const int64_t k_steps_per_split = k_steps / k_splits;
+                const int64_t k_start = k_split * k_steps_per_split * TILE_K;
+                const int64_t k_end   = k_start + k_steps_per_split * TILE_K;
+
+                const uint64_t group_base_global = my_minion_id - k_split;
+
+                // Interleaved B panel: 16 lines x 32 fp16 = 1024 bytes
+                et_fp16_t bpanel[16 * 32] __attribute__((aligned(64)));
+
+                for (int64_t tile = (int64_t)shire_id + local_tile_idx * NUM_COMPUTE_SHIRES;
+                    tile < base_tiles;
+                    tile += tiles_stride) {
+
+                    const int64_t tiles_per_batch = m_tiles * n_tiles;
+                    const int64_t batch_idx       = tile / tiles_per_batch;
+                    const int64_t tile_in_batch   = tile % tiles_per_batch;
+
+                    const int64_t nb_idx = tile_in_batch / m_tiles;
+                    const int64_t mb_idx = tile_in_batch % m_tiles;
+
+                    const int64_t i3   = batch_idx / ne12;
+                    const int64_t i2   = batch_idx % ne12;
+                    const int64_t i2_0 = i2 / r2;
+                    const int64_t i3_0 = i3 / r3;
+
+                    const char *src0_batch = src0_base + i3_0 * nb03 + i2_0 * nb02;
+                    const char *src1_batch = src1_base + i3   * nb13 + i2   * nb12;
+                    char       *dst_batch  = dst_base  + i3   * nb3  + i2   * nb2;
+
+                    const int64_t mb = mb_idx * TILE_M;
+                    const int64_t nb = nb_idx * TILE_N;
+                    const int64_t n_cur = (nb + TILE_N <= N) ? TILE_N : (N - nb);
+
+                    // Set tensor_mask for partial N tiles: bit i = 1 means row i is active
+                    if (n_cur < TILE_N) {
+                        uint64_t mask = (1ULL << n_cur) - 1;
+                        __asm__ __volatile__("csrw 0x805, %0" : : "r"(mask));
+                    }
+
+                    for (int64_t kb = k_start; kb < k_end; kb += TILE_K) {
+
+                        // Load A from src1. n_cur rows x 32 FP16 = n_cur x 64B
+                        // Use tensor_mask when n_cur < 16 to skip invalid rows
+                        tensor_load(
+                            (n_cur < TILE_N), false,
+                            A_L1_START,
+                            TENSOR_LOAD_PLAIN,
+                            0, // use_tenb
+                            (uint64_t)(src1_batch + nb * nb11 + kb * (int64_t)sizeof(et_fp16_t)),
+                            0,
+                            n_cur - 1,
+                            (uint64_t)nb11,
+                            0
+                        );
+
+                        // Build interleaved B panel from src0 and flush to L2
+                        // so the tensor load (which bypasses L1) can see it
+                        // There is no TensorLoadInterleavedTranpose16 so we
+                        // interleave outselves and then TensorLoad
+                        pack_b_interleaved(bpanel, src0_batch, mb, kb, nb01);
+
+                        FENCE;
+                        flush_to_l2(bpanel, 16, 64);
+                        WAIT_CACHEOPS;
+
+                        // Load B from manually interleaved data, 16 lines x 64B
+                        tensor_load(
+                            false, false,
+                            B_L1_START,
+                            TENSOR_LOAD_PLAIN,
+                            0, // use_tenb
+                            (uint64_t)bpanel,
+                            0,
+                            15, // 16 lines
+                            64, // contiguous 64B stride
+                            1
+                        );
+
+                        tensor_wait(TENSOR_LOAD_WAIT_0);
+                        tensor_wait(TENSOR_LOAD_WAIT_1);
+
+                        // TensorFMA16A32:
+                        //   BCOLS  = 3       -> (3+1)*4 = 16 output columns
+                        //   AROWS  = n_cur-1 -> n_cur A rows
+                        //   ACOLS  = 15      -> 2*(15+1) = 32 FP16 K-values
+                        tensor_fma(
+                            (n_cur < TILE_N), // use_tmask
+                            3,                // b_num_col
+                            n_cur - 1,        // a_num_rows
+                            15,               // a_num_cols
+                            0,                // offset
+                            false,            // tenc_loc
+                            false,            // tenb_unsigned
+                            false,            // tena_unsigned
+                            false,            // tenb_loc: B in L1SCP
+                            B_L1_START,
+                            A_L1_START,
+                            TENSOR_FMA_OP_FP16,
+                            (kb == k_start)   // first_pass
+                        );
+
+                        tensor_wait(TENSOR_FMA_WAIT);
+                    }
+
+                    // K-split ring reduce
+                    if (k_splits > 1) {
+                        const uint64_t num_regs = (uint64_t)n_cur * 2;
+
+                        if (k_split > 0) {
+                            tensor_reduce_recv(
+                                0, TENSOR_REDUCE_OP_FADD,
+                                num_regs,
+                                group_base_global + k_split - 1
+                            );
+                            tensor_wait(TENSOR_REDUCE_WAIT);
+                        }
+
+                        if (k_split < k_splits - 1) {
+                            tensor_reduce_send(
+                                0, num_regs,
+                                group_base_global + k_split + 1
+                            );
+                            tensor_wait(TENSOR_REDUCE_WAIT);
+                        }
+                    }
+
+                    // Store FP32 result tile
+                    if (k_split == k_splits - 1) {
+                        tensor_store(
+                            0, 0, 3, n_cur - 1,
+                            (uint64_t)(dst_batch + nb * nb1 + mb * (int64_t)sizeof(float)),
+                            0, (uint64_t)nb1
+                        );
+                        tensor_wait(TENSOR_STORE_WAIT);
+                    }
+                }
+
+                FENCE;
+                continue;
+
+            } else if (node_meta[i].dst.type == GGML_TYPE_F32 &&
+                    node_meta[i].src0.type == GGML_TYPE_F16 &&
+                    node_meta[i].src1.type == GGML_TYPE_F32) {
+                // F16 x F32 matrix multiplication
+                int effective_thread_id = thread_id / 2;
+                int effective_num_threads = (num_threads + 1) / 2;
+
+                // Validate: src0 is F16, others are F32
+                if (node_meta[i].src0.type != GGML_TYPE_F16 || node_meta[i].src1.type != GGML_TYPE_F32 || node_meta[i].dst.type != GGML_TYPE_F32) {
+                    continue;
+                }
+
+                // Dimensions: K, M, N
+                const int64_t K = node_meta[i].src0.ne[0];
+                const int64_t M = node_meta[i].src0.ne[1];
+                const int64_t N = node_meta[i].src1.ne[1];
+                // ne02, ne03, ne12, ne13, ne2, ne3 already defined above
+
+                // F16 specific block size (Usually QK_F16)
+                const int block_size = QK_F16;
+                const int64_t K_blocks = K / block_size;
+                const int64_t K_remainder = K % block_size;
+
+                // Threading distribution
+                const uint64_t total_elements = M * N * ne2 * ne3;
+                const uint64_t per_thread = 16;
+                const uint64_t threads_stride = per_thread * effective_num_threads;
+
+                if (effective_thread_id * per_thread >= total_elements) return 0;
+
+                // Broadcasting support
+                const int64_t r2 = ne12 / ne02;
+                const int64_t r3 = ne13 / ne03;
+
+                for (uint64_t base_idx = effective_thread_id * per_thread; base_idx < total_elements; base_idx += threads_stride) {
+                    for (uint64_t j = 0; j < per_thread; j++) {
+                        const uint64_t idx = base_idx + j;
+                        if (idx >= total_elements) break;
+
+                        // Index decoding
+                        const int64_t i3 = idx / (M * N * ne2);
+                        const int64_t rem3 = idx % (M * N * ne2);
+                        const int64_t i2 = rem3 / (M * N);
+                        const int64_t rem2 = rem3 % (M * N);
+                        const int64_t n = rem2 / M;
+                        const int64_t m = rem2 % M;
+
+                        const int64_t i03 = i3 / r3, i02 = i2 / r2;
+                        const int64_t i13 = (ne13 > 1) ? i3 : 0, i12 = (ne12 > 1) ? i2 : 0;
+
+                        float sum = 0.0f;
+                        const uint16_t* f16_row = (const uint16_t*)((const char*)src0_data + m * nb01 + i02 * nb02 + i03 * nb03);
+
+                        // Process full blocks using vectorized F16 dot product
+                        for (int64_t kb = 0; kb < K_blocks; kb++) {
+                            const float* b_col_ptr = (const float*)((const char*)src1_data + (kb * block_size) * sizeof(float) + n * nb11 + i12 * nb12 + i13 * nb13);
+                            sum += compute_block_dot_product_f16_naive(&f16_row[kb * block_size], b_col_ptr);
+                        }
+
+                        // Handle partial remainder
+                        if (K_remainder > 0) {
+                            const int64_t offset = K_blocks * block_size;
+                            const float* b_col_ptr = (const float*)((const char*)src1_data + offset * sizeof(float) + n * nb11 + i12 * nb12 + i13 * nb13);
+                            sum += compute_block_dot_product_f16_partial(&f16_row[offset], b_col_ptr, K_remainder);
+                        }
+
+                        // Atomic store for output
+                        volatile float* c_element = (volatile float*)((char*)dst_data + m * nb0 + n * nb1 + i2 * nb2 + i3 * nb3);
+                        atomic_store_f32(c_element, sum);
+                    }
+                }
+                continue;
+
+            } else if (node_meta[i].dst.type == GGML_TYPE_F32 &&
+                        node_meta[i].src0.type == GGML_TYPE_F32 &&
+                        node_meta[i].src1.type == GGML_TYPE_F32 &&
+                        node_meta[i].src0.ne[0] % 16 == 0 &&
+                        node_meta[i].src0.ne[1] % 16 == 0 &&
+                        node_meta[i].src1.ne[0] != 1) { // GEMV is faster with the generic path
+                // F32 x F32 matrix multiplication with matrix engine
+                uint64_t local_minion = (thread_id >> 1) & 0x1F;
+                uint64_t my_minion_id = get_minion_id();
+
+                const int64_t K = node_meta[i].src0.ne[0];
+                const int64_t M = node_meta[i].src0.ne[1];
+                const int64_t N = node_meta[i].src1.ne[1];
+
+                // ne02, ne03, ne12, ne13 already defined above
+                // nb01, nb02, nb03, nb11, nb12, nb13, nb1, nb2, nb3 already defined above
+
+                const char* src0_base = (const char*)src0_data;
+                const char* src1_base = (const char*)src1_data;
+                char*       dst_base  = (char*)dst_data;
+
+                setup_cache_scp();
+            #if CACHEOP_MAX_TFMA_F32 > 0 || REP_RATE_TFMA_F32 > 0
+                ucache_control(1, REP_RATE_TFMA_F32, CACHEOP_MAX_TFMA_F32);
+            #endif
+                CLEAR_TENSOR_ERROR;
+
+                const int64_t m_tiles = M / TILE_M_TFMA_F32;
+                const int64_t n_tiles = (N + TILE_N_TFMA_F32 - 1) / TILE_N_TFMA_F32;
+                const int64_t batch_count = ne12 * ne13;
+                const int64_t base_tiles = m_tiles * n_tiles * batch_count;
+
+                const int64_t r2 = ne12 / ne02;
+                const int64_t r3 = ne13 / ne03;
+
+                const int64_t total_harts = NUM_COMPUTE_SHIRES * MINIONS_PER_SHIRE;
+                const int64_t k_steps = K / TILE_K_TFMA_F32;
+                int64_t k_splits = 1;
+                if (base_tiles < total_harts) {
+                    k_splits = (total_harts + base_tiles - 1) / base_tiles;
+                    int64_t ks = 1;
+                    while (ks * 2 <= k_splits && ks * 2 <= 32 && k_steps % (ks * 2) == 0) {
+                        ks *= 2;
+                    }
+                    k_splits = ks;
+                }
+
+                const int64_t tiles_per_shire = MINIONS_PER_SHIRE / k_splits;
+                const int64_t k_split = local_minion % k_splits;
+                const int64_t local_tile_idx = local_minion / k_splits;
+                const int64_t tiles_stride = (int64_t)NUM_COMPUTE_SHIRES * tiles_per_shire;
+
+                const int64_t k_steps_per_split = k_steps / k_splits;
+                const int64_t k_start = k_split * k_steps_per_split * TILE_K_TFMA_F32;
+                const int64_t k_end   = k_start + k_steps_per_split * TILE_K_TFMA_F32;
+
+                const uint64_t group_base_global = my_minion_id - k_split;
+
+                for (int64_t tile = (int64_t)shire_id + local_tile_idx * NUM_COMPUTE_SHIRES;
+                    tile < base_tiles;
+                    tile += tiles_stride) {
+
+                    const int64_t tiles_per_batch = m_tiles * n_tiles;
+                    const int64_t batch_idx     = tile / tiles_per_batch;
+                    const int64_t tile_in_batch = tile % tiles_per_batch;
+                    const int64_t nb_idx = tile_in_batch / m_tiles;
+                    const int64_t mb_idx = tile_in_batch % m_tiles;
+
+                    const int64_t i3   = batch_idx / ne12;
+                    const int64_t i2   = batch_idx % ne12;
+                    const int64_t i2_0 = i2 / r2;
+                    const int64_t i3_0 = i3 / r3;
+
+                    const char* src0_batch = src0_base + i3_0 * nb03 + i2_0 * nb02;
+                    const char* src1_batch = src1_base + i3   * nb13 + i2   * nb12;
+                    char*       dst_batch  = dst_base  + i3   * nb3  + i2   * nb2;
+
+                    const int64_t mb = mb_idx * TILE_M_TFMA_F32;
+                    const int64_t nb = nb_idx * TILE_N_TFMA_F32;
+                    const int64_t n_cur = (nb + TILE_N_TFMA_F32 <= N) ? TILE_N_TFMA_F32 : (N - nb);
+
+                    for (int64_t kb = k_start; kb < k_end; kb += TILE_K_TFMA_F32) {
+
+                        tensor_load(
+                            false, false, 0, 0, 0,
+                            (uint64_t)(src1_batch + nb * nb11 + kb * sizeof(float)),
+                            0, n_cur - 1, (uint64_t)nb11, 0
+                        );
+
+                        tensor_load(
+                            false, false, TILE_K_TFMA_F32, 7, 0,
+                            (uint64_t)(src0_batch + mb * nb01 + kb * sizeof(float)),
+                            0, TILE_K_TFMA_F32 - 1, (uint64_t)nb01, 1
+                        );
+
+                        tensor_wait(TENSOR_LOAD_WAIT_0);
+                        tensor_wait(TENSOR_LOAD_WAIT_1);
+
+                        tensor_fma(
+                            false, 3, n_cur - 1, TILE_K_TFMA_F32 - 1, 0,
+                            false, false, false, false,
+                            TILE_K_TFMA_F32, 0, 0,
+                            (kb == k_start)
+                        );
+
+                        tensor_wait(TENSOR_FMA_WAIT);
+                    }
+
+                    if (k_splits > 1) {
+                        const uint64_t num_regs = (uint64_t)n_cur * 2;
+
+                        if (k_split > 0) {
+                            tensor_reduce_recv(0, TENSOR_REDUCE_OP_FADD,
+                                            num_regs,
+                                            group_base_global + k_split - 1);
+                            tensor_wait(TENSOR_REDUCE_WAIT);
+                        }
+                        if (k_split < k_splits - 1) {
+                            tensor_reduce_send(0, num_regs,
+                                            group_base_global + k_split + 1);
+                            tensor_wait(TENSOR_REDUCE_WAIT);
+                        }
+                    }
+
+                    if (k_split == k_splits - 1) {
+                        tensor_store(
+                            0, 0, 3, n_cur - 1,
+                            (uint64_t)(dst_batch + nb * nb1 + mb * sizeof(float)),
+                            0, (uint64_t)nb1
+                        );
+                        tensor_wait(TENSOR_STORE_WAIT);
+                    }
+                }
+
+                FENCE;
+                
+                continue;
+            } else if (node_meta[i].dst.type == GGML_TYPE_F32 &&
+                    node_meta[i].src0.type == GGML_TYPE_F32 &&
+                    node_meta[i].src1.type == GGML_TYPE_F32) {
+                // F32 x F32 matrix multiplication
+                int effective_thread_id = thread_id / 2;
+                int effective_num_threads = (num_threads + 1) / 2;
+
+                // Use node_meta[i] for tensor metadata
+                const int64_t K = node_meta[i].src0.ne[0];
+                const int64_t M = node_meta[i].src0.ne[1];
+                const int64_t N = node_meta[i].src1.ne[1];
+
+                // ne02, ne03, ne12, ne13, ne2, ne3 already defined above
+                // nb01, nb02, nb03, nb11, nb12, nb13, nb1, nb2, nb3 already defined above
+                // src0_data, src1_data, dst_data already defined above
+
+                // F32 specific block size and counts
+                const int block_size = QK_F32;
+                const int64_t K_blocks = K / block_size;
+                const int64_t K_remainder = K % block_size;
+
+                // Threading distribution
+                const uint64_t total_elements = M * N * ne2 * ne3;
+                const uint64_t per_thread = 16;
+                const uint64_t threads_stride = per_thread * effective_num_threads;
+
+                if (effective_thread_id * per_thread >= total_elements) return 0;
+
+                // Broadcasting support
+                const int64_t r2 = ne12 / ne02;
+                const int64_t r3 = ne13 / ne03;
+
+                for (uint64_t base_idx = effective_thread_id * per_thread; base_idx < total_elements; base_idx += threads_stride) {
+                    for (uint64_t j = 0; j < per_thread; j++) {
+                        const uint64_t idx = base_idx + j;
+                        if (idx >= total_elements) break;
+
+                        // Index decoding
+                        const int64_t i3 = idx / (M * N * ne2);
+                        const int64_t rem3 = idx % (M * N * ne2);
+                        const int64_t i2 = rem3 / (M * N);
+                        const int64_t rem2 = rem3 % (M * N);
+                        const int64_t n = rem2 / M;
+                        const int64_t m = rem2 % M;
+
+                        const int64_t i03 = i3 / r3, i02 = i2 / r2;
+                        const int64_t i13 = (ne13 > 1) ? i3 : 0, i12 = (ne12 > 1) ? i2 : 0;
+
+                        float sum = 0.0f;
+                        const float* f32_row = (const float*)((const char*)src0_data + m * nb01 + i02 * nb02 + i03 * nb03);
+
+                        // Process full blocks
+                        for (int64_t kb = 0; kb < K_blocks; kb++) {
+                            const float* b_col_ptr = (const float*)((const char*)src1_data + (kb * block_size) * sizeof(float) + n * nb11 + i12 * nb12 + i13 * nb13);
+                            sum += compute_block_dot_product_f32(&f32_row[kb * block_size], b_col_ptr);
+                        }
+
+                        // Handle partial remainder
+                        if (K_remainder > 0) {
+                            const int64_t offset = K_blocks * block_size;
+                            const float* b_col_ptr = (const float*)((const char*)src1_data + offset * sizeof(float) + n * nb11 + i12 * nb12 + i13 * nb13);
+                            sum += compute_block_dot_product_f32_partial(&f32_row[offset], b_col_ptr, K_remainder);
+                        }
+
+                        // Atomic store for output
+                        volatile float* c_element = (volatile float*)((char*)dst_data + m * nb0 + n * nb1 + i2 * nb2 + i3 * nb3);
+                        atomic_store_f32(c_element, sum);
+                    }
+                }
+                
+                continue;
+            } else {
+                continue; // Unsupported type combination
+            }
             // ggml_et_op_mul_mat(env, &node_meta[i]);
         } else if (op == GGML_OP_ROPE) {
             // ggml_et_op_rope(env, &node_meta[i]);
