@@ -4729,34 +4729,29 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             const int64_t batch    = ne03;  // src0 batch
 
             // Extract rope parameters from op_params
-            int32_t n_past, n_dims, mode, n_ctx, n_ctx_orig;
-            float freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow;
-            int32_t sections[4];
+            int32_t rope_n_past, rope_n_dims, rope_mode, rope_n_ctx, rope_n_ctx_orig;
+            float rope_freq_base, rope_freq_scale, rope_ext_factor, rope_attn_factor, rope_beta_fast, rope_beta_slow;
+            int32_t rope_sections[4];
             
-            memcpy(&n_past,     &node_meta[i].op_params[0], sizeof(int32_t));
-            memcpy(&n_dims,     &node_meta[i].op_params[1], sizeof(int32_t));
-            memcpy(&mode,       &node_meta[i].op_params[2], sizeof(int32_t));
-            memcpy(&n_ctx,      &node_meta[i].op_params[3], sizeof(int32_t));
-            memcpy(&n_ctx_orig, &node_meta[i].op_params[4], sizeof(int32_t));
-            memcpy(&freq_base,  &node_meta[i].op_params[5], sizeof(float));
-            memcpy(&freq_scale, &node_meta[i].op_params[6], sizeof(float));
-            memcpy(&ext_factor, &node_meta[i].op_params[7], sizeof(float));
-            memcpy(&attn_factor, &node_meta[i].op_params[8], sizeof(float));
-            memcpy(&beta_fast,  &node_meta[i].op_params[9], sizeof(float));
-            memcpy(&beta_slow,  &node_meta[i].op_params[10], sizeof(float));
-            memcpy(&sections,   &node_meta[i].op_params[11], 4 * sizeof(int32_t));
-            
-            const int32_t rope_n_dims   = n_dims;
-            const float rope_freq_base  = freq_base;
-            const float rope_freq_scale = freq_scale;
-            const int32_t rope_mode     = mode;
+            memcpy(&rope_n_past,       &node_meta[i].op_params[0], sizeof(int32_t));
+            memcpy(&rope_n_dims,       &node_meta[i].op_params[1], sizeof(int32_t));
+            memcpy(&rope_mode,         &node_meta[i].op_params[2], sizeof(int32_t));
+            memcpy(&rope_n_ctx,        &node_meta[i].op_params[3], sizeof(int32_t));
+            memcpy(&rope_n_ctx_orig,   &node_meta[i].op_params[4], sizeof(int32_t));
+            memcpy(&rope_freq_base,    &node_meta[i].op_params[5], sizeof(float));
+            memcpy(&rope_freq_scale,   &node_meta[i].op_params[6], sizeof(float));
+            memcpy(&rope_ext_factor,   &node_meta[i].op_params[7], sizeof(float));
+            memcpy(&rope_attn_factor,  &node_meta[i].op_params[8], sizeof(float));
+            memcpy(&rope_beta_fast,    &node_meta[i].op_params[9], sizeof(float));
+            memcpy(&rope_beta_slow,    &node_meta[i].op_params[10], sizeof(float));
+            memcpy(&rope_sections,     &node_meta[i].op_params[11], 4 * sizeof(int32_t));
 
             if (rope_n_dims <= 0 || rope_n_dims > head_dim || (rope_n_dims & 1) != 0) {
-                return -1;
+                continue;
             }
 
             if (rope_n_dims / 2 > MAX_ROPE_HALF_DIMS) {
-                return -1;
+                continue;
             }
 
             float cos_cache[MAX_ROPE_HALF_DIMS];
@@ -4765,10 +4760,10 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             float corr_dims[2];
             rope_yarn_corr_dims(
                 rope_n_dims,
-                n_ctx_orig,
+                rope_n_ctx_orig,
                 rope_freq_base,
-                beta_fast,
-                beta_slow,
+                rope_beta_fast,
+                rope_beta_slow,
                 corr_dims
             );
 
@@ -4778,7 +4773,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             const int64_t end_wu   = (total_heads * (thread_id + 1)) / num_threads;
 
             if (start_wu >= end_wu) {
-                return 0;
+                continue;
             }
 
             const float theta_scale = et_powf(rope_freq_base, et_fdiv(-2.0f, (float)rope_n_dims));
@@ -4801,19 +4796,19 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 if (is_imrope) {
                     // IMROPE: src1 layout is [p_t(0..S-1), p_h(0..S-1), p_w(0..S-1), p_e(0..S-1)]
                     const int32_t* pos_data = (const int32_t*)src1_data;
-                    const int32_t pt = pos_data[s]              + n_past;
-                    const int32_t ph = pos_data[s + seq_len]    + n_past;
-                    const int32_t pw = pos_data[s + seq_len * 2] + n_past;
-                    const int32_t pe = pos_data[s + seq_len * 3] + n_past;
+                    const int32_t pt = pos_data[s]              + rope_n_past;
+                    const int32_t ph = pos_data[s + seq_len]    + rope_n_past;
+                    const int32_t pw = pos_data[s + seq_len * 2] + rope_n_past;
+                    const int32_t pe = pos_data[s + seq_len * 3] + rope_n_past;
 
                     if (pt != last_pos || ph != last_pos_h || pw != last_pos_w || pe != last_pos_e) {
                         compute_imrope_cache(
                             cos_cache, sin_cache,
                             rope_n_dims, theta_scale,
                             pt, ph, pw, pe,
-                            sections,
+                            rope_sections,
                             freq_factors, rope_freq_scale,
-                            corr_dims, ext_factor, attn_factor
+                            corr_dims, rope_ext_factor, rope_attn_factor
                         );
                         last_pos   = pt;
                         last_pos_h = ph;
@@ -4822,14 +4817,14 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     }
                 } else {
                     const int32_t* pos_data = (const int32_t*)src1_data;
-                    const int32_t pos = pos_data[s] + n_past;
+                    const int32_t pos = pos_data[s] + rope_n_past;
 
                     if (pos != last_pos) {
                         compute_rope_cache(
                             cos_cache, sin_cache,
                             rope_n_dims, theta_scale, pos,
                             freq_factors, rope_freq_scale,
-                            corr_dims, ext_factor, attn_factor
+                            corr_dims, rope_ext_factor, rope_attn_factor
                         );
                         last_pos = pos;
                     }
@@ -4889,6 +4884,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             }
             // ggml_et_op_rope(env, &node_meta[i]);
         } else if (op == GGML_OP_RMS_NORM) {
+            
             // ggml_et_op_rms_norm(env, &node_meta[i]);
         } else if (op == GGML_OP_SQR) {
             // ggml_et_op_sqr(env, &node_meta[i]);
