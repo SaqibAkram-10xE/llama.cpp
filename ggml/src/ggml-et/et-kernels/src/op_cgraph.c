@@ -3612,14 +3612,17 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             if (thread_id != 0) {
                 continue;
             }
-            
+
+            // Cache src0 type before inner loop to avoid shadowed-variable bug
+            const int src0_type = node_meta[i].src0.type;
+
             // XXX: Do we really need a single-threaded implementation?
-            for (int64_t i = 0; i < total_rows_to_extract; i++) {
+            for (int64_t ri = 0; ri < total_rows_to_extract; ri++) {
                 // Calculate multi-dimensional index for the current output position
-                const int64_t i13_idx = i / (ne12 * ne11 * ne10);
-                const int64_t i12_idx = (i - i13_idx * ne12 * ne11 * ne10) / (ne11 * ne10);
-                const int64_t i11_idx = (i - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10) / ne10;
-                const int64_t i10_idx = i - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10 - i11_idx * ne10;
+                const int64_t i13_idx = ri / (ne12 * ne11 * ne10);
+                const int64_t i12_idx = (ri - i13_idx * ne12 * ne11 * ne10) / (ne11 * ne10);
+                const int64_t i11_idx = (ri - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10) / ne10;
+                const int64_t i10_idx = ri - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10 - i11_idx * ne10;
 
                 // Get the row index from src1
                 const int64_t index_offset = i13_idx * ne12 * ne11 * ne10 +
@@ -3636,15 +3639,15 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                                             i12_idx * ne02 * ne01 * ne00 +
                                             i13_idx * ne03 * ne02 * ne01 * ne00;
 
-                const int64_t dst_offset = i;
+                const int64_t dst_offset = ri;
 
-                if (node_meta[i].src0.type == GGML_TYPE_F32) {
+                if (src0_type == GGML_TYPE_F32) {
                     // F32 source: direct copy
                     const float* src_row = (const float*)src0_data + row_index * ne00 + batch_offset;
                     float* dst_row = (float*)dst_data + dst_offset * ne00;
                     copy_f32_row(dst_row, src_row, ne00);
 
-                } else if (node_meta[i].src0.type == GGML_TYPE_Q8_0) {
+                } else if (src0_type == GGML_TYPE_Q8_0) {
                     // Q8_0 source: dequantize while copying
                     const int64_t blocks_per_row = (ne00 + QK8_0 - 1) / QK8_0;
                     const int64_t src_block_offset = (row_index * blocks_per_row) +
@@ -3652,7 +3655,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset;
                     float* dst_row = (float*)dst_data + dst_offset * ne00;
                     copy_q8_0_row(dst_row, src_blocks, ne00);
-                } else if (node_meta[i].src0.type == GGML_TYPE_Q4_0) {
+                } else if (src0_type == GGML_TYPE_Q4_0) {
                     // Q4_0 source: dequantize while copying
                     const int64_t blocks_per_row = (ne00 + QK4_0 - 1) / QK4_0;
                     const int64_t src_block_offset = (row_index * blocks_per_row) +
@@ -3660,7 +3663,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset;
                     float* dst_row = (float*)dst_data + dst_offset * ne00;
                     copy_q4_0_row(dst_row, src_blocks, ne00);
-                } else if (node_meta[i].src0.type == GGML_TYPE_Q4_K) {
+                } else if (src0_type == GGML_TYPE_Q4_K) {
                     // Q4_K source: dequantize while copying
                     const int64_t blocks_per_row = (ne00 + QK_K - 1) / QK_K;
                     const int64_t src_block_offset = (row_index * blocks_per_row) +
