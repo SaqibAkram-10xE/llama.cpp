@@ -4849,6 +4849,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     head_dst[d] = head_src[d];
                 }
 
+                
                 if (use_neox_rotation) {
                     // NEOX/IMROPE: pairs at (i, i+half_dims)
                     uint64_t temp_mask;
