@@ -3922,153 +3922,47 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     }
                 }
             } else if (node_meta[i].dst.type == GGML_TYPE_F16) {
-                // F16 CONT implementation - similar to F32 but with half-precision handling
-                const int64_t total_elements = ne00 * ne01 * ne02 * ne03;
-                if (total_elements == 0) {
-                    continue;
+                // F16 CONT implementation - based on cont_f16.c reference
+                const int64_t src_elements = ne00 * ne01 * ne02 * ne03;
+                const int64_t dst_elements = ne0 * ne1 * ne2 * ne3;
+                if (src_elements != dst_elements) {
+                    continue; // Element count mismatch
                 }
-                // Create a ggml_tensor structure for src0 to check contiguity
-                struct ggml_tensor src0_tensor = {
-                    .ne = {ne00, ne01, ne02, ne03},
-                    .nb = {nb00, nb01, nb02, nb03},
-                    .type = node_meta[i].src0.type,
-                    .data = src0_data
-                };
-                const bool src_contiguous = ggml_tensor_is_contiguous(&src0_tensor, 4);
-                //==========================================================================
-                // Fast path: src is contiguous: flat vectorized copy by cache lines
-                //==========================================================================
-                if (src_contiguous) {
-                    const int64_t elems_per_cl = 16;
-                    const int64_t total_cl = (total_elements + elems_per_cl - 1) / elems_per_cl;
 
-                    const int64_t cl_per_thread = (total_cl + num_threads - 1) / num_threads;
-                    const int64_t cl_start = thread_id * cl_per_thread;
-                    int64_t cl_end = cl_start + cl_per_thread;
-                    if (cl_end > total_cl) { cl_end = total_cl; }
-                    if (cl_start >= total_cl) { continue; }
+                // Parallelize by rows (dimension 1)
+                const int64_t total_rows = ne01;
+                const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
+                const int64_t start_row = thread_id * rows_per_thread;
+                const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
-                    const int64_t es = cl_start * elems_per_cl;
-                    int64_t ee = cl_end * elems_per_cl;
-                    if (ee > total_elements) { ee = total_elements; }
-
-                    // Copy F16 elements directly
-                    for (int64_t i = es; i < ee; i++) {
-                        ((uint16_t*)dst_data)[i] = ((const uint16_t*)src0_data)[i];
-                    }
+                if (start_row >= total_rows) {
                     continue;
                 }
 
-                //==========================================================================
-                // Non-contiguous paths: require nb00==2 (dim 0 contiguous in src for F16)
-                //==========================================================================
-                if (nb00 != 2) {
-                    // Fully non-contiguous scalar fallback — distribute by cache lines
-                    const int64_t elems_per_cl = 16;
-                    const int64_t total_cl = (total_elements + elems_per_cl - 1) / elems_per_cl;
+                // Iterate over source tensor dimensions
+                for (int64_t i03 = 0; i03 < ne03; i03++) {
+                    for (int64_t i02 = 0; i02 < ne02; i02++) {
+                        // Calculate base linear index for this (i03, i02) slice in destination
+                        const int64_t dst_linear_base = i03 * ne02 * ne01 * ne00 + i02 * ne01 * ne00;
 
-                    const int64_t cl_per_thread = (total_cl + num_threads - 1) / num_threads;
-                    const int64_t cl_start = thread_id * cl_per_thread;
-                    int64_t cl_end = cl_start + cl_per_thread;
-                    if (cl_end > total_cl) { cl_end = total_cl; }
-                    if (cl_start >= total_cl) { continue; }
+                        // Process this thread's assigned rows
+                        for (int64_t i01 = start_row; i01 < end_row; i01++) {
+                            // Linear index for start of this row in destination
+                            const int64_t dst_linear_row_base = dst_linear_base + i01 * ne00;
 
-                    const int64_t es = cl_start * elems_per_cl;
-                    int64_t ee = cl_end * elems_per_cl;
-                    if (ee > total_elements) { ee = total_elements; }
+                            // Inner loop over dimension 0
+                            for (int64_t i00 = 0; i00 < ne00; i00++) {
+                                // Source offset using non-contiguous strides
+                                const int64_t src_offset_bytes = i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03;
+                                const uint16_t* src_ptr = (const uint16_t*)((const char*)src0_data + src_offset_bytes);
 
-                    for (int64_t idx = es; idx < ee; idx++) {
-                        const int64_t i00 = idx % ne00;
-                        const int64_t rem1 = idx / ne00;
-                        const int64_t i01 = rem1 % ne01;
-                        const int64_t rem2 = rem1 / ne01;
-                        const int64_t i02 = rem2 % ne02;
-                        const int64_t i03 = rem2 / ne02;
+                                // Destination linear index (contiguous layout)
+                                const int64_t dst_linear_idx = dst_linear_row_base + i00;
 
-                        const uint16_t* sp = (const uint16_t*)((const char*)src0_data +
-                                        i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
-                        ((uint16_t*)dst_data)[idx] = *sp;
-                    }
-                    continue;
-                }
-
-                // nb00 == 2 from here: dim 0 is contiguous in src for F16
-
-                //==========================================================================
-                // Aligned path: ne00 % 16 == 0: rows are cache-line aligned, distribute rows
-                //==========================================================================
-                if (ne00 % 16 == 0) {
-                    const int64_t total_rows = ne01 * ne02 * ne03;
-                    const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
-                    const int64_t start_row = thread_id * rows_per_thread;
-                    const int64_t end_row = (start_row + rows_per_thread < total_rows)
-                                        ? (start_row + rows_per_thread) : total_rows;
-
-                    if (start_row >= total_rows) { continue; }
-
-                    for (int64_t ir = start_row; ir < end_row; ir++) {
-                        const int64_t i03 = ir / (ne02 * ne01);
-                        const int64_t i02 = (ir - i03 * ne02 * ne01) / ne01;
-                        const int64_t i01 = ir - i03 * ne02 * ne01 - i02 * ne01;
-
-                        const uint16_t* src_row = (const uint16_t*)((const char*)src0_data +
-                                            i01*nb01 + i02*nb02 + i03*nb03);
-                        uint16_t* dst_row = (uint16_t*)((char*)dst_data + ir * ne00 * sizeof(uint16_t));
-
-                        // Copy row elements
-                        for (int64_t i = 0; i < ne00; i++) {
-                            dst_row[i] = src_row[i];
+                                // Use atomic store for thread safety
+                                atomic_store_f16((volatile uint16_t*)((char*)dst_data + dst_linear_idx * sizeof(uint16_t)), *src_ptr);
+                            }
                         }
-                    }
-                    continue;
-                }
-
-                //==========================================================================
-                // Unaligned path: ne00 % 16 != 0, nb00 == 2
-                // Distribute cache-line-aligned chunks of dst, handle partial rows at edges
-                //==========================================================================
-                {
-                    const int64_t elems_per_cl = 16;
-                    const int64_t total_cl = (total_elements + elems_per_cl - 1) / elems_per_cl;
-
-                    const int64_t cl_per_thread = (total_cl + num_threads - 1) / num_threads;
-                    const int64_t cl_start = thread_id * cl_per_thread;
-                    int64_t cl_end = cl_start + cl_per_thread;
-                    if (cl_end > total_cl) { cl_end = total_cl; }
-                    if (cl_start >= total_cl) { continue; }
-
-                    const int64_t es = cl_start * elems_per_cl;
-                    int64_t ee = cl_end * elems_per_cl;
-                    if (ee > total_elements) { ee = total_elements; }
-
-                    int64_t pos = es;
-
-                    // Compute starting row coordinates
-                    int64_t row_idx = pos / ne00;
-                    int64_t col     = pos % ne00;
-
-                    while (pos < ee) {
-                        // Decompose row_idx -> (i01, i02, i03)
-                        const int64_t i03 = row_idx / (ne02 * ne01);
-                        const int64_t i02 = (row_idx - i03 * ne02 * ne01) / ne01;
-                        const int64_t i01 = row_idx - i03 * ne02 * ne01 - i02 * ne01;
-
-                        const uint16_t* src_row = (const uint16_t*)((const char*)src0_data +
-                                            i01*nb01 + i02*nb02 + i03*nb03);
-
-                        // How many elements left in this row and in our chunk
-                        int64_t row_remaining = ne00 - col;
-                        int64_t chunk_remaining = ee - pos;
-                        int32_t n = (int32_t)(row_remaining < chunk_remaining ? row_remaining : chunk_remaining);
-
-                        // Copy elements
-                        for (int32_t i = 0; i < n; i++) {
-                            ((uint16_t*)((char*)dst_data + pos * sizeof(uint16_t)))[i] = src_row[col + i];
-                        }
-
-                        pos += n;
-                        col = 0;  // subsequent rows start at column 0
-                        row_idx++;
                     }
                 }
             } else {
