@@ -4718,6 +4718,12 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             // ggml_et_op_mul_mat(env, &node_meta[i]);
         } else if (op == GGML_OP_ROPE) {
             const float* freq_factors = (node_meta[i].src2.data) ? (const float*)src2_data : NULL;
+            
+            if ((node_meta[i].src0.type != GGML_TYPE_F32) || 
+                (node_meta[i].src1.type != GGML_TYPE_I32) ||
+                (node_meta[i].dst.type != GGML_TYPE_F32)){
+                continue; // Only support F32 for now
+            }
 
             if (!src0_data || !src1_data || !dst_data) {
                 continue;
@@ -4745,7 +4751,9 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             memcpy(&rope_beta_fast,    &node_meta[i].op_params[9], sizeof(float));
             memcpy(&rope_beta_slow,    &node_meta[i].op_params[10], sizeof(float));
             memcpy(&rope_sections,     &node_meta[i].op_params[11], 4 * sizeof(int32_t));
-
+            for (int j = 0; j < 4; j++) {
+                memcpy(&rope_sections[j], &node_meta[i].op_params[11 + j], sizeof(int32_t));
+            }
             if (rope_n_dims <= 0 || rope_n_dims > head_dim || (rope_n_dims & 1) != 0) {
                 continue;
             }
@@ -4884,7 +4892,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             }
             // ggml_et_op_rope(env, &node_meta[i]);
         } else if (op == GGML_OP_RMS_NORM) {
-            
+
             // ggml_et_op_rms_norm(env, &node_meta[i]);
         } else if (op == GGML_OP_SQR) {
             // ggml_et_op_sqr(env, &node_meta[i]);
