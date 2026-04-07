@@ -1800,6 +1800,144 @@ int rope_f32_impl(struct ggml_et_rope_params* params, void* env) {
 
     return 0;
 }
+
+#define GGML_ROPE_TYPE_NEOX_CG   2
+#define GGML_ROPE_TYPE_MROPE_CG  8
+#define GGML_ROPE_TYPE_IMROPE_CG 40
+
+static void ggml_et_op_rope(void * env, struct ggml_node_meta_et * m) {
+    int tid, nth;
+    if (cg_thread_setup(env, &tid, &nth)) return;
+
+    const float * src0_data   = (const float *)(uintptr_t)m->src0.data;
+    const int32_t * src1_data = (const int32_t *)(uintptr_t)m->src1.data;
+    const float * freq_factors = m->src2.data ? (const float *)(uintptr_t)m->src2.data : 0;
+    float * dst_data          = (float *)(uintptr_t)m->dst.data;
+    if (!src0_data || !src1_data || !dst_data) return;
+
+    const int64_t head_dim = m->src0.ne[0];
+    const int64_t heads    = m->src0.ne[1];
+    const int64_t seq_len  = m->src0.ne[2];
+    const int64_t batch    = m->src0.ne[3];
+
+    int32_t n_past     = m->op_params[0];
+    int32_t n_dims     = m->op_params[1];
+    int32_t mode       = m->op_params[2];
+    float freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow;
+    int32_t n_ctx_orig = m->op_params[4];
+    memcpy(&freq_base,   &m->op_params[5],  sizeof(float));
+    memcpy(&freq_scale,  &m->op_params[6],  sizeof(float));
+    memcpy(&ext_factor,  &m->op_params[7],  sizeof(float));
+    memcpy(&attn_factor, &m->op_params[8],  sizeof(float));
+    memcpy(&beta_fast,   &m->op_params[9],  sizeof(float));
+    memcpy(&beta_slow,   &m->op_params[10], sizeof(float));
+
+    if (n_dims <= 0 || n_dims > head_dim) return;
+
+    const float theta_scale = et_powf(freq_base, et_fdiv(-2.0f, (float)n_dims));
+    const int32_t half_dims = n_dims / 2;
+    const int is_neox = (mode & GGML_ROPE_TYPE_NEOX_CG) != 0;
+
+    // YaRN correction dimensions
+    float corr_dims[2] = {0.0f, 0.0f};
+    if (n_ctx_orig > 0 && beta_fast > 0.0f) {
+        float cd_s = (float)n_dims * et_fdiv(et_logf(et_fdiv((float)n_ctx_orig, freq_base)), et_logf(beta_fast) * 2.0f);
+        float cd_e = (float)n_dims * et_fdiv(et_logf(et_fdiv((float)n_ctx_orig, freq_base)), et_logf(beta_slow) * 2.0f);
+        corr_dims[0] = cd_s > 0.0f ? cd_s : 0.0f;
+        corr_dims[1] = cd_e < (float)(n_dims - 1) ? cd_e : (float)(n_dims - 1);
+    }
+
+    const int64_t total_heads = batch * seq_len * heads;
+
+    for (int64_t wu = tid; wu < total_heads; wu += nth) {
+        const int64_t h = wu % heads;
+        const int64_t s = (wu / heads) % seq_len;
+        const int64_t b = wu / (heads * seq_len);
+
+        const int32_t pos = src1_data[s] + n_past;
+
+        const float * head_src = (const float *)((const char *)src0_data +
+            b * (size_t)m->src0.nb[3] + s * (size_t)m->src0.nb[2] + h * (size_t)m->src0.nb[1]);
+        float * head_dst = (float *)((char *)dst_data +
+            b * (size_t)m->dst.nb[3] + s * (size_t)m->dst.nb[2] + h * (size_t)m->dst.nb[1]);
+
+        // Copy dims beyond n_dims
+        for (int64_t d = n_dims; d < head_dim; d++) {
+            head_dst[d] = head_src[d];
+        }
+
+        // Build cache and apply rotation
+        float theta = 1.0f;
+        if (is_neox) {
+            for (int32_t di = 0; di < half_dims; di++) {
+                const float ff = freq_factors ? freq_factors[di] : 1.0f;
+                const float theta_base = (float)pos * theta;
+                float theta_ext = et_fdiv(theta_base, ff);
+                float theta_interp = freq_scale * theta_ext;
+                float theta_final = theta_interp;
+
+                if (ext_factor != 0.0f) {
+                    float denom = corr_dims[1] - corr_dims[0];
+                    if (denom < 0.001f) denom = 0.001f;
+                    float y = et_fdiv((float)(di) - corr_dims[0], denom);
+                    float clamped = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
+                    float ramp = (1.0f - clamped) * ext_factor;
+                    theta_final = theta_interp * (1.0f - ramp) + theta_ext * ramp;
+                }
+
+                float mscale = attn_factor;
+                if (ext_factor != 0.0f) {
+                    mscale *= 1.0f + 0.1f * et_logf(et_fdiv(1.0f, freq_scale));
+                }
+
+                float cos_t = et_cosf(theta_final) * mscale;
+                float sin_t = et_sinf(theta_final) * mscale;
+
+                float x0 = head_src[di];
+                float x1 = head_src[di + half_dims];
+                head_dst[di]             = x0 * cos_t - x1 * sin_t;
+                head_dst[di + half_dims] = x0 * sin_t + x1 * cos_t;
+
+                theta *= theta_scale;
+            }
+        } else {
+            // Standard adjacent-pair rotation
+            for (int32_t di = 0; di < half_dims; di++) {
+                const float ff = freq_factors ? freq_factors[di] : 1.0f;
+                const float theta_base = (float)pos * theta;
+                float theta_ext = et_fdiv(theta_base, ff);
+                float theta_interp = freq_scale * theta_ext;
+                float theta_final = theta_interp;
+
+                if (ext_factor != 0.0f) {
+                    float denom = corr_dims[1] - corr_dims[0];
+                    if (denom < 0.001f) denom = 0.001f;
+                    float y = et_fdiv((float)(di) - corr_dims[0], denom);
+                    float clamped = y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y);
+                    float ramp = (1.0f - clamped) * ext_factor;
+                    theta_final = theta_interp * (1.0f - ramp) + theta_ext * ramp;
+                }
+
+                float mscale = attn_factor;
+                if (ext_factor != 0.0f) {
+                    mscale *= 1.0f + 0.1f * et_logf(et_fdiv(1.0f, freq_scale));
+                }
+
+                float cos_t = et_cosf(theta_final) * mscale;
+                float sin_t = et_sinf(theta_final) * mscale;
+
+                int32_t d = di * 2;
+                float x0 = head_src[d];
+                float x1 = head_src[d + 1];
+                head_dst[d]     = x0 * cos_t - x1 * sin_t;
+                head_dst[d + 1] = x0 * sin_t + x1 * cos_t;
+
+                theta *= theta_scale;
+            }
+        }
+    }
+}
+
 //------------------------------------------------------------------------------
 // Cache build
 //------------------------------------------------------------------------------
@@ -3388,10 +3526,10 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
         void * src2_data = (void *)(uintptr_t)node_meta[i].src2.data;
         void * dst_data  = (void *)(uintptr_t)node_meta[i].dst.data;
 
-        // Basic null pointer checks
-        if (!src0_data || !dst_data) {
-            continue;
-        }
+        // // Basic null pointer checks
+        // if (!src0_data || !dst_data) {
+        //     continue;
+        // }
 
         const int64_t ne0 = node_meta[i].dst.ne[0], ne1 = node_meta[i].dst.ne[1];
         const int64_t ne2 = node_meta[i].dst.ne[2], ne3 = node_meta[i].dst.ne[3];
@@ -3537,7 +3675,8 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             
             } // end of else block for slow path
         
-        } else if (op == GGML_OP_GLU) {
+        
+        }else if (op == GGML_OP_GLU) {
             if (!src0_data || !dst_data) continue;
             const bool is_split_mode = node_meta[i].src1.data != 0;
             if ((node_meta[i].src0.type != GGML_TYPE_F32) || 
@@ -4007,6 +4146,12 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             // flash_attn_ext(env, &node_meta[i]);
         } else if (op == GGML_OP_GET_ROWS) {
             
+            // Basic null pointer checks
+            if (!src0_data || !dst_data) {
+                continue;
+            }
+
+            // Basic type checks
             if((node_meta[i].src0.type == GGML_TYPE_F32 || node_meta[i].src0.type == GGML_TYPE_Q8_0 || node_meta[i].src0.type == GGML_TYPE_Q4_0 || node_meta[i].src0.type == GGML_TYPE_Q4_K) && node_meta[i].src1.type == GGML_TYPE_I32 && node_meta[i].dst.type == GGML_TYPE_F32
                 && node_meta[i].dst.ne[0] % CACHE_ELEMENTS(sizeof(float)) == 0) {
                 struct ggml_et_get_rows_params params;
@@ -4917,30 +5062,31 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             // ggml_et_op_mul_mat(env, &node_meta[i]);
         } else if (op == GGML_OP_ROPE) {
 
-            struct ggml_et_rope_params params;
-            convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
-            convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-            convert_to_ggml_tensor(&params.src2, &node_meta[i].src2, GGML_OP_NONE);
-            convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_ROPE);
-            memcpy(&params.rope_params.n_past, &node_meta[i].op_params[0], sizeof(int32_t));
-            memcpy(&params.rope_params.n_dims, &node_meta[i].op_params[1], sizeof(int32_t));
-            memcpy(&params.rope_params.mode, &node_meta[i].op_params[2], sizeof(int32_t));
-            memcpy(&params.rope_params.n_ctx, &node_meta[i].op_params[3], sizeof(int32_t));
-            memcpy(&params.rope_params.n_ctx_orig, &node_meta[i].op_params[4], sizeof(int32_t));
-            memcpy(&params.rope_params.freq_base, &node_meta[i].op_params[5], sizeof(float));
-            memcpy(&params.rope_params.freq_scale, &node_meta[i].op_params[6], sizeof(float));
-            memcpy(&params.rope_params.ext_factor, &node_meta[i].op_params[7], sizeof(float));
-            memcpy(&params.rope_params.attn_factor, &node_meta[i].op_params[8], sizeof(float));
-            memcpy(&params.rope_params.beta_fast, &node_meta[i].op_params[9], sizeof(float));
-            memcpy(&params.rope_params.beta_slow, &node_meta[i].op_params[10], sizeof(float));
-            for (int j = 0; j < 4; j++) {
-                memcpy(&params.rope_params.sections[j], &node_meta[i].op_params[11 + j], sizeof(int32_t));
-            }
-            if (params.dst.type == GGML_TYPE_F32 &&
-                params.src0.type == GGML_TYPE_F32 &&
-                params.src1.type == GGML_TYPE_I32) {
-                rope_f32_impl(&params, env);
-            }
+            // struct ggml_et_rope_params params;
+            // convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+            // convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+            // convert_to_ggml_tensor(&params.src2, &node_meta[i].src2, GGML_OP_NONE);
+            // convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_ROPE);
+            // memcpy(&params.rope_params.n_past, &node_meta[i].op_params[0], sizeof(int32_t));
+            // memcpy(&params.rope_params.n_dims, &node_meta[i].op_params[1], sizeof(int32_t));
+            // memcpy(&params.rope_params.mode, &node_meta[i].op_params[2], sizeof(int32_t));
+            // memcpy(&params.rope_params.n_ctx, &node_meta[i].op_params[3], sizeof(int32_t));
+            // memcpy(&params.rope_params.n_ctx_orig, &node_meta[i].op_params[4], sizeof(int32_t));
+            // memcpy(&params.rope_params.freq_base, &node_meta[i].op_params[5], sizeof(float));
+            // memcpy(&params.rope_params.freq_scale, &node_meta[i].op_params[6], sizeof(float));
+            // memcpy(&params.rope_params.ext_factor, &node_meta[i].op_params[7], sizeof(float));
+            // memcpy(&params.rope_params.attn_factor, &node_meta[i].op_params[8], sizeof(float));
+            // memcpy(&params.rope_params.beta_fast, &node_meta[i].op_params[9], sizeof(float));
+            // memcpy(&params.rope_params.beta_slow, &node_meta[i].op_params[10], sizeof(float));
+            // for (int j = 0; j < 4; j++) {
+            //     memcpy(&params.rope_params.sections[j], &node_meta[i].op_params[11 + j], sizeof(int32_t));
+            // }
+            // if (params.dst.type == GGML_TYPE_F32 &&
+            //     params.src0.type == GGML_TYPE_F32 &&
+            //     params.src1.type == GGML_TYPE_I32) {
+            //     rope_f32_impl(&params, env);
+            // }
+            ggml_et_op_rope(env, &node_meta[i]);
 
             // ggml_et_op_rope(env, &node_meta[i]);
         } else if (op == GGML_OP_RMS_NORM) {
@@ -5173,7 +5319,8 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             ggml_et_op_diag(env, &node_meta[i]);
         } else if (op == GGML_OP_RESHAPE || op == GGML_OP_VIEW || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE) {
             // No-op operations
-        } else {
+        }
+        else {
                 return -1;
         }
 
