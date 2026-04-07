@@ -3549,7 +3549,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
         const size_t nb22 = (size_t)node_meta[i].src2.nb[2], nb23 = (size_t)node_meta[i].src2.nb[3];
         
         // device_barrier(32);
-
+        FENCE;
         if(op == GGML_OP_ADD || op == GGML_OP_MUL || op == GGML_OP_SUB) {
             if (!src0_data || !src1_data || !dst_data) {
                 continue;
@@ -3676,7 +3676,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             } // end of else block for slow path
         
         
-        }else if (op == GGML_OP_GLU) {
+        } else if (op == GGML_OP_GLU) {
             if (!src0_data || !dst_data) continue;
             const bool is_split_mode = node_meta[i].src1.data != 0;
             if ((node_meta[i].src0.type != GGML_TYPE_F32) || 
@@ -3941,7 +3941,8 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 compute_softmax_row(dst_row, src_row, mask_row, (int)ne00, scale, slope, sink_value, use_sinks);
             }
         } else if (op == GGML_OP_FLASH_ATTN_EXT) {
-                if (node_meta[i].dst.type != GGML_TYPE_F32 || node_meta[i].src0.type != GGML_TYPE_F32) {
+                /*
+            if (node_meta[i].dst.type != GGML_TYPE_F32 || node_meta[i].src0.type != GGML_TYPE_F32) {
                     continue;
                 }
                 // K and V can be F16 or F32
@@ -4144,6 +4145,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                         }
                     }
             // flash_attn_ext(env, &node_meta[i]);
+            */
         } else if (op == GGML_OP_GET_ROWS) {
             
             // Basic null pointer checks
@@ -4154,11 +4156,101 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             // Basic type checks
             if((node_meta[i].src0.type == GGML_TYPE_F32 || node_meta[i].src0.type == GGML_TYPE_Q8_0 || node_meta[i].src0.type == GGML_TYPE_Q4_0 || node_meta[i].src0.type == GGML_TYPE_Q4_K) && node_meta[i].src1.type == GGML_TYPE_I32 && node_meta[i].dst.type == GGML_TYPE_F32
                 && node_meta[i].dst.ne[0] % CACHE_ELEMENTS(sizeof(float)) == 0) {
-                struct ggml_et_get_rows_params params;
-                convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
-                convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-                convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
-                get_row_f32_mc_cacheline_aligned(&params, env);
+                // struct ggml_et_get_rows_params params;
+                // convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                // convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                // convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
+
+                // get_row_f32_mc_cacheline_aligned(&params, env);
+                const int64_t total_rows_to_extract = node_meta[i].src1.ne[0] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[2] * node_meta[i].src1.ne[3];
+                // Determine work unit size based on source type
+                const int64_t elements_per_wu = get_elements_per_work_unit(node_meta[i].src0.type);
+                const int64_t wus_per_row = node_meta[i].src0.ne[0] / elements_per_wu;
+                const int64_t total_wus = total_rows_to_extract * wus_per_row;
+
+                // Distribute work units across threads (contiguous ranges)
+                const int64_t wus_per_thread = (total_wus + num_threads - 1) / num_threads;
+                const int64_t wu_start = thread_id * wus_per_thread;
+                int64_t wu_end = wu_start + wus_per_thread;
+                if (wu_end > total_wus) wu_end = total_wus;
+
+                // src0_data, src1_data, dst_data already defined above
+                int32_t* src1_data_i32 = (int32_t*)src1_data;
+                float* dst_data_f32 = (float*)dst_data;
+
+                int64_t wu = wu_start;
+                while (wu < wu_end) {
+                    // Determine which row this work unit belongs to and offset within row
+                    const int64_t row_idx = wu / wus_per_row;
+                    const int64_t wu_in_row = wu % wus_per_row;
+
+                    // How many work units to process in this row (batch contiguous WUs in same row)
+                    int64_t wus_remaining_in_row = wus_per_row - wu_in_row;
+                    int64_t wus_to_process = wu_end - wu;
+                    if (wus_remaining_in_row < wus_to_process) wus_to_process = wus_remaining_in_row;
+
+                    // Calculate multi-dimensional index for this row
+                    const int64_t i = row_idx;
+                    const int64_t i13_idx = i / (node_meta[i].src1.ne[2] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0]);
+                    const int64_t i12_idx = (i - i13_idx * node_meta[i].src1.ne[2] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0]) / (node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0]);
+                    const int64_t i11_idx = (i - i13_idx * node_meta[i].src1.ne[2] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0] - i12_idx * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0]) / node_meta[i].src1.ne[0];
+                    const int64_t i10_idx = i - i13_idx * node_meta[i].src1.ne[2] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0] - i12_idx * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0] - i11_idx * node_meta[i].src1.ne[0];
+
+                    // Get the row index from src1
+                    const int64_t index_offset = i13_idx * node_meta[i].src1.ne[2] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0] +
+                                                i12_idx * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0] +
+                                                i11_idx * node_meta[i].src1.ne[0] +
+                                                i10_idx;
+                    const int32_t row_index = src1_data_i32[index_offset];
+
+                    if (row_index < 0 || row_index >= node_meta[i].src0.ne[1]) {
+                        return -1; // Index out of bounds
+                    }
+
+                    const int64_t batch_offset = i11_idx * node_meta[i].src0.ne[1] * node_meta[i].src0.ne[0] +
+                                                i12_idx * node_meta[i].src0.ne[2] * node_meta[i].src0.ne[1] * node_meta[i].src0.ne[0] +
+                                                i13_idx * node_meta[i].src0.ne[3] * node_meta[i].src0.ne[2] * node_meta[i].src0.ne[1] * node_meta[i].src0.ne[0];
+
+                    const int64_t elem_offset_in_row = wu_in_row * elements_per_wu;
+                    const int64_t num_elements = wus_to_process * elements_per_wu;
+
+                    float* dst_row = dst_data_f32 + row_idx * node_meta[i].src0.ne[0] + elem_offset_in_row;
+
+                    if (node_meta[i].src0.type == GGML_TYPE_F32) {
+                        // F32 source: direct copy of cacheline-aligned chunk
+                        const float* src_row = (const float*)src0_data + row_index * node_meta[i].src0.ne[0] + batch_offset + elem_offset_in_row;
+                        copy_row_cache_align(dst_row, src_row, num_elements * sizeof(float));
+                    }
+                    else if (node_meta[i].src0.type == GGML_TYPE_Q8_0) {
+                        // Q8_0 source: dequantize work-unit-aligned blocks
+                        const int64_t blocks_per_row = (node_meta[i].src0.ne[0] + QK8_0 - 1) / QK8_0;
+                        const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                                    (batch_offset / node_meta[i].src0.ne[0]) * blocks_per_row;
+                        const int64_t block_start = elem_offset_in_row / QK8_0;
+                        const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset + block_start;
+                        copy_q8_0_row_cache_aligned(dst_row, src_blocks, num_elements);
+                    }
+                    else if (node_meta[i].src0.type == GGML_TYPE_Q4_0) {
+                        // Q4_0 source: dequantize work-unit-aligned blocks
+                        const int64_t blocks_per_row = (node_meta[i].src0.ne[0] + QK4_0 - 1) / QK4_0;
+                        const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                                    (batch_offset / node_meta[i].src0.ne[0]) * blocks_per_row;
+                        const int64_t block_start = elem_offset_in_row / QK4_0;
+                        const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset + block_start;
+                        copy_q4_0_row_cache_aligned(dst_row, src_blocks, num_elements);
+                    }
+                    else if (node_meta[i].src0.type == GGML_TYPE_Q4_K) {
+                        // Q4_K source: dequantize work-unit-aligned blocks
+                        const int64_t blocks_per_row = (node_meta[i].src0.ne[0] + QK_K - 1) / QK_K;
+                        const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                                    (batch_offset / node_meta[i].src0.ne[0]) * blocks_per_row;
+                        const int64_t block_start = elem_offset_in_row / QK_K;
+                        const block_q4_K* src_blocks = (const block_q4_K*)src0_data + src_block_offset + block_start;
+                        copy_q4_K_row_cache_aligned(dst_row, src_blocks, num_elements);
+                    }
+
+                    wu += wus_to_process;
+                }
                 continue;
             }
             
@@ -4230,6 +4322,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     copy_q4_K_row(dst_row, src_blocks, ne00);
                 }
             }
+
         } else if (op == GGML_OP_SET_ROWS) {
             if (node_meta[i].src0.type == GGML_TYPE_F32 &&
                 node_meta[i].src1.type == GGML_TYPE_I64 &&
@@ -4334,6 +4427,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 }
 
             }
+            
         } else if (op == GGML_OP_CONT) {
             if (node_meta[i].dst.type != node_meta[i].src0.type) {
                 continue;
