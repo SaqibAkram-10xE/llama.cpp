@@ -3549,20 +3549,26 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
         const size_t nb22 = (size_t)node_meta[i].src2.nb[2], nb23 = (size_t)node_meta[i].src2.nb[3];
         
         // device_barrier(32);
-        FENCE;
-        if(op == GGML_OP_ADD || op == GGML_OP_MUL || op == GGML_OP_SUB) {
+        // FENCE;
+      
+        
+        switch (op) {
+        case GGML_OP_ADD:
+        case GGML_OP_MUL:
+        case GGML_OP_SUB: {
+
             if (!src0_data || !src1_data || !dst_data) {
-                continue;
+                break;
             } 
             if ((node_meta[i].src0.type != GGML_TYPE_F32) || 
                 (node_meta[i].src1.type != GGML_TYPE_F32) ||
                 (node_meta[i].dst.type != GGML_TYPE_F32)){
-                continue; // Only support F32 for now
+                break; // Only support F32 for now
             }
             const size_t elem_size = 4; // F32
             const bool cache_aligned = (ne0 % 16 == 0);
             if(!cache_aligned) {
-                continue;
+                break;
             }
 
             // Fast path: no broadcasting, contiguous
@@ -3582,7 +3588,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
                 if (cl_start >= total_cachelines) {
                     // et_printf("CACHE LINES PASSED\n");
-                    continue;
+                    break;
                 }
 
                 const int64_t elem_start = cl_start * elements_per_cacheline;
@@ -3613,7 +3619,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
                 if (start_row >= total_rows) {
-                    continue;
+                    break;
                 }
 
                 for (int64_t ir = start_row; ir < end_row; ir++) {
@@ -3674,15 +3680,15 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 }
             
             } // end of else block for slow path
-        
-        
-        } else if (op == GGML_OP_GLU) {
-            if (!src0_data || !dst_data) continue;
+            break;
+            }
+            case GGML_OP_GLU: {
+            if (!src0_data || !dst_data) break;
             const bool is_split_mode = node_meta[i].src1.data != 0;
             if ((node_meta[i].src0.type != GGML_TYPE_F32) || 
                 ((is_split_mode) && (node_meta[i].src1.type != GGML_TYPE_F32)) ||
                 (node_meta[i].dst.type != GGML_TYPE_F32)){
-                continue; // Only support F32 for now
+                break; // Only support F32 for now
             }
             const int32_t glu_op_type;         // GLU operation type (REGLU=0, GEGLU=1, SWIGLU=2, etc.)
             const int32_t swapped;             // Whether gate and value are swapped
@@ -3703,12 +3709,12 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             if (is_split_mode) {
                 // Split tensor mode: src0 and src1 should have same shape as dst
                 if (node_meta[i].src0.ne[0] != nc || ne10 != nc) {
-                    return -1; // Dimension mismatch in split mode
+                    break; // Dimension mismatch in split mode
                 }
             } else {
                 // Single tensor mode: src0 should have 2*nc columns
                 if (node_meta[i].src0.ne[0] != 2 * nc) {
-                    return -1; // Dimension mismatch in single tensor mode
+                    break; // Dimension mismatch in single tensor mode
                 }
             }
 
@@ -3729,7 +3735,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
             // Thread should return if no work to do
             if (start_cacheline >= total_cachelines) {
-                return 0;
+                break;
             }
 
             // Process cache lines assigned to this thread
@@ -3801,8 +3807,9 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     }
                 }
             }
-    
-        } else if (op == GGML_OP_SOFT_MAX) {
+            break;
+        }
+        case GGML_OP_SOFT_MAX: {
             void * src2_data = (void *)(uintptr_t)node_meta[i].src2.data;
             const float scale;         // Scale factor
             const float max_bias;      // ALiBi max bias
@@ -3811,7 +3818,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             
             // Validate tensor types (F32 only)
             if((node_meta[i].src0.type != GGML_TYPE_F32) || (node_meta[i].dst.type != GGML_TYPE_F32)){
-                continue; // Unsupported type combination
+                break; // Unsupported type combination
             }
 
             // Check if mask is used and validate type
@@ -3825,7 +3832,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             float* sinks_data = use_sinks ? (float*)src2_data : NULL;
 
             if (!src0_data_f32 || !dst_data_f32) {
-                continue; // Null data pointer
+                break; // Null data pointer
             }
 
             // Use pre-extracted dimensions (ne0, ne1, ne2, ne3 are dst dimensions)
@@ -3848,7 +3855,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     mask_ne11 < ne01 ||                     // Dimension 1: mask >= input
                     (mask_ne12 > 0 && ne02 % mask_ne12 != 0) ||  // Dimension 2: input % mask == 0
                     (mask_ne13 > 0 && ne03 % mask_ne13 != 0)) {  // Dimension 3: input % mask == 0
-                    continue; // Incompatible dimensions for ggml softmax broadcasting
+                    break; // Incompatible dimensions for ggml softmax broadcasting
                 }
             }
 
@@ -3940,24 +3947,26 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
                 compute_softmax_row(dst_row, src_row, mask_row, (int)ne00, scale, slope, sink_value, use_sinks);
             }
-        } else if (op == GGML_OP_FLASH_ATTN_EXT) {
-                /*
+            break;
+        }
+        case GGML_OP_FLASH_ATTN_EXT: {
+                
             if (node_meta[i].dst.type != GGML_TYPE_F32 || node_meta[i].src0.type != GGML_TYPE_F32) {
-                    continue;
+                    break;
                 }
                 // K and V can be F16 or F32
                 if ((node_meta[i].src1.type != GGML_TYPE_F32 && node_meta[i].src1.type != GGML_TYPE_F16) ||
                     (node_meta[i].src2.type != GGML_TYPE_F32 && node_meta[i].src2.type != GGML_TYPE_F16)) {
-                    continue;
+                    break;
                 }
                 if (node_meta[i].src2.data != 0) {
-                    continue;
+                    break;
                 }                   
                 // Mask is optional; if present must be F16 or F32
                 if (node_meta[i].src1.data != 0 &&
                     node_meta[i].src1.type != GGML_TYPE_F32 &&
                     node_meta[i].src1.type != GGML_TYPE_F16) {
-                    continue;
+                    break;
                 }
                 // Q and dst must be row-contiguous F32
                 // TODO: Add contiguity checks using pre-extracted strides
@@ -3968,7 +3977,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 const size_t k_elem = node_meta[i].src1.type == GGML_TYPE_F16 ? 2 : 4;
                 const size_t v_elem = node_meta[i].src2.type == GGML_TYPE_F16 ? 2 : 4;
                 if (nb10 != k_elem || nb12 != v_elem) {
-                    continue;
+                    break;
                 }
                 float scale = 1.0f;
                 float max_bias = 0.0f;
@@ -3977,37 +3986,37 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 memcpy(&max_bias,      &node_meta[i].op_params[1], sizeof(max_bias));
                 memcpy(&logit_softcap, &node_meta[i].op_params[2], sizeof(logit_softcap));
                 if (max_bias != 0.0f || logit_softcap != 0.0f) {
-                    continue;
+                    break;
                 }
                 // TODO: Add precision check when available in node_meta
                 // For now, assume F32 precision
                 // dk must match between Q and K; dv must match between V and dst
                 if (ne0 != ne10) {
-                    continue;
+                    break;
                 }
                 // TODO: Add dst dimension check when available
                 // For now, skip this check
                 if (ne0 > 256) {
-                    continue;
+                    break;
                 }
                 // GQA: n_head_q must be a multiple of n_head_kv
                 const int64_t nhq = ne2;  // Using pre-extracted dst ne[2] as src0 ne[2]
                 const int64_t nhk = ne12; // Using pre-extracted src1 ne[2]
                 if (nhq % nhk != 0) {
-                    continue;
+                    break;
                 }
                 // K and V must have matching sequence length, heads, and batch dims
                 if (ne11 != ne13 ||  // src1 ne[1] vs src2 ne[1] - using ne11 for src1 ne[1], need src2 ne[1]
                     ne12 != ne12 ||  // src1 ne[2] vs src2 ne[2] - same dimension
                     ne13 != ne13) {  // src1 ne[3] vs src2 ne[3] - same dimension
                     // TODO: Add proper dimension comparison when all src2 dimensions are available
-                    continue;
+                    break;
                 }
                 // dst layout checks: [dv, nhq, nq, no]
                 // TODO: Add dst layout checks when all dimensions are properly mapped
                 // Batch dims: Q batch must match K batch
                 if (ne3 != ne13) {
-                    continue;
+                    break;
                 }
                 
                 // Use matrix engine kernel when K/V are F16 and dk is a multiple of 32
@@ -4016,7 +4025,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     (ne0 % 32) == 0) {
                     // TODO: F16 FLASH attention implementation temporarily disabled
                     // due to tensor engine integration complexity
-                    continue;
+                    break;
 
                 } else {
                     // -----------------------------------------------------
@@ -4048,7 +4057,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const int64_t dv  = ne20;     // V ne[0] (correct value head dimension)
 
                     if (dv > FA_DV_MAX) {
-                        continue;
+                        break;
                     }
 
                     // GQA: query heads per kv head
@@ -4145,191 +4154,100 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                         }
                     }
             // flash_attn_ext(env, &node_meta[i]);
-            */
-        } else if (op == GGML_OP_GET_ROWS) {
+            break;
+        }
+        case GGML_OP_GET_ROWS: {
+            // device_barrier(32);
             
-            // Basic null pointer checks
-            if (!src0_data || !dst_data) {
-                continue;
-            }
+            // // Basic null pointer checks
+            // if (!src0_data || !dst_data) {
+            //     break;
+            // }
 
             // Basic type checks
             if((node_meta[i].src0.type == GGML_TYPE_F32 || node_meta[i].src0.type == GGML_TYPE_Q8_0 || node_meta[i].src0.type == GGML_TYPE_Q4_0 || node_meta[i].src0.type == GGML_TYPE_Q4_K) && node_meta[i].src1.type == GGML_TYPE_I32 && node_meta[i].dst.type == GGML_TYPE_F32
                 && node_meta[i].dst.ne[0] % CACHE_ELEMENTS(sizeof(float)) == 0) {
-                // struct ggml_et_get_rows_params params;
-                // convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
-                // convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-                // convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
-
-                // get_row_f32_mc_cacheline_aligned(&params, env);
-                const int64_t total_rows_to_extract = node_meta[i].src1.ne[0] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[2] * node_meta[i].src1.ne[3];
-                // Determine work unit size based on source type
-                const int64_t elements_per_wu = get_elements_per_work_unit(node_meta[i].src0.type);
-                const int64_t wus_per_row = node_meta[i].src0.ne[0] / elements_per_wu;
-                const int64_t total_wus = total_rows_to_extract * wus_per_row;
-
-                // Distribute work units across threads (contiguous ranges)
-                const int64_t wus_per_thread = (total_wus + num_threads - 1) / num_threads;
-                const int64_t wu_start = thread_id * wus_per_thread;
-                int64_t wu_end = wu_start + wus_per_thread;
-                if (wu_end > total_wus) wu_end = total_wus;
-
-                // src0_data, src1_data, dst_data already defined above
-                int32_t* src1_data_i32 = (int32_t*)src1_data;
-                float* dst_data_f32 = (float*)dst_data;
-
-                int64_t wu = wu_start;
-                while (wu < wu_end) {
-                    // Determine which row this work unit belongs to and offset within row
-                    const int64_t row_idx = wu / wus_per_row;
-                    const int64_t wu_in_row = wu % wus_per_row;
-
-                    // How many work units to process in this row (batch contiguous WUs in same row)
-                    int64_t wus_remaining_in_row = wus_per_row - wu_in_row;
-                    int64_t wus_to_process = wu_end - wu;
-                    if (wus_remaining_in_row < wus_to_process) wus_to_process = wus_remaining_in_row;
-
-                    // Calculate multi-dimensional index for this row
-                    const int64_t i = row_idx;
-                    const int64_t i13_idx = i / (node_meta[i].src1.ne[2] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0]);
-                    const int64_t i12_idx = (i - i13_idx * node_meta[i].src1.ne[2] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0]) / (node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0]);
-                    const int64_t i11_idx = (i - i13_idx * node_meta[i].src1.ne[2] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0] - i12_idx * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0]) / node_meta[i].src1.ne[0];
-                    const int64_t i10_idx = i - i13_idx * node_meta[i].src1.ne[2] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0] - i12_idx * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0] - i11_idx * node_meta[i].src1.ne[0];
-
-                    // Get the row index from src1
-                    const int64_t index_offset = i13_idx * node_meta[i].src1.ne[2] * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0] +
-                                                i12_idx * node_meta[i].src1.ne[1] * node_meta[i].src1.ne[0] +
-                                                i11_idx * node_meta[i].src1.ne[0] +
-                                                i10_idx;
-                    const int32_t row_index = src1_data_i32[index_offset];
-
-                    if (row_index < 0 || row_index >= node_meta[i].src0.ne[1]) {
-                        return -1; // Index out of bounds
-                    }
-
-                    const int64_t batch_offset = i11_idx * node_meta[i].src0.ne[1] * node_meta[i].src0.ne[0] +
-                                                i12_idx * node_meta[i].src0.ne[2] * node_meta[i].src0.ne[1] * node_meta[i].src0.ne[0] +
-                                                i13_idx * node_meta[i].src0.ne[3] * node_meta[i].src0.ne[2] * node_meta[i].src0.ne[1] * node_meta[i].src0.ne[0];
-
-                    const int64_t elem_offset_in_row = wu_in_row * elements_per_wu;
-                    const int64_t num_elements = wus_to_process * elements_per_wu;
-
-                    float* dst_row = dst_data_f32 + row_idx * node_meta[i].src0.ne[0] + elem_offset_in_row;
-
-                    if (node_meta[i].src0.type == GGML_TYPE_F32) {
-                        // F32 source: direct copy of cacheline-aligned chunk
-                        const float* src_row = (const float*)src0_data + row_index * node_meta[i].src0.ne[0] + batch_offset + elem_offset_in_row;
-                        copy_row_cache_align(dst_row, src_row, num_elements * sizeof(float));
-                    }
-                    else if (node_meta[i].src0.type == GGML_TYPE_Q8_0) {
-                        // Q8_0 source: dequantize work-unit-aligned blocks
-                        const int64_t blocks_per_row = (node_meta[i].src0.ne[0] + QK8_0 - 1) / QK8_0;
-                        const int64_t src_block_offset = (row_index * blocks_per_row) +
-                                                    (batch_offset / node_meta[i].src0.ne[0]) * blocks_per_row;
-                        const int64_t block_start = elem_offset_in_row / QK8_0;
-                        const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset + block_start;
-                        copy_q8_0_row_cache_aligned(dst_row, src_blocks, num_elements);
-                    }
-                    else if (node_meta[i].src0.type == GGML_TYPE_Q4_0) {
-                        // Q4_0 source: dequantize work-unit-aligned blocks
-                        const int64_t blocks_per_row = (node_meta[i].src0.ne[0] + QK4_0 - 1) / QK4_0;
-                        const int64_t src_block_offset = (row_index * blocks_per_row) +
-                                                    (batch_offset / node_meta[i].src0.ne[0]) * blocks_per_row;
-                        const int64_t block_start = elem_offset_in_row / QK4_0;
-                        const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset + block_start;
-                        copy_q4_0_row_cache_aligned(dst_row, src_blocks, num_elements);
-                    }
-                    else if (node_meta[i].src0.type == GGML_TYPE_Q4_K) {
-                        // Q4_K source: dequantize work-unit-aligned blocks
-                        const int64_t blocks_per_row = (node_meta[i].src0.ne[0] + QK_K - 1) / QK_K;
-                        const int64_t src_block_offset = (row_index * blocks_per_row) +
-                                                    (batch_offset / node_meta[i].src0.ne[0]) * blocks_per_row;
-                        const int64_t block_start = elem_offset_in_row / QK_K;
-                        const block_q4_K* src_blocks = (const block_q4_K*)src0_data + src_block_offset + block_start;
-                        copy_q4_K_row_cache_aligned(dst_row, src_blocks, num_elements);
-                    }
-
-                    wu += wus_to_process;
-                }
-                continue;
+                struct ggml_et_get_rows_params params;
+                convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
+ 
+                get_row_f32_mc_cacheline_aligned(&params, env);
+                break;
             }
             
-            const int64_t total_rows_to_extract = ne10 * ne11 * ne12 * ne13;
+            // const int64_t total_rows_to_extract = ne10 * ne11 * ne12 * ne13;
 
-            // Naive single-threaded implementation - process all rows sequentially
-            // Only thread 0 should execute this to avoid race conditions
-            if (thread_id != 0) {
-                continue;
-            }
+            // // Multi-threaded fallback for non-cache-aligned rows.
+            // // Each ri maps to a unique dst region, so no write conflicts.
+            // const int64_t rows_per_thread = (total_rows_to_extract + num_threads - 1) / num_threads;
+            // const int64_t ri_start = thread_id * rows_per_thread;
+            // int64_t ri_end = ri_start + rows_per_thread;
+            // if (ri_end > total_rows_to_extract) ri_end = total_rows_to_extract;
 
-            // Cache src0 type before inner loop to avoid shadowed-variable bug
-            const int src0_type = node_meta[i].src0.type;
+            // const int src0_type = node_meta[i].src0.type;
 
-            // XXX: Do we really need a single-threaded implementation?
-            for (int64_t ri = 0; ri < total_rows_to_extract; ri++) {
-                // Calculate multi-dimensional index for the current output position
-                const int64_t i13_idx = ri / (ne12 * ne11 * ne10);
-                const int64_t i12_idx = (ri - i13_idx * ne12 * ne11 * ne10) / (ne11 * ne10);
-                const int64_t i11_idx = (ri - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10) / ne10;
-                const int64_t i10_idx = ri - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10 - i11_idx * ne10;
+            // for (int64_t ri = ri_start; ri < ri_end; ri++) {
+            //     // Calculate multi-dimensional index for the current output position
+            //     const int64_t i13_idx = ri / (ne12 * ne11 * ne10);
+            //     const int64_t i12_idx = (ri - i13_idx * ne12 * ne11 * ne10) / (ne11 * ne10);
+            //     const int64_t i11_idx = (ri - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10) / ne10;
+            //     const int64_t i10_idx = ri - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10 - i11_idx * ne10;
 
-                // Get the row index from src1
-                const int64_t index_offset = i13_idx * ne12 * ne11 * ne10 +
-                                            i12_idx * ne11 * ne10 +
-                                            i11_idx * ne10 +
-                                            i10_idx;
-                const int32_t row_index = ((const int32_t*)src1_data)[index_offset];
+            //     // Get the row index from src1
+            //     const int64_t index_offset = i13_idx * ne12 * ne11 * ne10 +
+            //                                 i12_idx * ne11 * ne10 +
+            //                                 i11_idx * ne10 +
+            //                                 i10_idx;
+            //     const int32_t row_index = ((const int32_t*)src1_data)[index_offset];
 
-                if (row_index < 0 || row_index >= ne01) {
-                    return -1; // Index out of bounds
-                }
+            //     if (row_index < 0 || row_index >= ne01) {
+            //         return -1; // Index out of bounds
+            //     }
 
-                const int64_t batch_offset = i11_idx * ne01 * ne00 +
-                                            i12_idx * ne02 * ne01 * ne00 +
-                                            i13_idx * ne03 * ne02 * ne01 * ne00;
+            //     const int64_t batch_offset = i11_idx * ne01 * ne00 +
+            //                                 i12_idx * ne02 * ne01 * ne00 +
+            //                                 i13_idx * ne03 * ne02 * ne01 * ne00;
 
-                const int64_t dst_offset = ri;
+            //     const int64_t dst_offset = ri;
 
-                if (src0_type == GGML_TYPE_F32) {
-                    // F32 source: direct copy
-                    const float* src_row = (const float*)src0_data + row_index * ne00 + batch_offset;
-                    float* dst_row = (float*)dst_data + dst_offset * ne00;
-                    copy_f32_row(dst_row, src_row, ne00);
+            //     if (src0_type == GGML_TYPE_F32) {
+            //         const float* src_row = (const float*)src0_data + row_index * ne00 + batch_offset;
+            //         float* dst_row = (float*)dst_data + dst_offset * ne00;
+            //         copy_f32_row(dst_row, src_row, ne00);
 
-                } else if (src0_type == GGML_TYPE_Q8_0) {
-                    // Q8_0 source: dequantize while copying
-                    const int64_t blocks_per_row = (ne00 + QK8_0 - 1) / QK8_0;
-                    const int64_t src_block_offset = (row_index * blocks_per_row) +
-                                                (batch_offset / ne00) * blocks_per_row;
-                    const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset;
-                    float* dst_row = (float*)dst_data + dst_offset * ne00;
-                    copy_q8_0_row(dst_row, src_blocks, ne00);
-                } else if (src0_type == GGML_TYPE_Q4_0) {
-                    // Q4_0 source: dequantize while copying
-                    const int64_t blocks_per_row = (ne00 + QK4_0 - 1) / QK4_0;
-                    const int64_t src_block_offset = (row_index * blocks_per_row) +
-                                                (batch_offset / ne00) * blocks_per_row;
-                    const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset;
-                    float* dst_row = (float*)dst_data + dst_offset * ne00;
-                    copy_q4_0_row(dst_row, src_blocks, ne00);
-                } else if (src0_type == GGML_TYPE_Q4_K) {
-                    // Q4_K source: dequantize while copying
-                    const int64_t blocks_per_row = (ne00 + QK_K - 1) / QK_K;
-                    const int64_t src_block_offset = (row_index * blocks_per_row) +
-                                                (batch_offset / ne00) * blocks_per_row;
-                    const block_q4_K* src_blocks = (const block_q4_K*)src0_data + src_block_offset;
-                    float* dst_row = (float*)dst_data + dst_offset * ne00;
-                    copy_q4_K_row(dst_row, src_blocks, ne00);
-                }
-            }
-
-        } else if (op == GGML_OP_SET_ROWS) {
+            //     } else if (src0_type == GGML_TYPE_Q8_0) {
+            //         const int64_t blocks_per_row = (ne00 + QK8_0 - 1) / QK8_0;
+            //         const int64_t src_block_offset = (row_index * blocks_per_row) +
+            //                                     (batch_offset / ne00) * blocks_per_row;
+            //         const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset;
+            //         float* dst_row = (float*)dst_data + dst_offset * ne00;
+            //         copy_q8_0_row(dst_row, src_blocks, ne00);
+            //     } else if (src0_type == GGML_TYPE_Q4_0) {
+            //         const int64_t blocks_per_row = (ne00 + QK4_0 - 1) / QK4_0;
+            //         const int64_t src_block_offset = (row_index * blocks_per_row) +
+            //                                     (batch_offset / ne00) * blocks_per_row;
+            //         const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset;
+            //         float* dst_row = (float*)dst_data + dst_offset * ne00;
+            //         copy_q4_0_row(dst_row, src_blocks, ne00);
+            //     } else if (src0_type == GGML_TYPE_Q4_K) {
+            //         const int64_t blocks_per_row = (ne00 + QK_K - 1) / QK_K;
+            //         const int64_t src_block_offset = (row_index * blocks_per_row) +
+            //                                     (batch_offset / ne00) * blocks_per_row;
+            //         const block_q4_K* src_blocks = (const block_q4_K*)src0_data + src_block_offset;
+            //         float* dst_row = (float*)dst_data + dst_offset * ne00;
+            //         copy_q4_K_row(dst_row, src_blocks, ne00);
+            //     }
+            // }
+            break;
+        }
+        case GGML_OP_SET_ROWS: {
             if (node_meta[i].src0.type == GGML_TYPE_F32 &&
                 node_meta[i].src1.type == GGML_TYPE_I64 &&
                 (node_meta[i].dst.type == GGML_TYPE_F32 || node_meta[i].dst.type == GGML_TYPE_F16)) {
 
                 if (ne10 != ne01) {
-                    return -1; // Number of indices must match number of source rows
+                    break; // Number of indices must match number of source rows
                 }
 
                 const int64_t total_rows = ne01 * ne02 * ne03;
@@ -4350,7 +4268,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const int64_t my_start       = thread_id * cls_per_thread;
                     int64_t       my_end         = my_start + cls_per_thread;
                     if (my_end > total_cls) my_end = total_cls;
-                    if (my_start >= total_cls) return 0;
+                    if (my_start >= total_cls) break;
 
                     for (int64_t cl = my_start; cl < my_end; cl++) {
                         // Map flat cache-line index -> (row, offset within row)
@@ -4427,15 +4345,16 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 }
 
             }
-            
-        } else if (op == GGML_OP_CONT) {
+            break;
+        }
+        case GGML_OP_CONT: {
             if (node_meta[i].dst.type != node_meta[i].src0.type) {
-                continue;
+                break;
             }
             if (node_meta[i].dst.type == GGML_TYPE_F32){
                 const int64_t total_elements = ne00 * ne01 * ne02 * ne03;
                 if (total_elements == 0) {
-                    continue;
+                    break;
                 }
                 // Create a ggml_tensor structure for src0 to check contiguity
                 struct ggml_tensor src0_tensor = {
@@ -4456,16 +4375,15 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const int64_t cl_start = thread_id * cl_per_thread;
                     int64_t cl_end = cl_start + cl_per_thread;
                     if (cl_end > total_cl) { cl_end = total_cl; }
-                    if (cl_start >= total_cl) { continue; }
+                    if (cl_start >= total_cl) { break; }
 
                     const int64_t es = cl_start * elems_per_cl;
                     int64_t ee = cl_end * elems_per_cl;
                     if (ee > total_elements) { ee = total_elements; }
 
                     vec_copy_f32((float*)((char*)dst_data + es * sizeof(float)), (float*)((char*)src0_data + es * sizeof(float)), (int32_t)(ee - es));
-                    continue;
+                    break;
                 }
-
                 //==========================================================================
                 // Non-contiguous paths: require nb00==4 (dim 0 contiguous in src)
                 //==========================================================================
@@ -4478,7 +4396,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const int64_t cl_start = thread_id * cl_per_thread;
                     int64_t cl_end = cl_start + cl_per_thread;
                     if (cl_end > total_cl) { cl_end = total_cl; }
-                    if (cl_start >= total_cl) { continue; }
+                    if (cl_start >= total_cl) { break; }
 
                     const int64_t es = cl_start * elems_per_cl;
                     int64_t ee = cl_end * elems_per_cl;
@@ -4496,7 +4414,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                                         i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03);
                         ((float*)dst_data)[idx] = *sp;
                     }
-                    continue;
+                    break;
                 }
 
                 // nb00 == 4 from here: dim 0 is contiguous in src
@@ -4511,7 +4429,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const int64_t end_row = (start_row + rows_per_thread < total_rows)
                                         ? (start_row + rows_per_thread) : total_rows;
 
-                    if (start_row >= total_rows) { continue; }
+                    if (start_row >= total_rows) { break; }
 
                     for (int64_t ir = start_row; ir < end_row; ir++) {
                         const int64_t i03 = ir / (ne02 * ne01);
@@ -4524,7 +4442,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
                         vec_copy_f32(dst_row, src_row, (int32_t)ne00);
                     }
-                    continue;
+                    break;
                 }
 
                 //==========================================================================
@@ -4539,7 +4457,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     const int64_t cl_start = thread_id * cl_per_thread;
                     int64_t cl_end = cl_start + cl_per_thread;
                     if (cl_end > total_cl) { cl_end = total_cl; }
-                    if (cl_start >= total_cl) { continue; }
+                    if (cl_start >= total_cl) { break; }
 
                     const int64_t es = cl_start * elems_per_cl;
                     int64_t ee = cl_end * elems_per_cl;
@@ -4577,7 +4495,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 const int64_t src_elements = ne00 * ne01 * ne02 * ne03;
                 const int64_t dst_elements = ne0 * ne1 * ne2 * ne3;
                 if (src_elements != dst_elements) {
-                    continue; // Element count mismatch
+                    break; // Element count mismatch
                 }
 
                 // Parallelize by rows (dimension 1)
@@ -4587,7 +4505,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
                 if (start_row >= total_rows) {
-                    continue;
+                    break;
                 }
 
                 // Iterate over source tensor dimensions
@@ -4617,10 +4535,12 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     }
                 }
             } else {
-                continue;
+                break;
             }
             // ggml_et_op_cont(env, &node_meta[i]);
-        } else if (op == GGML_OP_MUL_MAT) {
+            break;
+        }
+        case GGML_OP_MUL_MAT: {
             if (node_meta[i].dst.type == GGML_TYPE_F32 &&
                 node_meta[i].src0.type == GGML_TYPE_Q8_0 &&
                 node_meta[i].src1.type == GGML_TYPE_F32) {
@@ -4658,7 +4578,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                             }
                         }
                     }
-                continue;
+                break;
 
             } else if (node_meta[i].dst.type == GGML_TYPE_F32 &&
                         node_meta[i].src0.type == GGML_TYPE_F16 &&
@@ -4670,8 +4590,8 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 uint64_t hart_id = get_hart_id();
                 uint64_t shire_id = get_shire_id();
  
-                if (shire_id >= NUM_COMPUTE_SHIRES) continue;
-                if (hart_id & 1) continue;
+                if (shire_id >= NUM_COMPUTE_SHIRES) break;
+                if (hart_id & 1) break;
  
                 uint64_t local_minion = (hart_id >> 1) & 0x1F;
                 uint64_t my_minion_id = get_minion_id();
@@ -4693,8 +4613,8 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             #endif
                 CLEAR_TENSOR_ERROR;
 
-                if ((M % TILE_M) != 0) continue;
-                if ((K % TILE_K) != 0) continue;
+                if ((M % TILE_M) != 0) break;
+                if ((K % TILE_K) != 0) break;
 
                 const int64_t m_tiles = M / TILE_M;
                 const int64_t n_tiles = (N + TILE_N - 1) / TILE_N;
@@ -4860,7 +4780,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 }
 
                 FENCE;
-                continue;
+                break;
 
             } else if (node_meta[i].dst.type == GGML_TYPE_F32 &&
                     node_meta[i].src0.type == GGML_TYPE_F16 &&
@@ -4871,7 +4791,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
                 // Validate: src0 is F16, others are F32
                 if (node_meta[i].src0.type != GGML_TYPE_F16 || node_meta[i].src1.type != GGML_TYPE_F32 || node_meta[i].dst.type != GGML_TYPE_F32) {
-                    continue;
+                    break;
                 }
 
                 // Dimensions: K, M, N
@@ -4890,7 +4810,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 const uint64_t per_thread = 16;
                 const uint64_t threads_stride = per_thread * effective_num_threads;
 
-                if (effective_thread_id * per_thread >= total_elements) continue;
+                if (effective_thread_id * per_thread >= total_elements) break;
 
                 // Broadcasting support
                 const int64_t r2 = ne12 / ne02;
@@ -4933,7 +4853,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                         atomic_store_f32(c_element, sum);
                     }
                 }
-                continue;
+                break;
 
             } else if (node_meta[i].dst.type == GGML_TYPE_F32 &&
                         node_meta[i].src0.type == GGML_TYPE_F32 &&
@@ -4946,8 +4866,8 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 uint64_t hart_id = get_hart_id();
                 uint64_t shire_id = get_shire_id();
 
-                if (shire_id >= NUM_COMPUTE_SHIRES) continue;
-                if (hart_id & 1) continue;
+                if (shire_id >= NUM_COMPUTE_SHIRES) break;
+                if (hart_id & 1) break;
 
                 uint64_t local_minion = (hart_id >> 1) & 0x1F;
                 uint64_t my_minion_id = get_minion_id();
@@ -5078,7 +4998,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
 
                 FENCE;
                 
-                continue;
+                break;
             } else if (node_meta[i].dst.type == GGML_TYPE_F32 &&
                     node_meta[i].src0.type == GGML_TYPE_F32 &&
                     node_meta[i].src1.type == GGML_TYPE_F32) {
@@ -5149,12 +5069,14 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     }
                 }
                 
-                continue;
+                break;
             } else {
-                continue; // Unsupported type combination
+                break; // Unsupported type combination
             }
             // ggml_et_op_mul_mat(env, &node_meta[i]);
-        } else if (op == GGML_OP_ROPE) {
+            break;
+        }
+        case GGML_OP_ROPE: {
 
             // struct ggml_et_rope_params params;
             // convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
@@ -5183,7 +5105,9 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             ggml_et_op_rope(env, &node_meta[i]);
 
             // ggml_et_op_rope(env, &node_meta[i]);
-        } else if (op == GGML_OP_RMS_NORM) {
+            break;
+        }
+        case GGML_OP_RMS_NORM: {
             const float inv_ne0 = et_fdiv(1.0f, (float)(int32_t)ne0);
             const int32_t total_rows = (int32_t)(ne1 * ne2 * ne3);
             float eps;
@@ -5381,41 +5305,78 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                 __asm__ volatile("mova.m.x %0" :: "r"(saved_mask));
             }
             // ggml_et_op_rms_norm(env, &node_meta[i]);
-        } else if (op == GGML_OP_SQR) {
-            ggml_et_op_sqr(env, &node_meta[i]);
-        } else if (op == GGML_OP_UNARY) {
-            ggml_et_op_unary(env, &node_meta[i]);
-        } else if (op == GGML_OP_SUM_ROWS) {
-            ggml_et_op_sum_rows(env, &node_meta[i]);
-        } else if (op == GGML_OP_CUMSUM) {
-            ggml_et_op_cumsum(env, &node_meta[i]);
-        } else if (op == GGML_OP_MUL_MAT_ID) {
-            ggml_et_op_mul_mat_id(env, &node_meta[i]);
-        } else if (op == GGML_OP_NORM) {
-            ggml_et_op_norm(env, &node_meta[i]);
-        } else if (op == GGML_OP_L2_NORM) {
-            ggml_et_op_l2_norm(env, &node_meta[i]);
-        } else if (op == GGML_OP_SCALE) {
-            ggml_et_op_scale(env, &node_meta[i]);
-        } else if (op == GGML_OP_CPY) {
-            ggml_et_op_cpy(env, &node_meta[i]);
-        } else if (op == GGML_OP_CONCAT) {
-            ggml_et_op_concat(env, &node_meta[i]);
-        } else if (op == GGML_OP_REPEAT) {
-            ggml_et_op_repeat(env, &node_meta[i]);
-        } else if (op == GGML_OP_PAD) {
-            ggml_et_op_pad(env, &node_meta[i]);
-        } else if (op == GGML_OP_SET) {
-            ggml_et_op_set(env, &node_meta[i]);
-        } else if (op == GGML_OP_FILL) {
-            ggml_et_op_fill(env, &node_meta[i]);
-        } else if (op == GGML_OP_DIAG) {
-            ggml_et_op_diag(env, &node_meta[i]);
-        } else if (op == GGML_OP_RESHAPE || op == GGML_OP_VIEW || op == GGML_OP_PERMUTE || op == GGML_OP_TRANSPOSE) {
-            // No-op operations
+            break;
         }
-        else {
-                return -1;
+        case GGML_OP_SQR: {
+            ggml_et_op_sqr(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_UNARY: {
+            ggml_et_op_unary(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_SUM_ROWS: {
+            ggml_et_op_sum_rows(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_CUMSUM: {
+            ggml_et_op_cumsum(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_MUL_MAT_ID: {
+            ggml_et_op_mul_mat_id(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_NORM: {
+            ggml_et_op_norm(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_L2_NORM: {
+            ggml_et_op_l2_norm(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_SCALE: {
+            ggml_et_op_scale(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_CPY: {
+            ggml_et_op_cpy(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_CONCAT: {
+            ggml_et_op_concat(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_REPEAT: {
+            ggml_et_op_repeat(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_PAD: {
+            ggml_et_op_pad(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_SET: {
+            ggml_et_op_set(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_FILL: {
+            ggml_et_op_fill(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_DIAG: {
+            ggml_et_op_diag(env, &node_meta[i]);
+            break;
+        }
+        case GGML_OP_RESHAPE:
+        case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE: {
+            // No-op operations
+            break;
+        }
+        default: {
+            return -1;
+        }
         }
 
         // if (op != GGML_OP_RESHAPE &&
@@ -5424,6 +5385,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
         //     op != GGML_OP_TRANSPOSE) {
             // device_barrier(32);
         // }
+        device_barrier(32);
     }
 
     return 0;
