@@ -3714,9 +3714,11 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     }
                 
                 } // end of else block for slow path
+                
                 break;
                 }
-            case GGML_OP_GLU: {
+            
+                case GGML_OP_GLU: {
                 int thread_id = get_relative_thread_id(kernel_env->shire_mask);
                 int num_threads = get_num_threads(kernel_env->shire_mask);
                 uint64_t shire_id = get_shire_id();
@@ -4333,69 +4335,69 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                     break;
                 }
                 
-                // const int64_t total_rows_to_extract = ne10 * ne11 * ne12 * ne13;
+                const int64_t total_rows_to_extract = ne10 * ne11 * ne12 * ne13;
 
-                // // Multi-threaded fallback for non-cache-aligned rows.
-                // // Each ri maps to a unique dst region, so no write conflicts.
-                // const int64_t rows_per_thread = (total_rows_to_extract + num_threads - 1) / num_threads;
-                // const int64_t ri_start = thread_id * rows_per_thread;
-                // int64_t ri_end = ri_start + rows_per_thread;
-                // if (ri_end > total_rows_to_extract) ri_end = total_rows_to_extract;
+                // Multi-threaded fallback for non-cache-aligned rows.
+                // Each ri maps to a unique dst region, so no write conflicts.
+                const int64_t rows_per_thread = (total_rows_to_extract + num_threads - 1) / num_threads;
+                const int64_t ri_start = thread_id * rows_per_thread;
+                int64_t ri_end = ri_start + rows_per_thread;
+                if (ri_end > total_rows_to_extract) ri_end = total_rows_to_extract;
 
-                // const int src0_type = node_meta[i].src0.type;
+                const int src0_type = node_meta[i].src0.type;
 
-                // for (int64_t ri = ri_start; ri < ri_end; ri++) {
-                //     // Calculate multi-dimensional index for the current output position
-                //     const int64_t i13_idx = ri / (ne12 * ne11 * ne10);
-                //     const int64_t i12_idx = (ri - i13_idx * ne12 * ne11 * ne10) / (ne11 * ne10);
-                //     const int64_t i11_idx = (ri - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10) / ne10;
-                //     const int64_t i10_idx = ri - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10 - i11_idx * ne10;
+                for (int64_t ri = ri_start; ri < ri_end; ri++) {
+                    // Calculate multi-dimensional index for the current output position
+                    const int64_t i13_idx = ri / (ne12 * ne11 * ne10);
+                    const int64_t i12_idx = (ri - i13_idx * ne12 * ne11 * ne10) / (ne11 * ne10);
+                    const int64_t i11_idx = (ri - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10) / ne10;
+                    const int64_t i10_idx = ri - i13_idx * ne12 * ne11 * ne10 - i12_idx * ne11 * ne10 - i11_idx * ne10;
 
-                //     // Get the row index from src1
-                //     const int64_t index_offset = i13_idx * ne12 * ne11 * ne10 +
-                //                                 i12_idx * ne11 * ne10 +
-                //                                 i11_idx * ne10 +
-                //                                 i10_idx;
-                //     const int32_t row_index = ((const int32_t*)src1_data)[index_offset];
+                    // Get the row index from src1
+                    const int64_t index_offset = i13_idx * ne12 * ne11 * ne10 +
+                                                i12_idx * ne11 * ne10 +
+                                                i11_idx * ne10 +
+                                                i10_idx;
+                    const int32_t row_index = ((const int32_t*)src1_data)[index_offset];
 
-                //     if (row_index < 0 || row_index >= ne01) {
-                //         return -1; // Index out of bounds
-                //     }
+                    if (row_index < 0 || row_index >= ne01) {
+                        return -1; // Index out of bounds
+                    }
 
-                //     const int64_t batch_offset = i11_idx * ne01 * ne00 +
-                //                                 i12_idx * ne02 * ne01 * ne00 +
-                //                                 i13_idx * ne03 * ne02 * ne01 * ne00;
+                    const int64_t batch_offset = i11_idx * ne01 * ne00 +
+                                                i12_idx * ne02 * ne01 * ne00 +
+                                                i13_idx * ne03 * ne02 * ne01 * ne00;
 
-                //     const int64_t dst_offset = ri;
+                    const int64_t dst_offset = ri;
 
-                //     if (src0_type == GGML_TYPE_F32) {
-                //         const float* src_row = (const float*)src0_data + row_index * ne00 + batch_offset;
-                //         float* dst_row = (float*)dst_data + dst_offset * ne00;
-                //         copy_f32_row(dst_row, src_row, ne00);
+                    if (src0_type == GGML_TYPE_F32) {
+                        const float* src_row = (const float*)src0_data + row_index * ne00 + batch_offset;
+                        float* dst_row = (float*)dst_data + dst_offset * ne00;
+                        copy_f32_row(dst_row, src_row, ne00);
 
-                //     } else if (src0_type == GGML_TYPE_Q8_0) {
-                //         const int64_t blocks_per_row = (ne00 + QK8_0 - 1) / QK8_0;
-                //         const int64_t src_block_offset = (row_index * blocks_per_row) +
-                //                                     (batch_offset / ne00) * blocks_per_row;
-                //         const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset;
-                //         float* dst_row = (float*)dst_data + dst_offset * ne00;
-                //         copy_q8_0_row(dst_row, src_blocks, ne00);
-                //     } else if (src0_type == GGML_TYPE_Q4_0) {
-                //         const int64_t blocks_per_row = (ne00 + QK4_0 - 1) / QK4_0;
-                //         const int64_t src_block_offset = (row_index * blocks_per_row) +
-                //                                     (batch_offset / ne00) * blocks_per_row;
-                //         const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset;
-                //         float* dst_row = (float*)dst_data + dst_offset * ne00;
-                //         copy_q4_0_row(dst_row, src_blocks, ne00);
-                //     } else if (src0_type == GGML_TYPE_Q4_K) {
-                //         const int64_t blocks_per_row = (ne00 + QK_K - 1) / QK_K;
-                //         const int64_t src_block_offset = (row_index * blocks_per_row) +
-                //                                     (batch_offset / ne00) * blocks_per_row;
-                //         const block_q4_K* src_blocks = (const block_q4_K*)src0_data + src_block_offset;
-                //         float* dst_row = (float*)dst_data + dst_offset * ne00;
-                //         copy_q4_K_row(dst_row, src_blocks, ne00);
-                //     }
-                // }
+                    } else if (src0_type == GGML_TYPE_Q8_0) {
+                        const int64_t blocks_per_row = (ne00 + QK8_0 - 1) / QK8_0;
+                        const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                                    (batch_offset / ne00) * blocks_per_row;
+                        const block_q8_0* src_blocks = (const block_q8_0*)src0_data + src_block_offset;
+                        float* dst_row = (float*)dst_data + dst_offset * ne00;
+                        copy_q8_0_row(dst_row, src_blocks, ne00);
+                    } else if (src0_type == GGML_TYPE_Q4_0) {
+                        const int64_t blocks_per_row = (ne00 + QK4_0 - 1) / QK4_0;
+                        const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                                    (batch_offset / ne00) * blocks_per_row;
+                        const block_q4_0* src_blocks = (const block_q4_0*)src0_data + src_block_offset;
+                        float* dst_row = (float*)dst_data + dst_offset * ne00;
+                        copy_q4_0_row(dst_row, src_blocks, ne00);
+                    } else if (src0_type == GGML_TYPE_Q4_K) {
+                        const int64_t blocks_per_row = (ne00 + QK_K - 1) / QK_K;
+                        const int64_t src_block_offset = (row_index * blocks_per_row) +
+                                                    (batch_offset / ne00) * blocks_per_row;
+                        const block_q4_K* src_blocks = (const block_q4_K*)src0_data + src_block_offset;
+                        float* dst_row = (float*)dst_data + dst_offset * ne00;
+                        copy_q4_K_row(dst_row, src_blocks, ne00);
+                    }
+                }
                 break;
             }
             case GGML_OP_SET_ROWS: {
@@ -5697,7 +5699,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             op != GGML_OP_VIEW    &&
             op != GGML_OP_PERMUTE &&
             op != GGML_OP_TRANSPOSE) {
-            device_barrier(32);
+            // device_barrier(32);
         }
         // device_barrier(32);
     }
