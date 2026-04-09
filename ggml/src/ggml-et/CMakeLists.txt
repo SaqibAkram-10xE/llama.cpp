@@ -1,6 +1,14 @@
 
 message(STATUS "Using ET backend")
 
+# Option to enable monolithic compute path
+option(ENABLE_MONOLITHIC_COMPUTE "Enable monolithic compute path in op_cgraph_2.c" ON)
+if(ENABLE_MONOLITHIC_COMPUTE)
+    message(STATUS "Monolithic compute path: ENABLED")
+else()
+    message(STATUS "Monolithic compute path: DISABLED")
+endif()
+
 # Configure ET platform path
 if(DEFINED ENV{ET_PLATFORM})
     set(ET_PLATFORM_PATH $ENV{ET_PLATFORM})
@@ -111,8 +119,10 @@ ggml_add_backend_library(ggml-et
                          ggml-et-cpu-compare.cpp
                         )
 
-# Enable monolithic compute path for host code
-target_compile_definitions(ggml-et PRIVATE ENABLE_MONOLITHIC_COMPUTE)
+# Enable monolithic compute path for host code if option is set
+if(ENABLE_MONOLITHIC_COMPUTE)
+    target_compile_definitions(ggml-et PRIVATE ENABLE_MONOLITHIC_COMPUTE)
+endif()
 
 # Mark generated files as such
 set_source_files_properties(

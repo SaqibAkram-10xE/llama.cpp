@@ -14,7 +14,6 @@
 #include "block_ops.h"
 #include <etsoc/common/utils.h>
 #include "tensor.h"
-#include "et_config.h"
 
 // Pull in standalone kernel.c files as monolithic includes.
 // Each kernel checks this macro to rename entry_point to its callable name.
@@ -391,16 +390,16 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
         // Skip barrier for metadata-only ops (RESHAPE/VIEW/PERMUTE/TRANSPOSE)
         // since they don't touch data.
 
-        // if (node_op_val != GGML_OP_RESHAPE &&
-        //     node_op_val != GGML_OP_VIEW &&
-        //     node_op_val != GGML_OP_PERMUTE &&
-        //     node_op_val != GGML_OP_TRANSPOSE &&
-        //     node_op_val != GGML_OP_NONE) {
-        //     // device_barrier_refined(32);
-        //     device_barrier(32);
-        //     // et_barrier()
+        if (node_op_val != GGML_OP_RESHAPE &&
+            node_op_val != GGML_OP_VIEW &&
+            node_op_val != GGML_OP_PERMUTE &&
+            node_op_val != GGML_OP_TRANSPOSE &&
+            node_op_val != GGML_OP_NONE) {
+            // device_barrier_refined(32);
+            device_barrier(32);
+            // et_barrier()
             
-        // }
+        }
     }
 
 

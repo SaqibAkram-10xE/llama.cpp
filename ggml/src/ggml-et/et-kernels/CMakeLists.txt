@@ -47,6 +47,10 @@ foreach(KERNEL ${KERNELS})
         ${CMAKE_CURRENT_SOURCE_DIR}/src
     )
     target_link_libraries(${KERNEL}.elf PRIVATE et-common-libs::cm-umode)
+    # Enable monolithic compute path only for op_cgraph_2.elf
+    if(KERNEL STREQUAL "op_cgraph_2" AND ENABLE_MONOLITHIC_COMPUTE)
+        target_compile_definitions(${KERNEL}.elf PRIVATE ENABLE_MONOLITHIC_COMPUTE)
+    endif()
     # C-only flags — must not apply to .S files
     target_compile_options(${KERNEL}.elf PRIVATE
         $<$<COMPILE_LANGUAGE:C>:-fno-zero-initialized-in-bss>
