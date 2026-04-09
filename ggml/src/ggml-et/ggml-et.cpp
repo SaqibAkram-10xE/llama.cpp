@@ -584,7 +584,7 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
     ggml_backend_et_device_context * dev_ctx = (ggml_backend_et_device_context *)backend->device->context;
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
-    // ggml_et_op_cg(dev_ctx, cgraph);
+    ggml_et_op_cg(dev_ctx, cgraph);
 #else
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
@@ -760,7 +760,7 @@ static bool et_ggml_is_row_contiguous(const ggml_tensor * t) {
     return t->nb[0] == ggml_type_size(t->type);
 }
 
-static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+/*static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     GGML_UNUSED(dev);
 
     bool supported = false;
@@ -1020,7 +1020,732 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
         ggml_et_dump_operator_metadata(op);
     }
     return supported;
+}*/
+
+static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+    GGML_UNUSED(dev);
+
+    bool supported = false;
+    switch (op->op) {
+        case GGML_OP_CUMSUM:
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       op->src[0]->nb[0] == sizeof(float) &&
+                       ggml_is_contiguous(op);
+            break;
+        case GGML_OP_SQR:
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       op->ne[0] % 16 == 0 &&
+                       ggml_is_contiguous(op) &&
+                       ggml_is_contiguous(op->src[0]);
+            break;
+        case GGML_OP_SUM_ROWS:
+            // dst has ne[0]=1, src0 row length must be cache-aligned
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       op->src[0]->ne[0] % 16 == 0 &&
+                       ggml_is_contiguous(op->src[0]);
+            break;
+        case GGML_OP_UNARY:
+            // Only require dim-0 contiguity (nb[0] == sizeof(float)). Higher
+            // dims may be arbitrarily strided views; the kernel walks per-row
+            // using all four nb[] values. See unary_f32.c entry_point.
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                ggml_nelements(op) % 16 == 0 &&
+                op->nb[0] == sizeof(float) &&
+                op->src[0]->nb[0] == sizeof(float)) {
+                switch (ggml_get_unary_op(op)) {
+                    case GGML_UNARY_OP_ABS:
+                    case GGML_UNARY_OP_SGN:
+                    case GGML_UNARY_OP_NEG:
+                    case GGML_UNARY_OP_STEP:
+                    case GGML_UNARY_OP_TANH:
+                    case GGML_UNARY_OP_ELU:
+                    case GGML_UNARY_OP_RELU:
+                    case GGML_UNARY_OP_SIGMOID:
+                    case GGML_UNARY_OP_GELU:
+                    case GGML_UNARY_OP_GELU_QUICK:
+                    case GGML_UNARY_OP_SILU:
+                    case GGML_UNARY_OP_HARDSWISH:
+                    case GGML_UNARY_OP_HARDSIGMOID:
+                    case GGML_UNARY_OP_EXP:
+                    case GGML_UNARY_OP_EXPM1:
+                    case GGML_UNARY_OP_SOFTPLUS:
+                    case GGML_UNARY_OP_GELU_ERF:
+                    case GGML_UNARY_OP_FLOOR:
+                    case GGML_UNARY_OP_CEIL:
+                    case GGML_UNARY_OP_ROUND:
+                    case GGML_UNARY_OP_TRUNC:
+                        supported = true;
+                        break;
+                    default:
+                        break;
+                }
+            }
+            break;
+        case GGML_OP_MUL:
+        case GGML_OP_ADD:
+        case GGML_OP_SUB:
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
+                       op->nb[0] == sizeof(float) &&
+                       op->src[0]->nb[0] == sizeof(float) &&
+                       (op->src[1]->nb[0] == sizeof(float) || op->src[1]->ne[0] == 1) &&
+                       op->nb[1] == op->ne[0] * sizeof(float) &&
+                       op->src[0]->nb[1] == op->src[0]->ne[0] * sizeof(float);
+            break;
+        case GGML_OP_MUL_MAT:
+            // Support Q8_0 x F32 -> F32, F16 x F32 -> F32, F16 x F16 -> F32, and F32 x F32 -> F32 matrix multiplication
+            // Stride requirements: first dimension must be contiguous for all tensors
+            if(op->type == GGML_TYPE_F32 && ((op->src[0]->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32)
+                    || (op->src[0]->type == GGML_TYPE_F16 && op->src[1]->type == GGML_TYPE_F16))
+                && op->ne[0] % 16 == 0 &&          // dst row length for tensor-store path
+                op->src[0]->ne[1] % 16 == 0 &&     // m
+                op->src[0]->ne[0] % 16 == 0 &&     // k
+                ggml_is_contiguous(op->src[0]) &&
+                ggml_is_contiguous(op->src[1])) {
+                // Special path for the FP32 TensorFMA kernel
+                // Limitation - generic kernels can tolerate non-cache-aligned dst rows
+                // because they publish each output element atomically. The matrix
+                // engine path still uses tiled tensor stores, so keep dst rows aligned.
+                // The m edge is difficult to do because of the 4 conseqtive load hardware limitation
+                // And the k edge is impossible because that is encoded as `stride & 0xFFFFFFFFFFC0ULL` which becomes 0 for stride 16 (4x FP32) :(
+                // FIXME: Right now this overwrites the mul_mat_f32 kernel - whatever. Fix later. Demo code
+                supported = true;
+            }
+            else if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && (op->src[0]->type == GGML_TYPE_F16 || op->src[0]->type == GGML_TYPE_F32) &&
+                op->src[1] && (op->src[1]->type == GGML_TYPE_F16 || op->src[1]->type == GGML_TYPE_F32)) {
+
+                // Check first dimension contiguity requirements
+                bool src0_first_dim_contiguous = (op->src[0]->nb[0] == ggml_type_size(op->src[0]->type));
+                bool src1_first_dim_contiguous = (op->src[1]->nb[0] == ggml_type_size(op->src[1]->type));
+                bool dst_first_dim_contiguous = (op->nb[0] == sizeof(float));
+
+                // Check destination stride ordering (only for dimensions with ne > 1)
+                bool dst_properly_ordered = true;
+                for (int d = 0; d < 3; d++) {
+                    if (op->ne[d] > 1 && op->ne[d+1] > 1 && op->nb[d] > op->nb[d+1]) {
+                        dst_properly_ordered = false;
+                    }
+                }
+
+                supported = src0_first_dim_contiguous &&
+                           src1_first_dim_contiguous &&
+                           dst_first_dim_contiguous &&
+                           dst_properly_ordered;
+            } else if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_Q8_0 &&
+                op->src[1] && op->src[1]->type == GGML_TYPE_F32) {
+
+                // Keep the existing quantized path constraints separate from the
+                // relaxed non-quant generic fallback.
+                bool src0_first_dim_contiguous = (op->src[0]->nb[0] == ggml_type_size(op->src[0]->type));
+                bool src1_first_dim_contiguous = (op->src[1]->nb[0] == ggml_type_size(op->src[1]->type));
+                bool dst_first_dim_contiguous = (op->nb[0] == sizeof(float));
+
+                bool dst_properly_ordered = true;
+                for (int d = 0; d < 3; d++) {
+                    if (op->ne[d] > 1 && op->ne[d+1] > 1 && op->nb[d] > op->nb[d+1]) {
+                        dst_properly_ordered = false;
+                    }
+                }
+
+                supported = src0_first_dim_contiguous &&
+                           src1_first_dim_contiguous &&
+                           dst_first_dim_contiguous &&
+                           dst_properly_ordered;
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_MUL_MAT_ID:
+            // Support MUL_MAT_ID for Mixture of Experts: (Q8_0/F16/F32) x F32 -> F32 with I32 expert indices
+            // src0 (as): [K, M, n_expert] - expert weight matrices (can be quantized)
+            // src1 (b):  [K, n_expert_used, batch] - activations (F32)
+            // src2 (ids): [n_expert_used, batch] - expert selection indices (I32)
+            // dst: [M, n_expert_used, batch, 1] - output (F32)
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && (op->src[0]->type == GGML_TYPE_Q8_0 || op->src[0]->type == GGML_TYPE_F16 || op->src[0]->type == GGML_TYPE_F32) &&
+                op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
+                op->src[2] && op->src[2]->type == GGML_TYPE_I32) {
+
+                // Check first dimension contiguity requirements (matching CPU backend)
+                bool src0_first_dim_contiguous = (op->src[0]->nb[0] == ggml_type_size(op->src[0]->type));
+                bool src1_first_dim_contiguous = (op->src[1]->nb[0] == ggml_type_size(op->src[1]->type));
+                bool src2_first_dim_contiguous = (op->src[2]->nb[0] == ggml_type_size(op->src[2]->type));
+                bool dst_first_dim_contiguous = (op->nb[0] == sizeof(float));
+
+                // Check destination stride ordering (only for dimensions with ne > 1)
+                bool dst_properly_ordered = true;
+                for (int d = 0; d < 3; d++) {
+                    if (op->ne[d] > 1 && op->ne[d+1] > 1 && op->nb[d] > op->nb[d+1]) {
+                        dst_properly_ordered = false;
+                    }
+                }
+
+                // Validate tensor dimension constraints from GGML definition
+                bool dims_valid = (op->src[0]->ne[3] == 1) &&  // as is 3d (one matrix per expert)
+                                 (op->src[1]->ne[3] == 1) &&  // b is 3d
+                                 (op->src[2]->ne[2] == 1 && op->src[2]->ne[3] == 1) &&  // ids is 2d
+                                 (op->src[2]->ne[1] == op->src[1]->ne[2]) &&  // must have expert list per b row
+                                 (op->src[0]->ne[0] == op->src[1]->ne[0]) &&  // K dimension must match
+                                 (op->src[2]->ne[0] % op->src[1]->ne[1] == 0);  // can broadcast
+
+                supported = src0_first_dim_contiguous &&
+                           src1_first_dim_contiguous &&
+                           src2_first_dim_contiguous &&
+                           dst_first_dim_contiguous &&
+                           dst_properly_ordered &&
+                           dims_valid;
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_ROPE:
+            // Support F32 x I32 -> F32 RoPE (standard and NEOX modes only)
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                op->src[1] && op->src[1]->type == GGML_TYPE_I32 &&
+                ggml_is_contiguous(op) &&
+                et_ggml_is_row_contiguous(op->src[0])) {
+                // Check ROPE mode - support standard (0x0), NEOX (0x2), and IMROPE (0x28)
+                const int mode = ((const int32_t *) op->op_params)[2];
+                const int ndims = ((const int32_t *) op->op_params)[1];
+                supported = ((mode == 0x0) ||
+                             (((mode & GGML_ROPE_TYPE_NEOX) || mode == GGML_ROPE_TYPE_IMROPE) && ndims % 16 == 0))
+                            && (ndims <= 512);
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_RMS_NORM:
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       op->ne[0] % 16 == 0 &&
+                       ggml_is_contiguous(op) &&
+                       et_ggml_is_row_contiguous(op->src[0]);
+            break;
+        case GGML_OP_NORM:
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       op->ne[0] % 16 == 0 &&
+                       ggml_is_contiguous(op) &&
+                       et_ggml_is_row_contiguous(op->src[0]);
+            break;
+        case GGML_OP_L2_NORM:
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       op->ne[0] % 16 == 0 &&
+                       ggml_is_contiguous(op) &&
+                       et_ggml_is_row_contiguous(op->src[0]);
+            break;
+        case GGML_OP_GROUP_NORM:
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       ggml_is_contiguous(op) &&
+                       et_ggml_is_row_contiguous(op->src[0]) &&
+                       ggml_get_op_params_i32(op, 0) > 0;
+            break;
+        case GGML_OP_IM2COL:
+            supported = op->src[0] && op->src[1] &&
+                       ((op->type == GGML_TYPE_F32 && op->src[1]->type == GGML_TYPE_F32) ||
+                        (op->type == GGML_TYPE_F16 && (op->src[1]->type == GGML_TYPE_F16 || op->src[1]->type == GGML_TYPE_F32))) &&
+                       ggml_is_contiguous(op) &&
+                       ggml_is_contiguous(op->src[1]) &&
+                       op->nb[0] == ggml_type_size(op->type) &&
+                       op->src[1]->nb[0] == ggml_type_size(op->src[1]->type);
+            break;
+        case GGML_OP_SCALE:
+            // F32 contiguous, total elements must be cache line aligned (16 floats)
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       ggml_is_contiguous(op) &&
+                       ggml_is_contiguous(op->src[0]) &&
+                       (ggml_nelements(op) % 16 == 0);
+            break;
+        case GGML_OP_GLU:
+            // Note: we only require row-wise contiguity (ggml_is_contiguous_1) so that
+            // strided views over a packed up_proj tensor (the common split-GLU layout)
+            // are accepted. The kernel walks rows via nb[1] strides, so the inner
+            // dimension just needs to be densely packed.
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                ggml_nelements(op) % 16 == 0 &&
+                ggml_is_contiguous_1(op) &&
+                ggml_is_contiguous_1(op->src[0])) {
+                // Check GLU variant - support SWIGLU, SWIGLU_OAI, GEGLU, GEGLU_ERF, GEGLU_QUICK, REGLU
+                ggml_glu_op glu_type = ggml_get_glu_op(op);
+                const bool supported_variant =
+                    glu_type == GGML_GLU_OP_SWIGLU      ||
+                    glu_type == GGML_GLU_OP_SWIGLU_OAI  ||
+                    glu_type == GGML_GLU_OP_GEGLU       ||
+                    glu_type == GGML_GLU_OP_GEGLU_ERF   ||
+                    glu_type == GGML_GLU_OP_GEGLU_QUICK ||
+                    glu_type == GGML_GLU_OP_REGLU;
+
+                if (op->src[1]) {
+                    supported = supported_variant &&
+                        op->src[1]->type == GGML_TYPE_F32 &&
+                        ggml_is_contiguous_1(op->src[1]) &&
+                        op->src[0]->ne[0] == op->ne[0] &&
+                        op->src[1]->ne[0] == op->ne[0];
+                } else {
+                    supported = supported_variant &&
+                        op->src[0]->ne[0] == 2 * op->ne[0];
+                }
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_SOFT_MAX:
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                ggml_is_contiguous(op) &&
+                ggml_is_contiguous(op->src[0]) &&
+                op->src[0]->ne[0] > 1) {
+                // Check optional mask tensor (F32 only)
+                if (op->src[1]) {
+                    supported = op->src[1]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[1]);
+                    if (!supported) break;
+                }
+                // Check optional sinks tensor (F32 only)
+                if (op->src[2]) {
+                    supported = op->src[2]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[2]);
+                } else {
+                    supported = true;
+                }
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_SSM_SCAN:
+            supported =
+                op->type == GGML_TYPE_F32 &&
+                ggml_is_contiguous(op) &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[0]) &&
+                op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
+                op->src[2] && op->src[2]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[2]) &&
+                op->src[3] && op->src[3]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[3]) &&
+                op->src[4] && op->src[4]->type == GGML_TYPE_F32 &&
+                op->src[5] && op->src[5]->type == GGML_TYPE_F32 &&
+                op->src[6] && op->src[6]->type == GGML_TYPE_I32 && ggml_is_contiguous(op->src[6]) &&
+                op->src[1]->nb[0] == sizeof(float) &&
+                op->src[4]->nb[0] == sizeof(float) &&
+                op->src[5]->nb[0] == sizeof(float) &&
+                op->src[1]->nb[1] == (size_t) op->src[1]->ne[0] * sizeof(float) &&
+                op->src[4]->nb[1] == (size_t) op->src[4]->ne[0] * sizeof(float) &&
+                op->src[5]->nb[1] == (size_t) op->src[5]->ne[0] * sizeof(float) &&
+                op->src[0]->ne[0] == op->src[4]->ne[0] &&
+                op->src[0]->ne[1] == op->src[1]->ne[0] &&
+                op->src[0]->ne[2] == op->src[1]->ne[1] &&
+                op->src[1]->ne[2] == op->src[2]->ne[1] &&
+                op->src[1]->ne[3] == op->src[2]->ne[2] &&
+                op->src[4]->ne[2] == op->src[1]->ne[2] &&
+                op->src[4]->ne[3] == op->src[1]->ne[3] &&
+                ggml_are_same_shape(op->src[4], op->src[5]) &&
+                op->src[6]->ne[0] == op->src[1]->ne[3] &&
+                op->src[3]->ne[1] == op->src[1]->ne[1] &&
+                (op->src[3]->ne[0] == 1 || op->src[3]->ne[0] == op->src[0]->ne[0]) &&
+                (op->src[1]->ne[1] % op->src[4]->ne[1] == 0);
+            break;
+        case GGML_OP_FLASH_ATTN_EXT:
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                op->src[1] && (op->src[1]->type == GGML_TYPE_F32 || op->src[1]->type == GGML_TYPE_F16) &&
+                op->src[2] && (op->src[2]->type == GGML_TYPE_F32 || op->src[2]->type == GGML_TYPE_F16) &&
+                op->src[4] == nullptr &&
+                ggml_is_contiguous_rows(op) &&
+                ggml_is_contiguous_rows(op->src[0])) {
+                float max_bias = 0.0f;
+                float logit_softcap = 0.0f;
+                memcpy(&max_bias,      (const float *) op->op_params + 1, sizeof(max_bias));
+                memcpy(&logit_softcap, (const float *) op->op_params + 2, sizeof(logit_softcap));
+
+                const enum ggml_prec prec = ggml_flash_attn_ext_get_prec(op);
+
+                // Mask must be F16 or F32 if present
+                bool mask_ok = (op->src[3] == nullptr) ||
+                               (op->src[3]->type == GGML_TYPE_F32) ||
+                               (op->src[3]->type == GGML_TYPE_F16);
+
+                // GQA: n_head_q must be a multiple of n_head_kv
+                const int64_t nhq = op->src[0]->ne[2];
+                const int64_t nhk = op->src[1]->ne[2];
+
+                // K/V row stride must match element size
+                const size_t k_elem = op->src[1]->type == GGML_TYPE_F16 ? 2 : 4;
+                const size_t v_elem = op->src[2]->type == GGML_TYPE_F16 ? 2 : 4;
+
+                // Only support matrix engine path (F16 K/V, dk%32==0);
+                // mask scalar F32 fallback to get baseline perf readings
+                const bool me_eligible =
+                    op->src[1]->type == GGML_TYPE_F16 &&
+                    op->src[2]->type == GGML_TYPE_F16 &&
+                    (op->src[0]->ne[0] % 32) == 0;
+
+                supported =
+                    me_eligible &&
+                    mask_ok &&
+                    (prec == GGML_PREC_F32 || prec == GGML_PREC_DEFAULT) &&
+                    max_bias == 0.0f &&
+                    logit_softcap == 0.0f &&
+                    op->src[0]->nb[0] == sizeof(float) &&
+                    op->src[1]->nb[0] == k_elem &&
+                    op->src[2]->nb[0] == v_elem &&
+                    op->nb[0] == sizeof(float) &&
+                    op->src[0]->ne[0] == op->src[1]->ne[0] &&  // dk matches
+                    op->src[2]->ne[0] == op->ne[0] &&           // dv matches
+                    op->src[2]->ne[0] <= 512 &&                 // dv limit
+                    op->src[0]->ne[0] <= 512 &&                 // dk limit
+                    nhq % nhk == 0 &&                           // GQA ratio is integer
+                    op->src[0]->ne[1] == op->ne[2] &&
+                    op->src[0]->ne[2] == op->ne[1] &&
+                    op->src[0]->ne[3] == op->ne[3] &&
+                    op->src[1]->ne[1] == op->src[2]->ne[1] &&
+                    op->src[1]->ne[2] == op->src[2]->ne[2] &&
+                    op->src[1]->ne[3] == op->src[2]->ne[3] &&
+                    op->src[0]->ne[3] == op->src[1]->ne[3];
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_GET_ROWS:
+            // Support F32/F16/Q4_0/Q8_0/Q4_K data with I32 indices -> F32 output
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] &&
+                (op->src[0]->type == GGML_TYPE_F32 ||
+                    op->src[0]->type == GGML_TYPE_F16 ||
+                    op->src[0]->type == GGML_TYPE_Q4_0 ||
+                    op->src[0]->type == GGML_TYPE_Q8_0 ||
+                    op->src[0]->type == GGML_TYPE_Q4_K) &&
+                op->src[1] && op->src[1]->type == GGML_TYPE_I32 &&
+                ggml_is_contiguous(op) &&
+                ggml_is_contiguous(op->src[0]) &&
+                ggml_is_contiguous(op->src[1])) {
+                // Validate dimension constraints from ggml implementation
+                supported = (op->src[0]->ne[2] == op->src[1]->ne[1]) && (op->src[1]->ne[3] == 1);
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_CONT:
+            // Support F32->F32 and F16->F16 CONT operations (rearrange non-contiguous to contiguous)
+            if ((op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16) &&
+                op->src[0] && op->src[0]->type == op->type &&
+                ggml_is_contiguous(op)) {
+                // Defensive check: ensure dst and src0 are not aliased (separate buffers)
+                // While GGML design currently guarantees this, check for future robustness
+                if (op->data && op->src[0]->data && op->data == op->src[0]->data) {
+                    GGML_LOG_WARN("ET: CONT operation detected aliased tensors (dst == src0), unsupported");
+                    supported = false;
+                } else {
+                    supported = true;
+                }
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_CPY:
+            // CPY copies src[0] data into dst layout (same as CONT for same-type)
+            // Special path: zero-element tensors (scalars) are accepted as no-ops
+            if (op->src[0]) {
+                const int64_t nelements = op->ne[0] * op->ne[1] * op->ne[2] * op->ne[3];
+                if (nelements == 0) {
+                    // Zero-element / scalar no-op case - always supported
+                    supported = true;
+                } else if ((op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16) &&
+                           op->src[0]->type == op->type &&
+                           ggml_is_contiguous(op)) {
+                    // Same-type with contiguous dst - reuse CONT kernel
+                    if (op->data && op->src[0]->data && op->data == op->src[0]->data) {
+                        GGML_LOG_WARN("ET: CPY operation detected aliased tensors, unsupported");
+                        supported = false;
+                    } else {
+                        supported = true;
+                    }
+                } else if (op->type == GGML_TYPE_F16 &&
+                           op->src[0]->type == GGML_TYPE_F32 &&
+                           ggml_is_contiguous(op)) {
+                    // F32 -> F16 conversion copy
+                    supported = true;
+                } else {
+                    supported = false;
+                }
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_CONCAT:
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
+                ggml_is_contiguous(op)) {
+                const int32_t dim = ((const int32_t *) op->op_params)[0];
+                if (dim == 0 &&
+                    op->src[0]->ne[0] % 16 == 0 &&
+                    op->src[1]->ne[0] % 16 == 0 &&
+                    ggml_is_contiguous(op->src[0]) &&
+                    ggml_is_contiguous(op->src[1])) {
+                    // Fast dim==0 path: both source row segments are cacheline-aligned
+                    // and contiguous, so the kernel can use vector row copies.
+                    supported = true;
+                } else if (dim == 0 &&
+                           ((op->src[0]->nb[0] % sizeof(float) == 0) || op->src[0]->ne[0] == 1) &&
+                           ((op->src[1]->nb[0] % sizeof(float) == 0) || op->src[1]->ne[0] == 1)) {
+                    // Slow dim==0 path: scalar, stride-aware copies for non-contiguous
+                    // or non-aligned source row segments. Destination remains contiguous.
+                    supported = true;
+                } else if (op->ne[0] % 16 == 0 &&
+                           op->src[0]->ne[0] % 16 == 0 &&
+                           op->src[1]->ne[0] % 16 == 0 &&
+                           ggml_is_contiguous(op->src[0]) &&
+                           ggml_is_contiguous(op->src[1])) {
+                    // Dim >= 1 path: full aligned row copies from one source or the other.
+                    supported = true;
+                }
+            }
+            break;
+        case GGML_OP_SSM_CONV:
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
+                       op->src[0]->nb[0] == sizeof(float) &&
+                       op->src[1]->nb[0] == sizeof(float) &&
+                       op->src[0]->nb[1] == op->src[0]->ne[0] * sizeof(float) &&
+                       op->src[1]->nb[1] == op->src[1]->ne[0] * sizeof(float) &&
+                       ggml_is_contiguous(op) &&
+                       op->src[1]->ne[1] == op->src[0]->ne[1] &&
+                       op->ne[0] == op->src[0]->ne[1] &&
+                       op->ne[1] == op->src[0]->ne[0] - op->src[1]->ne[0] + 1 &&
+                       op->ne[2] == op->src[0]->ne[2];
+            break;
+        case GGML_OP_PAD:
+            // F32 zero-pad only, no dim0 padding, dst contiguous
+            // ne[0] must be CL-aligned (% 16 == 0) or evenly divide a CL (16 % ne[0] == 0)
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                ggml_is_contiguous(op) &&
+                (op->ne[0] % 16 == 0 || 16 % op->ne[0] == 0) &&
+                op->src[0]->nb[0] == sizeof(float)) {
+                const int32_t lp0 = ((const int32_t*)op->op_params)[0];
+                const int32_t rp0 = ((const int32_t*)op->op_params)[1];
+                const bool circular = (bool)((const int32_t*)op->op_params)[8];
+                if (lp0 == 0 && rp0 == 0 && !circular) {
+                    supported = true;
+                } else {
+                    supported = false;
+                }
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_REPEAT:
+            // F32 contiguous, dst ne[0] cacheline-aligned
+            // src0 ne[0] must be cacheline-aligned OR 1 (scalar broadcast)
+            // dst.ne[i] must be divisible by src0.ne[i] for all dims
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                (op->src[0]->ne[0] == 1 || op->src[0]->ne[0] % 16 == 0) &&
+                op->ne[0] % 16 == 0 &&
+                ggml_is_contiguous(op) &&
+                ggml_is_contiguous(op->src[0]) &&
+                op->ne[0] % op->src[0]->ne[0] == 0 &&
+                op->ne[1] % op->src[0]->ne[1] == 0 &&
+                op->ne[2] % op->src[0]->ne[2] == 0 &&
+                op->ne[3] % op->src[0]->ne[3] == 0) {
+                supported = true;
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_FILL:
+            // F32 contiguous, ne[0] cacheline-aligned for SIMD fill
+            supported = op->type == GGML_TYPE_F32 &&
+                       ggml_is_contiguous(op) &&
+                       op->ne[0] % 16 == 0;
+            break;
+        case GGML_OP_DIAG:
+            // F32 contiguous dst, src0 is 1D vector [N,1,...], dst is [N,N,...]
+            // ne[0] must be cacheline-aligned for SIMD zeroing
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       op->ne[0] % 16 == 0 &&
+                       op->ne[0] == op->ne[1] &&
+                       op->src[0]->ne[0] == op->ne[0] &&
+                       op->src[0]->ne[1] == 1 &&
+                       ggml_is_contiguous(op) &&
+                       ggml_is_contiguous(op->src[0]);
+            break;
+        case GGML_OP_TRI:
+            // F32 contiguous, same shape in/out
+            // Kernel handles arbitrary ne[0] with aligned fast path + scalar fallback
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       ggml_is_contiguous(op) &&
+                       ggml_is_contiguous(op->src[0]);
+            break;
+        case GGML_OP_SOLVE_TRI:
+            // F32 contiguous, A square, shapes compatible
+            // Only lower-triangular left-side non-unit variant
+            // Require k % 16 == 0 for cache-line-safe column parallelism
+            supported = op->type == GGML_TYPE_F32 &&
+                       op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                       op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
+                       op->src[0]->ne[0] == op->src[0]->ne[1] &&
+                       op->src[0]->ne[1] == op->src[1]->ne[1] &&
+                       op->src[1]->ne[0] % 16 == 0 &&
+                       ggml_is_contiguous(op) &&
+                       ggml_is_contiguous(op->src[0]) &&
+                       ggml_is_contiguous(op->src[1]);
+            break;
+        case GGML_OP_SET:
+            // Minimal useful support: inplace F32 SET of a contiguous src1 view into
+            // a contiguous dst/base tensor using explicit destination view strides.
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
+                ggml_is_contiguous(op) &&
+                ggml_is_contiguous(op->src[0]) &&
+                ggml_is_contiguous(op->src[1]) &&
+                ggml_are_same_shape(op, op->src[0]) &&
+                op->src[1]->ne[0] % 16 == 0) {
+                const bool inplace = (bool) ((const int32_t *) op->op_params)[4];
+                const size_t nb1 = ((const int32_t *) op->op_params)[0];
+                const size_t nb2 = ((const int32_t *) op->op_params)[1];
+                const size_t nb3 = ((const int32_t *) op->op_params)[2];
+                const size_t offset = ((const int32_t *) op->op_params)[3];
+                const size_t nb0 = ggml_element_size(op);
+                const size_t im0 = op->src[1]->ne[0] == 0 ? 0 : op->src[1]->ne[0] - 1;
+                const size_t im1 = op->src[1]->ne[1] == 0 ? 0 : op->src[1]->ne[1] - 1;
+                const size_t im2 = op->src[1]->ne[2] == 0 ? 0 : op->src[1]->ne[2] - 1;
+                const size_t im3 = op->src[1]->ne[3] == 0 ? 0 : op->src[1]->ne[3] - 1;
+
+                const bool view_bounds_ok =
+                    offset + im0 * nb0 + im1 * nb1 + im2 * nb2 + im3 * nb3 <= ggml_nbytes(op);
+
+                const bool cacheline_aligned =
+                    (nb1 % 64 == 0) && (nb2 % 64 == 0) && (nb3 % 64 == 0) && (offset % 64 == 0);
+
+                supported = inplace && view_bounds_ok && cacheline_aligned;
+            }
+            break;
+        case GGML_OP_RWKV_WKV6:
+            // F32 contiguous, head_size must be multiple of 8 for vectorization
+            // 6 sources: k, v, r, tf, td, state
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
+                op->src[2] && op->src[2]->type == GGML_TYPE_F32 &&
+                op->src[3] && op->src[3]->type == GGML_TYPE_F32 &&
+                op->src[4] && op->src[4]->type == GGML_TYPE_F32 &&
+                op->src[5] && op->src[5]->type == GGML_TYPE_F32 &&
+                op->src[0]->ne[0] % 8 == 0 &&  // head_size multiple of 8
+                ggml_is_contiguous(op->src[0]) &&
+                ggml_is_contiguous(op->src[1]) &&
+                ggml_is_contiguous(op->src[2]) &&
+                ggml_is_contiguous(op->src[3]) &&
+                ggml_is_contiguous(op->src[4]) &&
+                ggml_is_contiguous(op->src[5])) {
+                supported = true;
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_RWKV_WKV7:
+            // F32 contiguous, head_size must be multiple of 8 for vectorization
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
+                op->src[2] && op->src[2]->type == GGML_TYPE_F32 &&
+                op->src[3] && op->src[3]->type == GGML_TYPE_F32 &&
+                op->src[4] && op->src[4]->type == GGML_TYPE_F32 &&
+                op->src[5] && op->src[5]->type == GGML_TYPE_F32 &&
+                op->src[6] && op->src[6]->type == GGML_TYPE_F32 &&
+                op->src[2]->ne[0] % 8 == 0 &&  // head_size multiple of 8
+                ggml_is_contiguous(op->src[0]) &&
+                ggml_is_contiguous(op->src[1]) &&
+                ggml_is_contiguous(op->src[2]) &&
+                ggml_is_contiguous(op->src[3]) &&
+                ggml_is_contiguous(op->src[4]) &&
+                ggml_is_contiguous(op->src[5]) &&
+                ggml_is_contiguous(op->src[6])) {
+                supported = true;
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_GATED_DELTA_NET:
+            // F32, S_v must be multiple of 8 for vectorization
+            // q, k, v may be row-contiguous with strided higher dimensions.
+            // g, beta, state stay contiguous.
+            if (op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&  // q
+                op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&  // k
+                op->src[2] && op->src[2]->type == GGML_TYPE_F32 &&  // v
+                op->src[3] && op->src[3]->type == GGML_TYPE_F32 &&  // g
+                op->src[4] && op->src[4]->type == GGML_TYPE_F32 &&  // beta
+                op->src[5] && op->src[5]->type == GGML_TYPE_F32 &&  // state
+                op->src[2]->ne[0] % 8 == 0 &&  // S_v multiple of 8
+                (op->src[3]->ne[0] == 1 || op->src[3]->ne[0] == op->src[2]->ne[0]) && // g is scalar or per-element
+                op->src[4]->ne[0] == 1 &&       // beta is scalar per position
+                et_ggml_is_row_contiguous(op->src[0]) &&
+                et_ggml_is_row_contiguous(op->src[1]) &&
+                et_ggml_is_row_contiguous(op->src[2]) &&
+                ggml_is_contiguous(op->src[3]) &&
+                ggml_is_contiguous(op->src[4]) &&
+                ggml_is_contiguous(op->src[5])) {
+                supported = true;
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
+        case GGML_OP_RESHAPE:
+            // Metadata-only no-ops, accept any type
+            supported = true;
+            break;
+        case GGML_OP_SET_ROWS:
+            // Support F32 data with I64 indices -> F16/F32 output (scatter operation)
+            if (op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                op->src[1] && op->src[1]->type == GGML_TYPE_I64 &&
+                (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16) &&
+                ggml_is_contiguous_rows(op) &&
+                ggml_is_contiguous_rows(op->src[0]) &&
+                ggml_is_contiguous(op->src[1])) {
+                // Validate dimension constraints from ggml implementation
+                supported = (op->ne[0] == op->src[0]->ne[0]) &&  // same number of columns
+                           (op->ne[2] == op->src[0]->ne[2]) &&   // same batch size
+                           (op->ne[3] == op->src[0]->ne[3]) &&   // same outer dimension
+                           (op->src[0]->ne[1] == op->src[1]->ne[0]) && // src rows = index count
+                           (op->src[0]->ne[2] % op->src[1]->ne[1] == 0) && // batch constraint
+                           (op->src[0]->ne[3] % op->src[1]->ne[2] == 0) && // outer constraint
+                           (op->src[1]->ne[3] == 1);                       // indices tensor constraint
+            } else {
+                supported = false;
+            }
+            break;
+        case GGML_OP_NONE:
+            // Always support NONE operations - they represent leaf nodes (parameters, inputs, constants)
+            // No computation needed, just memory management
+            supported = true;
+            break;
+        default:
+            supported = false;
+            break;
+    }
+
+    // if(!supported) {
+    //     ggml_et_dump_operator_metadata(op);
+    // }
+    return supported;
 }
+
 
 static bool ggml_backend_et_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
     GGML_UNUSED(dev);
