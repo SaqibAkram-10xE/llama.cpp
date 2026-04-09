@@ -2400,8 +2400,11 @@ bool ggml_et_op_cg(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph
     // proper work distribution across shires (not all shires doing same work redundantly).
     // TODO: Implement work distribution where shire_id is used to divide work, then
     //       we can use 0xFFFFFFFF with inter-shire barrier only at graph end.
+    
     // kernel_result = ggml_et_launch_kernel(dev_ctx, "op_cgraph", cg, total_size, 0x1);
-    kernel_result = ggml_et_launch_kernel(dev_ctx, "op_cgraph", cg, total_size, 0xFFFFFFFF);
+    
+    // kernel_result = ggml_et_launch_kernel(dev_ctx, "op_cgraph", cg, total_size, 0xFFFFFFFF);
+    kernel_result = ggml_et_launch_kernel(dev_ctx, "op_cgraph_2", cg, total_size, 0xFFFFFFFF);
     
     free(cg);
     return kernel_result;
