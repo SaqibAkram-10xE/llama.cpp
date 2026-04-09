@@ -14,10 +14,10 @@
 #include "block_ops.h"
 #include <etsoc/common/utils.h>
 #include "tensor.h"
+#include "et_config.h"
 
 // Pull in standalone kernel.c files as monolithic includes.
 // Each kernel checks this macro to rename entry_point to its callable name.
-#define ENABLE_MONOLITHIC_COMPUTE
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
 // Include kernel implementations
@@ -209,7 +209,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
                         params.src1.type != GGML_TYPE_F32) {
                         break;
                     }
-                    // el_map_f32(&params, env);
+                    el_map_f32(&params, env);
                 }
                 break;
 

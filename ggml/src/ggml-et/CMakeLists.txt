@@ -111,6 +111,9 @@ ggml_add_backend_library(ggml-et
                          ggml-et-cpu-compare.cpp
                         )
 
+# Enable monolithic compute path for host code
+target_compile_definitions(ggml-et PRIVATE ENABLE_MONOLITHIC_COMPUTE)
+
 # Mark generated files as such
 set_source_files_properties(
     ${CMAKE_CURRENT_BINARY_DIR}/et-kernels/ggml-et-kernels-embed.cpp
