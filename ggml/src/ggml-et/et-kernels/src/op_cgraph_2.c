@@ -398,8 +398,10 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             // device_barrier_refined(32);
             device_barrier(32);
             // et_barrier()
-            
         }
+
+        // device_barrier(32);
+        
     }
 
 

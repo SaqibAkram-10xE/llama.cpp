@@ -760,7 +760,7 @@ static bool et_ggml_is_row_contiguous(const ggml_tensor * t) {
     return t->nb[0] == ggml_type_size(t->type);
 }
 
-/*static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     GGML_UNUSED(dev);
 
     bool supported = false;
@@ -1020,9 +1020,9 @@ static bool et_ggml_is_row_contiguous(const ggml_tensor * t) {
         ggml_et_dump_operator_metadata(op);
     }
     return supported;
-}*/
+}
 
-static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+/*static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     GGML_UNUSED(dev);
 
     bool supported = false;
@@ -1744,7 +1744,7 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
     //     ggml_et_dump_operator_metadata(op);
     // }
     return supported;
-}
+}*/
 
 
 static bool ggml_backend_et_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
