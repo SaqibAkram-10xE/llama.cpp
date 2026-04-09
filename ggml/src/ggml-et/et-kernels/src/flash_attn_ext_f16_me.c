@@ -45,29 +45,24 @@ typedef uint16_t et_fp16_t;
 
 #define ET_NEG_INF_F (-3.402823466e+38f)
 
+#ifndef GGML_ET_FLASH_ATTN_EXT_PARAMS_DEFINED
+#define GGML_ET_FLASH_ATTN_EXT_PARAMS_DEFINED
 struct ggml_et_flash_attn_ext_params {
     struct ggml_tensor src0;     // Q (F32)
     struct ggml_tensor src1;     // K (F16)
     struct ggml_tensor src2;     // V (F16)
     struct ggml_tensor mask;     // mask (F16 or F32), zeroed when absent
     struct ggml_tensor dst;      // Output (F32)
-    float scale;
-    int32_t has_mask;
+    float scale;                 // Scale factor
+    int32_t has_mask;            // nonzero if mask present
 };
+#endif
 
-static inline float get_mask_val(const struct ggml_tensor * mask,
-                                 int64_t iq1, int64_t ik1,
-                                 int64_t iq2, int64_t iq3) {
-    const char * base = (const char *) mask->data
-        + iq1 * mask->nb[1]
-        + (iq2 % mask->ne[2]) * mask->nb[2]
-        + (iq3 % mask->ne[3]) * mask->nb[3];
-
-    if (mask->type == GGML_TYPE_F32) {
-        return *(const float *)(base + ik1 * mask->nb[0]);
-    }
-    return fp16_to_fp32(*(const uint16_t *)(base + ik1 * mask->nb[0]));
-}
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define FLASH_ATTN_EXT_F16_ME_FUNC flash_attn_ext_f16_me_impl
+#else
+#define FLASH_ATTN_EXT_F16_ME_FUNC entry_point
+#endif
 
 static inline const char * get_mask_row_base(const struct ggml_tensor * mask,
                                              int64_t iq1, int64_t iq2, int64_t iq3) {
@@ -417,7 +412,7 @@ normalize_store_vec(float * out, float * acc, int64_t dv, float inv, int use_fas
     __asm__ volatile("mova.m.x %0" :: "r"(old_mask));
 }
 
-int entry_point(struct ggml_et_flash_attn_ext_params * params, void * env) {
+int FLASH_ATTN_EXT_F16_ME_FUNC(struct ggml_et_flash_attn_ext_params * params, void * env) {
     (void) env;
 
     uint64_t hart_id  = get_hart_id();
