@@ -584,7 +584,7 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
     ggml_backend_et_device_context * dev_ctx = (ggml_backend_et_device_context *)backend->device->context;
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
-    ggml_et_op_cg(dev_ctx, cgraph);
+    // ggml_et_op_cg(dev_ctx, cgraph);
 #else
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
@@ -1002,6 +1002,13 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
         case GGML_OP_NONE:
             // Always support NONE operations - they represent leaf nodes (parameters, inputs, constants)
             // No computation needed, just memory management
+            supported = true;
+            break;
+        case GGML_OP_RESHAPE:
+        case GGML_OP_VIEW:
+        case GGML_OP_PERMUTE:
+        case GGML_OP_TRANSPOSE:
+            // Metadata-only operations that require no computation
             supported = true;
             break;
         default:
