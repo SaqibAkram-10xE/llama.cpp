@@ -892,6 +892,10 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
             }
             break;
         case GGML_OP_FLASH_ATTN_EXT:
+            // Disabled for monolithic compute - falls back to CPU
+            supported = false;
+            break;
+            /*
             if (op->type == GGML_TYPE_F32 &&
                 op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
                 op->src[1] && (op->src[1]->type == GGML_TYPE_F32 || op->src[1]->type == GGML_TYPE_F16) &&
@@ -944,6 +948,7 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
                 supported = false;
             }
             break;
+            */
         case GGML_OP_GET_ROWS:
             // Support F32/Q4_0/Q8_0/Q4_K data with I32 indices -> F32 output
             if (op->type == GGML_TYPE_F32 &&
