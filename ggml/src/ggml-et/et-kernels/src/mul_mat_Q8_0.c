@@ -10,7 +10,13 @@
 #include "quants.h"
 #include "block_ops.h"
 
-int entry_point(struct ggml_et_binary_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define MUL_MAT_Q8_0_FUNC mul_mat_Q8_0
+#else
+#define MUL_MAT_Q8_0_FUNC entry_point
+#endif
+
+int MUL_MAT_Q8_0_FUNC(struct ggml_et_binary_params* params, void* env) {
     uint64_t hart_id = get_hart_id();
     const int64_t stride_m = 2048;
 

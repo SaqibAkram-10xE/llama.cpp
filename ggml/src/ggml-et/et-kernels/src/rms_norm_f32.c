@@ -17,7 +17,13 @@ struct ggml_et_rms_norm_params {
     float eps;                // Epsilon parameter for numerical stability
 };
 
-int entry_point(struct ggml_et_rms_norm_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define RMS_NORM_F32_FUNC rms_norm_f32_impl
+#else
+#define RMS_NORM_F32_FUNC entry_point
+#endif
+
+int RMS_NORM_F32_FUNC(struct ggml_et_rms_norm_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

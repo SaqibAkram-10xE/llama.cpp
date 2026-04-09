@@ -396,7 +396,13 @@ static inline void compute_softmax_row(
 }
 
 // Main entry point for Softmax kernel
-int entry_point(struct ggml_et_softmax_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define SOFTMAX_F32_FUNC softmax_f32_impl
+#else
+#define SOFTMAX_F32_FUNC entry_point
+#endif
+
+int SOFTMAX_F32_FUNC(struct ggml_et_softmax_params* params, void* env) {
     // Cast env to proper type
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
