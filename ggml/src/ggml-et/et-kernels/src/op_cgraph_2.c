@@ -548,6 +548,8 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
         const int node_op_val = node_op[i];
         if (node_op_val == GGML_OP_NONE) continue;
 
+        // device_barrier(32);
+
         switch (node_op_val) {
             case GGML_OP_MUL:
             case GGML_OP_ADD:
@@ -985,9 +987,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             node_op_val != GGML_OP_PERMUTE &&
             node_op_val != GGML_OP_TRANSPOSE &&
             node_op_val != GGML_OP_NONE) {
-            // device_barrier_refined(32);
             device_barrier(32);
-            // et_barrier()
         }
 
         // device_barrier(32);
