@@ -27,6 +27,43 @@ struct ggml_et_im2col_params {
     struct ggml_tensor dst;
 };
 
+// ROPE parameters (from rope_f32.c)
+typedef struct {
+    int32_t n_past;
+    int32_t n_dims;
+    int32_t mode;
+    int32_t n_ctx;
+    int32_t n_ctx_orig;
+    float   freq_base;
+    float   freq_scale;
+    float   ext_factor;
+    float   attn_factor;
+    float   beta_fast;
+    float   beta_slow;
+    int32_t sections[4];
+} rope_params_t;
+
+// ROPE kernel parameters structure (from rope_f32.c)
+struct ggml_et_rope_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor src2;
+    struct ggml_tensor dst;
+    rope_params_t rope_params;
+};
+
+// Compact ROPE work descriptor (from rope_f32.c)
+typedef struct {
+    const float*   src0_data;
+    const int32_t* src1_data;
+    const float*   freq_factors;
+    float*         dst_data;
+    int64_t        ne[4];
+    int64_t        src0_nb1, src0_nb2, src0_nb3;
+    int64_t        dst_nb1, dst_nb2, dst_nb3;
+    rope_params_t  rp;
+} rope_f32_work_t;
+
 #ifdef ENABLE_MONOLITHIC_COMPUTE
 // Include kernel implementations
 #include "el_map_f32.c"
@@ -291,29 +328,8 @@ struct ggml_et_ssm_scan_params {
 };
 
 // ggml_et_mul_mat_id_params is already defined in ggml_tensor.h
-
-typedef struct {
-    int32_t n_past;
-    int32_t n_dims;
-    int32_t mode;
-    int32_t n_ctx;
-    int32_t n_ctx_orig;
-    float   freq_base;
-    float   freq_scale;
-    float   ext_factor;
-    float   attn_factor;
-    float   beta_fast;
-    float   beta_slow;
-    int32_t sections[4];
-} rope_params_t;
-
-struct ggml_et_rope_params {
-    struct ggml_tensor src0;
-    struct ggml_tensor src1;
-    struct ggml_tensor src2;
-    struct ggml_tensor dst;
-    rope_params_t rope_params;
-};
+// rope_params_t and rope_f32_work_t are defined outside ENABLE_MONOLITHIC_COMPUTE block
+// ggml_et_rope_params is not needed in monolithic mode
 
 // memset_params excluded - defined in memops.c which is built as standalone kernel
 
@@ -371,6 +387,7 @@ static inline int ssm_conv_f32_impl(struct ggml_et_ssm_conv_params* params, void
 static inline int ssm_scan_f32_impl(struct ggml_et_ssm_scan_params* params, void* env) { (void)params; (void)env; return -1; }
 static inline int im2col_f32_impl(struct ggml_et_im2col_params* params, void* env) { (void)params; (void)env; return -1; }
 static inline int im2col_impl(struct ggml_et_binary_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int rope_f32_compute(const rope_f32_work_t* w, int thread_id, int num_threads) { (void)w; (void)thread_id; (void)num_threads; return -1; }
 // memops_impl excluded - memops is built as standalone kernel
 #endif
 
