@@ -41,7 +41,13 @@ static inline void broadcast_scalar_aligned(float* dst, float val, int32_t n) {
     }
 }
 
-int entry_point(struct ggml_et_repeat_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define REPEAT_F32_FUNC repeat_f32_impl
+#else
+#define REPEAT_F32_FUNC entry_point
+#endif
+
+int REPEAT_F32_FUNC(struct ggml_et_repeat_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

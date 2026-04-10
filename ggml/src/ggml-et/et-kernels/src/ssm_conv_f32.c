@@ -14,7 +14,13 @@ struct ggml_et_ssm_conv_params {
     struct ggml_tensor dst;   // output: [d_inner, n_t, n_seqs]
 };
 
-int entry_point(struct ggml_et_ssm_conv_params * params, void * env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define SSM_CONV_F32_FUNC ssm_conv_f32_impl
+#else
+#define SSM_CONV_F32_FUNC entry_point
+#endif
+
+int SSM_CONV_F32_FUNC(struct ggml_et_ssm_conv_params * params, void * env) {
     kernel_environment_t * kernel_env = (kernel_environment_t *) env;
 
     if (!kernel_env) {

@@ -94,7 +94,13 @@ static void copy_cache_aligned_f16(uint16_t* dst, const float* src) {
     );
 }
 
-int entry_point(struct ggml_et_set_rows_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define SET_ROWS_F32_FUNC set_rows_f32_impl
+#else
+#define SET_ROWS_F32_FUNC entry_point
+#endif
+
+int SET_ROWS_F32_FUNC(struct ggml_et_set_rows_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

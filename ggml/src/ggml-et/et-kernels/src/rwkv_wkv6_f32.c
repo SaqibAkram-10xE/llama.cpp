@@ -32,7 +32,13 @@ struct ggml_et_rwkv_wkv6_params {
     int32_t n_seqs;     // number of sequences
 };
 
-int entry_point(struct ggml_et_rwkv_wkv6_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define RWKV_WKV6_F32_FUNC rwkv_wkv6_f32_impl
+#else
+#define RWKV_WKV6_F32_FUNC entry_point
+#endif
+
+int RWKV_WKV6_F32_FUNC(struct ggml_et_rwkv_wkv6_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

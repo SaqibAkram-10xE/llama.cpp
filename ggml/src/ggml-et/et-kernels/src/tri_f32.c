@@ -39,7 +39,13 @@ static inline int keep_element(int32_t tri_type, int64_t i0, int64_t i1) {
     }
 }
 
-int entry_point(struct ggml_et_tri_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define TRI_F32_FUNC tri_f32_impl
+#else
+#define TRI_F32_FUNC entry_point
+#endif
+
+int TRI_F32_FUNC(struct ggml_et_tri_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

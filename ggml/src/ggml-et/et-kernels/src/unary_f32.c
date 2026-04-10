@@ -460,7 +460,13 @@ static inline void vec_softplus(float* dst, const float* src, int32_t n) {
 // Main entry point
 //******************************************************************************
 
-int entry_point(struct ggml_et_unary_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define UNARY_F32_FUNC unary_f32_impl
+#else
+#define UNARY_F32_FUNC entry_point
+#endif
+
+int UNARY_F32_FUNC(struct ggml_et_unary_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

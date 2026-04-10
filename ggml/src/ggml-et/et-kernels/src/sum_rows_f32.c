@@ -13,7 +13,13 @@ struct ggml_et_sum_rows_params {
     struct ggml_tensor dst;   // F32 output tensor [1, ne01, ne02, ne03]
 };
 
-int entry_point(struct ggml_et_sum_rows_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define SUM_ROWS_F32_FUNC sum_rows_f32_impl
+#else
+#define SUM_ROWS_F32_FUNC entry_point
+#endif
+
+int SUM_ROWS_F32_FUNC(struct ggml_et_sum_rows_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

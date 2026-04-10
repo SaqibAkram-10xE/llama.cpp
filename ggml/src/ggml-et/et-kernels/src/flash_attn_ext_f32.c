@@ -81,7 +81,13 @@ static inline float get_mask_val(const struct ggml_tensor * mask,
     return fp16_to_fp32(*(const uint16_t *)(base + ik1 * mask->nb[0]));
 }
 
-int entry_point(struct ggml_et_flash_attn_ext_params * params, void * env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define FLASH_ATTN_EXT_F32_FUNC flash_attn_ext_f32_impl
+#else
+#define FLASH_ATTN_EXT_F32_FUNC entry_point
+#endif
+
+int FLASH_ATTN_EXT_F32_FUNC(struct ggml_et_flash_attn_ext_params * params, void * env) {
     kernel_environment_t * kernel_env = (kernel_environment_t *) env;
 
     if (!kernel_env || !params) {

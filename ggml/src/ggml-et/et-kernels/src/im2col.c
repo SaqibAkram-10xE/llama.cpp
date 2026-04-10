@@ -29,7 +29,13 @@ static inline float im2col_load_src_elem(const void * src_base, enum ggml_type s
     return fp16_to_fp32(((const uint16_t *) src_base)[idx]);
 }
 
-int entry_point(struct ggml_et_binary_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define IM2COL_FUNC im2col_impl
+#else
+#define IM2COL_FUNC entry_point
+#endif
+
+int IM2COL_FUNC(struct ggml_et_binary_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env || params == 0 || ((uint64_t)params & 0x7) != 0) {

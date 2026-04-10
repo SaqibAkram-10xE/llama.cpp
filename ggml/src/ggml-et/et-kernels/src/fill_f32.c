@@ -13,7 +13,13 @@ struct ggml_et_fill_params {
     float c;                  // Constant value to fill
 };
 
-int entry_point(struct ggml_et_fill_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define FILL_F32_FUNC fill_f32_impl
+#else
+#define FILL_F32_FUNC entry_point
+#endif
+
+int FILL_F32_FUNC(struct ggml_et_fill_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

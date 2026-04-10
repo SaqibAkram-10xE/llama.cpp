@@ -16,6 +16,14 @@ else()
     message(STATUS "Using ET backend with hardware device")
 endif()
 
+# Enable monolithic compute if requested
+if(ENABLE_MONOLITHIC_COMPUTE)
+    message(STATUS "ENABLE_MONOLITHIC_COMPUTE: ON")
+    add_compile_definitions(ENABLE_MONOLITHIC_COMPUTE=1)
+else()
+    message(STATUS "ENABLE_MONOLITHIC_COMPUTE: OFF")
+endif()
+
 # Add ET platform CMake modules and config files to search paths
 list(APPEND CMAKE_PREFIX_PATH ${ET_PLATFORM_PATH}/lib/cmake)
 list(APPEND CMAKE_MODULE_PATH ${ET_PLATFORM_PATH}/lib/cmake)
@@ -26,51 +34,57 @@ message("Using ET Platform at ${ET_PLATFORM_PATH}")
 find_package(runtime REQUIRED)
 
 # --- Kernel list (single source of truth, shared with et-kernels) ---
-set(KERNELS
-    el_map_f32
-    flash_attn_ext_f32
-    glu_f32
-    scale_f32
-    mul_mat_f32
-    mul_mat_f32_matrix_engine
-    mul_mat_id_f32
-    mul_mat_Q8_0
-    mul_mat_f16
-    mul_mat_f16_matrix_engine
-    rope_f32
-    unary_f32
-    sqr_f32
-    sum_rows_f32
-    cumsum_f32
-    norm_f32
-    l2_norm_f32
-    group_norm_f32
-    rms_norm_f32
-    rms_norm_mul_f32
-    softmax_f32
-    im2col
-    get_rows_f32
-    concat_f32
-    repeat_f32
-    rwkv_wkv6_f32
-    rwkv_wkv7_f32
-    gated_delta_net_f32
-    cont_f32
-    cont_f16
-    cpy_f32_f16
-    flash_attn_ext_f16_me
-    set_rows_f32
-    set_f32
-    fill_f32
-    pad_f32
-    diag_f32
-    tri_f32
-    solve_tri_f32
-    ssm_conv_f32
-    ssm_scan_f32
-    memops
-    op_cgraph
-)
+if(ENABLE_MONOLITHIC_COMPUTE)
+    # In monolithic mode, only build op_cgraph which includes all kernels
+    set(KERNELS op_cgraph)
+else()
+    # In standalone mode, build all individual kernels
+    set(KERNELS
+        el_map_f32
+        flash_attn_ext_f32
+        glu_f32
+        scale_f32
+        mul_mat_f32
+        mul_mat_f32_matrix_engine
+        mul_mat_id_f32
+        mul_mat_Q8_0
+        mul_mat_f16
+        mul_mat_f16_matrix_engine
+        rope_f32
+        unary_f32
+        sqr_f32
+        sum_rows_f32
+        cumsum_f32
+        norm_f32
+        l2_norm_f32
+        group_norm_f32
+        rms_norm_f32
+        rms_norm_mul_f32
+        softmax_f32
+        im2col
+        get_rows_f32
+        concat_f32
+        repeat_f32
+        rwkv_wkv6_f32
+        rwkv_wkv7_f32
+        gated_delta_net_f32
+        cont_f32
+        cont_f16
+        cpy_f32_f16
+        flash_attn_ext_f16_me
+        set_rows_f32
+        set_f32
+        fill_f32
+        pad_f32
+        diag_f32
+        tri_f32
+        solve_tri_f32
+        ssm_conv_f32
+        ssm_scan_f32
+        memops
+        op_cgraph
+    )
+endif()
 
 # Build ET kernels (cross-compiled in subdirectory scope)
 add_subdirectory(et-kernels)

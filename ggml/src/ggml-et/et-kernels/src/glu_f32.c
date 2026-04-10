@@ -371,8 +371,13 @@ static inline void block_geglu_erf(float* dst_block, const float* x_block, const
     }
 }
 
-// Main entry point for GLU kernel
-int entry_point(struct ggml_et_glu_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define GLU_F32_FUNC glu_f32_impl
+#else
+#define GLU_F32_FUNC entry_point
+#endif
+
+int GLU_F32_FUNC(struct ggml_et_glu_params* params, void* env) {
     // Cast env to proper type
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 

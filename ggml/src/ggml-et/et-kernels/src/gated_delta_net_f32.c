@@ -52,7 +52,13 @@ static inline float hsum_f10(void) {
     return result;
 }
 
-int entry_point(struct ggml_et_gated_delta_net_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define GATED_DELTA_NET_F32_FUNC gated_delta_net_f32_impl
+#else
+#define GATED_DELTA_NET_F32_FUNC entry_point
+#endif
+
+int GATED_DELTA_NET_F32_FUNC(struct ggml_et_gated_delta_net_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

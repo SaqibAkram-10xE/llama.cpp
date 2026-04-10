@@ -10,7 +10,13 @@
 #include "quants.h"
 #include "block_ops.h"
 
-int entry_point(struct ggml_et_binary_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define MUL_MAT_F16_FUNC mul_mat_f16_impl
+#else
+#define MUL_MAT_F16_FUNC entry_point
+#endif
+
+int MUL_MAT_F16_FUNC(struct ggml_et_binary_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env || params == 0 || ((uint64_t)params & 0x7) != 0) {

@@ -19,7 +19,13 @@
 #define KSPLIT_GROUP_ROWS 4
 #define SIMPLE_X2_ROWS     2
 
-int entry_point(struct ggml_et_binary_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define MUL_MAT_Q8_0_FUNC mul_mat_Q8_0_impl
+#else
+#define MUL_MAT_Q8_0_FUNC entry_point
+#endif
+
+int MUL_MAT_Q8_0_FUNC(struct ggml_et_binary_params* params, void* env) {
     uint64_t hart_id = get_hart_id();
 
     // Matrix dimensions

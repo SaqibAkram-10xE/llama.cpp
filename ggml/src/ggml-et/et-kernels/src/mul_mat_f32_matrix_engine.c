@@ -23,7 +23,13 @@
 #define REP_RATE           0
 /* ─────────────────────────────────────────────────────────────────── */
 
-int entry_point(struct ggml_et_binary_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define MUL_MAT_F32_MATRIX_ENGINE_FUNC mul_mat_f32_matrix_engine_impl
+#else
+#define MUL_MAT_F32_MATRIX_ENGINE_FUNC entry_point
+#endif
+
+int MUL_MAT_F32_MATRIX_ENGINE_FUNC(struct ggml_et_binary_params* params, void* env) {
     uint64_t hart_id = get_hart_id();
     uint64_t shire_id = get_shire_id();
 

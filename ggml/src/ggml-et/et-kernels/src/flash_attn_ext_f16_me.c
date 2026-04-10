@@ -308,7 +308,13 @@ normalize_store_vec(float * out, float * acc, int64_t dv, float inv, int use_fas
     __asm__ volatile("mova.m.x %0" :: "r"(old_mask));
 }
 
-int entry_point(struct ggml_et_flash_attn_ext_params * params, void * env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define FLASH_ATTN_EXT_F16_ME_FUNC flash_attn_ext_f16_me_impl
+#else
+#define FLASH_ATTN_EXT_F16_ME_FUNC entry_point
+#endif
+
+int FLASH_ATTN_EXT_F16_ME_FUNC(struct ggml_et_flash_attn_ext_params * params, void * env) {
     (void) env;
 
     uint64_t hart_id  = get_hart_id();

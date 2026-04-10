@@ -582,10 +582,10 @@ static bool ggml_et_can_fuse(const struct ggml_cgraph * cgraph, int node_idx,
 
 static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_et_device_context * dev_ctx = (ggml_backend_et_device_context *)backend->device->context;
-
+#ifdef ENABLE_MONOLITHIC_COMPUTE
     ggml_et_op_cg(dev_ctx, cgraph);
-
-    /*for (int i = 0; i < cgraph->n_nodes; i++) {
+#else
+    for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
 
         if (node->op == GGML_OP_NONE) {
@@ -630,6 +630,15 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
 
             case GGML_OP_MUL_MAT:
                 ggml_et_op_mul_mat(dev_ctx, node);
+
+                // if (once < 100){
+                //     uint64_t * host_data = (uint64_t *) node->data;
+
+                //     // printf("Tensor error: %lu\n", host_data[0]);
+
+                //     // printf("Tensor error:");
+                //     once++;
+                // }
                 break;
 
             case GGML_OP_MUL_MAT_ID:
@@ -755,8 +764,8 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
                 GGML_LOG_ERROR("ET: Unsupported operation in graph: %s", ggml_op_name(node->op));
                 return GGML_STATUS_FAILED;
         }
-    }*/
-
+    }
+#endif
     return GGML_STATUS_SUCCESS;
 }
 

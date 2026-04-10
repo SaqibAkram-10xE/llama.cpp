@@ -44,7 +44,14 @@ static inline void scalar_copy_f32(float* dst, const float* src, int32_t n) {
     }
 }
 
-int entry_point(struct ggml_et_cont_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define CONT_F32_FUNC cont_f32_impl
+#else
+#define CONT_F32_FUNC entry_point
+#endif
+
+int CONT_F32_FUNC(struct ggml_et_cont_params* params, void* env) {
+// int entry_point(struct ggml_et_cont_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

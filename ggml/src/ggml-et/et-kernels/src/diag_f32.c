@@ -16,7 +16,13 @@ struct ggml_et_diag_params {
     struct ggml_tensor dst;   // F32 output diagonal matrix
 };
 
-int entry_point(struct ggml_et_diag_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define DIAG_F32_FUNC diag_f32_impl
+#else
+#define DIAG_F32_FUNC entry_point
+#endif
+
+int DIAG_F32_FUNC(struct ggml_et_diag_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

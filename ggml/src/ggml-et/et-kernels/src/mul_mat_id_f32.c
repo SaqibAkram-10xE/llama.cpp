@@ -47,8 +47,13 @@
 #include "quants.h"
 #include "block_ops.h"
 
-// Main entry point for MUL_MAT_ID kernel (Mixture of Experts)
-int entry_point(struct ggml_et_mul_mat_id_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define MUL_MAT_ID_F32_FUNC mul_mat_id_f32_impl
+#else
+#define MUL_MAT_ID_F32_FUNC entry_point
+#endif
+
+int MUL_MAT_ID_F32_FUNC(struct ggml_et_mul_mat_id_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

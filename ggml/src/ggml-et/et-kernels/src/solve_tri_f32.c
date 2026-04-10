@@ -24,7 +24,13 @@ struct ggml_et_solve_tri_params {
     struct ggml_tensor dst;   // X: solution [k, n, B1, B2]
 };
 
-int entry_point(struct ggml_et_solve_tri_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define SOLVE_TRI_F32_FUNC solve_tri_f32_impl
+#else
+#define SOLVE_TRI_F32_FUNC entry_point
+#endif
+
+int SOLVE_TRI_F32_FUNC(struct ggml_et_solve_tri_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

@@ -12,17 +12,363 @@
 #include "quants.h"
 #include "math_fp.h"
 #include "block_ops.h"
+#include <etsoc/common/utils.h>
+#include "tensor.h"
 
-struct ggml_tensor_et {
-    int64_t ne[4];      // dimensions
-    uint64_t nb[4];     // strides (fixed-width for ABI compatibility)
-    enum ggml_type type;
-    uint64_t data;      // Device pointer (fixed-width for ABI compatibility)
+//******************************************************************************
+// Pull in standalone kernel.c files as monolithic includes.
+// Each kernel checks this macro to rename entry_point to its callable name.
+//******************************************************************************
+
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+// Include kernel implementations
+#include "el_map_f32.c"
+#include "rms_norm_f32.c"
+#include "glu_f32.c"
+#include "softmax_f32.c"
+#include "get_rows_f32.c"
+#include "set_rows_f32.c"
+#include "cont_f32.c"
+#include "cont_f16.c"
+#include "cpy_f32_f16.c"
+#include "mul_mat_Q8_0.c"
+#include "mul_mat_f16.c"
+#include "mul_mat_f32.c"
+#include "mul_mat_f16_matrix_engine.c"
+#include "mul_mat_f32_matrix_engine.c"
+#include "mul_mat_id_f32.c"
+#include "rope_f32.c"
+#include "flash_attn_ext_f32.c"
+#include "flash_attn_ext_f16_me.c"
+#include "cumsum_f32.c"
+#include "diag_f32.c"
+#include "fill_f32.c"
+#include "scale_f32.c"
+#include "set_f32.c"
+#include "sqr_f32.c"
+#include "sum_rows_f32.c"
+#include "repeat_f32.c"
+#include "pad_f32.c"
+#include "unary_f32.c"
+#include "tri_f32.c"
+#include "solve_tri_f32.c"
+#include "concat_f32.c"
+#include "gated_delta_net_f32.c"
+#include "group_norm_f32.c"
+#include "norm_f32.c"
+#include "l2_norm_f32.c"
+#include "rms_norm_mul_f32.c"
+#include "rwkv_wkv6_f32.c"
+#include "rwkv_wkv7_f32.c"
+#include "ssm_conv_f32.c"
+#include "ssm_scan_f32.c"
+#include "im2col.c"
+#include "memops.c"
+#else
+// Stub definitions when ENABLE_MONOLITHIC_COMPUTE is disabled
+// These won't be called since the monolithic path is not used
+
+// Parameter structures needed for stub functions
+// ggml_et_binary_params is already defined in ggml_tensor.h
+
+struct ggml_et_rms_norm_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+    float eps;
 };
 
-static inline uint64_t tensor_bytes(const struct ggml_tensor_et * t) {
-    return (uint64_t)t->ne[3] * (uint64_t)t->nb[3];
-}
+struct ggml_et_glu_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor dst;
+    int32_t glu_op_type;
+    int32_t swapped;
+};
+
+struct ggml_et_softmax_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor src2;
+    struct ggml_tensor dst;
+    float scale;
+    float max_bias;
+};
+
+struct ggml_et_get_rows_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor dst;
+};
+
+struct ggml_et_set_rows_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor dst;
+};
+
+struct ggml_et_cont_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+};
+
+struct ggml_et_cumsum_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+};
+
+struct ggml_et_diag_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+};
+
+struct ggml_et_fill_params {
+    struct ggml_tensor dst;
+    float c;
+};
+
+struct ggml_et_scale_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+    float scale;
+    float bias;
+};
+
+struct ggml_et_set_params {
+    struct ggml_tensor src1;
+    struct ggml_tensor dst;
+    int32_t nb1;
+    int32_t nb2;
+    int32_t nb3;
+    int32_t offset1;
+    int32_t offset2;
+    int32_t offset3;
+};
+
+struct ggml_et_sqr_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+};
+
+struct ggml_et_sum_rows_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+};
+
+struct ggml_et_repeat_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+};
+
+struct ggml_et_pad_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+    int32_t pad_before[4];
+    int32_t pad_after[4];
+};
+
+struct ggml_et_unary_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+    int32_t op_type;
+};
+
+struct ggml_et_tri_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+    int32_t tri_type;
+};
+
+struct ggml_et_solve_tri_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor dst;
+};
+
+struct ggml_et_concat_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor dst;
+    int32_t dim;
+};
+
+struct ggml_et_gated_delta_net_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor src2;
+    struct ggml_tensor dst;
+};
+
+struct ggml_et_group_norm_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+    int32_t n_groups;
+    float eps;
+};
+
+struct ggml_et_norm_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+    float eps;
+};
+
+struct ggml_et_l2_norm_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor dst;
+    float eps;
+};
+
+struct ggml_et_rms_norm_mul_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor dst;
+    float eps;
+};
+
+struct ggml_et_rwkv_wkv6_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor src2;
+    struct ggml_tensor src3;
+    struct ggml_tensor src4;
+    struct ggml_tensor src5;
+    float* td;
+    float* state_in;
+    float* dst;
+    int32_t C;
+    int32_t H;
+    int32_t S;
+    int32_t T;
+    int32_t n_seqs;
+};
+
+struct ggml_et_rwkv_wkv7_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor src2;
+    struct ggml_tensor src3;
+    struct ggml_tensor dst;
+    float* state_in;
+    float* state_out;
+    int32_t B;
+    int32_t T;
+    int32_t C;
+    int32_t H;
+};
+
+struct ggml_et_ssm_conv_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor dst;
+};
+
+struct ggml_et_ssm_scan_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor src2;
+    struct ggml_tensor src3;
+    struct ggml_tensor src4;
+    struct ggml_tensor src5;
+    struct ggml_tensor src6;
+    struct ggml_tensor dst;
+};
+
+// ggml_et_mul_mat_id_params is already defined in ggml_tensor.h
+
+typedef struct {
+    int32_t n_past;
+    int32_t n_dims;
+    int32_t mode;
+    int32_t n_ctx;
+    int32_t n_ctx_orig;
+    float   freq_base;
+    float   freq_scale;
+    float   ext_factor;
+    float   attn_factor;
+    float   beta_fast;
+    float   beta_slow;
+    int32_t sections[4];
+} rope_params_t;
+
+struct ggml_et_rope_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor src2;
+    struct ggml_tensor dst;
+    rope_params_t rope_params;
+};
+
+struct memset_params {
+    void* dst_ptr;
+    uint8_t value;
+    size_t size;
+    int32_t op_type;
+};
+
+struct ggml_et_flash_attn_ext_params {
+    struct ggml_tensor src0;
+    struct ggml_tensor src1;
+    struct ggml_tensor src2;
+    struct ggml_tensor mask;
+    struct ggml_tensor dst;
+    float scale;
+    float max_bias;
+    float logit_softcap;
+    int32_t has_mask;
+};
+
+static inline int el_map_f32_impl(struct ggml_et_binary_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int mul_mat_Q8_0_impl(struct ggml_et_binary_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int mul_mat_f16_impl(struct ggml_et_binary_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int mul_mat_f32_impl(struct ggml_et_binary_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int mul_mat_f16_matrix_engine_impl(struct ggml_et_binary_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int mul_mat_f32_matrix_engine_impl(struct ggml_et_binary_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int mul_mat_id_f32_impl(struct ggml_et_mul_mat_id_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int rms_norm_f32_impl(struct ggml_et_rms_norm_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int glu_f32_impl(struct ggml_et_glu_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int softmax_f32_impl(struct ggml_et_softmax_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int get_rows_f32_impl(struct ggml_et_get_rows_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int set_rows_f32_impl(struct ggml_et_set_rows_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int cont_f32_impl(struct ggml_et_cont_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int cont_f16_impl(struct ggml_et_cont_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int cpy_f32_f16_impl(struct ggml_et_cont_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int rope_f32_impl(struct ggml_et_rope_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int flash_attn_ext_f32_impl(struct ggml_et_flash_attn_ext_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int flash_attn_ext_f16_me_impl(struct ggml_et_flash_attn_ext_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int cumsum_f32_impl(struct ggml_et_cumsum_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int diag_f32_impl(struct ggml_et_diag_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int fill_f32_impl(struct ggml_et_fill_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int scale_f32_impl(struct ggml_et_scale_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int set_f32_impl(struct ggml_et_set_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int sqr_f32_impl(struct ggml_et_sqr_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int sum_rows_f32_impl(struct ggml_et_sum_rows_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int repeat_f32_impl(struct ggml_et_repeat_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int pad_f32_impl(struct ggml_et_pad_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int unary_f32_impl(struct ggml_et_unary_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int tri_f32_impl(struct ggml_et_tri_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int solve_tri_f32_impl(struct ggml_et_solve_tri_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int concat_f32_impl(struct ggml_et_concat_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int gated_delta_net_f32_impl(struct ggml_et_gated_delta_net_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int group_norm_f32_impl(struct ggml_et_group_norm_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int norm_f32_impl(struct ggml_et_norm_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int l2_norm_f32_impl(struct ggml_et_l2_norm_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int rms_norm_mul_f32_impl(struct ggml_et_rms_norm_mul_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int rwkv_wkv6_f32_impl(struct ggml_et_rwkv_wkv6_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int rwkv_wkv7_f32_impl(struct ggml_et_rwkv_wkv7_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int ssm_conv_f32_impl(struct ggml_et_ssm_conv_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int ssm_scan_f32_impl(struct ggml_et_ssm_scan_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int im2col_impl(struct ggml_et_binary_params* params, void* env) { (void)params; (void)env; return -1; }
+static inline int memops_impl(struct memset_params* params, void* env) { (void)params; (void)env; return -1; }
+#endif
+
+// ========================================================================
+// Compact tensor metadata (ABI-compatible with host ggml_tensor_et)
+// ========================================================================
+struct ggml_tensor_et {
+    int64_t ne[4];
+    uint64_t nb[4];
+    enum ggml_type type;
+    uint64_t data;
+};
 
 struct ggml_node_meta_et {
     struct ggml_tensor_et src0;
@@ -37,18 +383,23 @@ struct ggml_cgraph_et {
     int n_nodes;
     int n_leafs;
     struct ggml_tensor ** nodes;
-
-    uint8_t data[];   // flexible array at end
+    uint8_t data[];
 };
 
-// Helper function to convert ggml_tensor_et to ggml_tensor
-static inline void convert_to_ggml_tensor(struct ggml_tensor * dst, struct ggml_tensor_et * src, enum ggml_op op) {
-    dst->type = src->type;
-    dst->data = (void*)(uintptr_t)src->data;  // Cast uint64_t back to pointer
-    dst->op   = op;
-    for(int j = 0; j < 4; j++){
-        dst->ne[j] = src->ne[j];
-        dst->nb[j] = (size_t)src->nb[j];  // Cast uint64_t back to size_t
+// ========================================================================
+// Helpers
+// ========================================================================
+// Convert ET tensor format to ggml tensor format
+static inline void convert_to_ggml_tensor(struct ggml_tensor * d,
+                                           struct ggml_tensor_et * s,
+                                           enum ggml_op op) {
+    memset(d, 0, sizeof(*d));
+    d->type = s->type;
+    d->data = (void*)(uintptr_t)s->data;
+    d->op   = op;
+    for (int j = 0; j < 4; j++) {
+        d->ne[j] = s->ne[j];
+        d->nb[j] = (size_t)s->nb[j];
     }
 }
 
@@ -106,9 +457,11 @@ static inline void convert_to_ggml_tensor(struct ggml_tensor * dst, struct ggml_
 // Entry point — graph execution loop (Updated)
 // ========================================================================
 int entry_point(struct ggml_cgraph_et* cg, void* env) {
+
     // Reconstruct pointers on device side
-    struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *) cg->data;
-    uint8_t * node_op = (uint8_t *) (node_meta + cg->n_nodes);
+    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
+    struct ggml_node_meta_et * node_meta = (struct ggml_node_meta_et *)cg->data;
+    uint8_t * node_op = (uint8_t *)(node_meta + cg->n_nodes);
     const int n_nodes = cg->n_nodes;
 
     // device_barrier(32);

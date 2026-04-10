@@ -14,7 +14,13 @@ struct ggml_et_scale_params {
     float bias;                  // Bias (additive offset)
 };
 
-int entry_point(struct ggml_et_scale_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define SCALE_F32_FUNC scale_f32_impl
+#else
+#define SCALE_F32_FUNC entry_point
+#endif
+
+int SCALE_F32_FUNC(struct ggml_et_scale_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

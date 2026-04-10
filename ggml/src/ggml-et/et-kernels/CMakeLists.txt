@@ -29,6 +29,14 @@ if(NOT DEFINED ADDRESS)
     message(STATUS "ADDRESS not specified, using default: ${ADDRESS}")
 endif()
 
+# Enable monolithic compute if requested
+if(ENABLE_MONOLITHIC_COMPUTE)
+    message(STATUS "ENABLE_MONOLITHIC_COMPUTE: ON")
+    add_compile_definitions(ENABLE_MONOLITHIC_COMPUTE=1)
+else()
+    message(STATUS "ENABLE_MONOLITHIC_COMPUTE: OFF")
+endif()
+
 set(LINKER_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/src/linker.ld)
 set(CHECK_SCRIPT ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_unimplemented_instructions.sh)
 

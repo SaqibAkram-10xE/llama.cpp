@@ -35,7 +35,13 @@ static inline void copy_row_aligned(float* dst, const float* src, int32_t n) {
     }
 }
 
-int entry_point(struct ggml_et_concat_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define CONCAT_F32_FUNC concat_f32_impl
+#else
+#define CONCAT_F32_FUNC entry_point
+#endif
+
+int CONCAT_F32_FUNC(struct ggml_et_concat_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

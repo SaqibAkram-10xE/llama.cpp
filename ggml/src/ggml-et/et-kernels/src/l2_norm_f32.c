@@ -17,7 +17,13 @@ struct ggml_et_l2_norm_params {
     float eps;                // Epsilon parameter for numerical stability
 };
 
-int entry_point(struct ggml_et_l2_norm_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define L2_NORM_F32_FUNC l2_norm_f32_impl
+#else
+#define L2_NORM_F32_FUNC entry_point
+#endif
+
+int L2_NORM_F32_FUNC(struct ggml_et_l2_norm_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {

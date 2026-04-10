@@ -21,7 +21,13 @@ struct ggml_et_group_norm_params {
     float eps;
 };
 
-int entry_point(struct ggml_et_group_norm_params * params, void * env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define GROUP_NORM_F32_FUNC group_norm_f32_impl
+#else
+#define GROUP_NORM_F32_FUNC entry_point
+#endif
+
+int GROUP_NORM_F32_FUNC(struct ggml_et_group_norm_params * params, void * env) {
     kernel_environment_t * kernel_env = (kernel_environment_t *) env;
 
     if (!kernel_env) {

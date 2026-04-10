@@ -23,7 +23,13 @@ static inline float softplus_f32(float x) {
     return x <= 20.0f ? et_logf(1.0f + et_expf(x)) : x;
 }
 
-int entry_point(struct ggml_et_ssm_scan_params * params, void * env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define SSM_SCAN_F32_FUNC ssm_scan_f32_impl
+#else
+#define SSM_SCAN_F32_FUNC entry_point
+#endif
+
+int SSM_SCAN_F32_FUNC(struct ggml_et_ssm_scan_params * params, void * env) {
     kernel_environment_t * kernel_env = (kernel_environment_t *) env;
 
     if (!kernel_env) {

@@ -16,7 +16,13 @@ struct ggml_et_cont_params {
     struct ggml_tensor dst;      // F16 output tensor (contiguous)
 };
 
-int entry_point(struct ggml_et_cont_params* params, void* env) {
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define CONT_F16_FUNC cont_f16_impl
+#else
+#define CONT_F16_FUNC entry_point
+#endif
+
+int CONT_F16_FUNC(struct ggml_et_cont_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {
