@@ -662,35 +662,52 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
 
             case GGML_OP_ROPE:
                 {
-                    // FENCE;
-                    // et_barrier(ET_BARRIER_GLOBAL);
-                    // et_barrier(ET_BARRIER_SHIRE);
-                    // device_barrier(32);
-                    struct ggml_et_rope_params params;
-                    convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.src2, &node_meta[i].src2, GGML_OP_NONE);
-                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_ROPE);
+                    // Use compact rope_f32_work_t (~172 B) instead of the full
+                    // ggml_et_rope_params (~1400 B with 4 ggml_tensor copies)
+                    // to avoid stack overflow on per-hart firmware stacks.
+                    if (node_meta[i].dst.type  == GGML_TYPE_F32 &&
+                        node_meta[i].src0.type == GGML_TYPE_F32 &&
+                        node_meta[i].src1.type == GGML_TYPE_I32) {
 
-                    params.rope_params.n_past     = ((const int32_t *) node_meta[i].op_params)[0];
-                    params.rope_params.n_dims     = ((const int32_t *) node_meta[i].op_params)[1];
-                    params.rope_params.mode       = ((const int32_t *) node_meta[i].op_params)[2];
-                    params.rope_params.n_ctx      = ((const int32_t *) node_meta[i].op_params)[3];
-                    params.rope_params.n_ctx_orig = ((const int32_t *) node_meta[i].op_params)[4];
-                    memcpy(&params.rope_params.freq_base,   (const int32_t *) node_meta[i].op_params +  5, sizeof(float));
-                    memcpy(&params.rope_params.freq_scale,  (const int32_t *) node_meta[i].op_params +  6, sizeof(float));
-                    memcpy(&params.rope_params.ext_factor,  (const int32_t *) node_meta[i].op_params +  7, sizeof(float));
-                    memcpy(&params.rope_params.attn_factor, (const int32_t *) node_meta[i].op_params +  8, sizeof(float));
-                    memcpy(&params.rope_params.beta_fast,   (const int32_t *) node_meta[i].op_params +  9, sizeof(float));
-                    memcpy(&params.rope_params.beta_slow,   (const int32_t *) node_meta[i].op_params + 10, sizeof(float));
-                    if (params.rope_params.mode & GGML_ROPE_TYPE_MROPE) {
-                        memcpy(params.rope_params.sections, (const int32_t *) node_meta[i].op_params + 11, sizeof(int32_t)*4);
-                    } else {
-                        memset(params.rope_params.sections, 0, sizeof(params.rope_params.sections));
-                    }
+                        kernel_environment_t* ke = (kernel_environment_t*)env;
+                        int tid = get_relative_thread_id(ke->shire_mask);
+                        int nth = get_num_threads(ke->shire_mask);
 
-                    if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I32) {
-                        rope_f32_impl(&params, env);
+                        if (tid >= 0) {
+                            rope_f32_work_t w;
+                            w.src0_data    = (const float*)(uintptr_t)node_meta[i].src0.data;
+                            w.src1_data    = (const int32_t*)(uintptr_t)node_meta[i].src1.data;
+                            w.freq_factors = node_meta[i].src2.data
+                                           ? (const float*)(uintptr_t)node_meta[i].src2.data
+                                           : NULL;
+                            w.dst_data     = (float*)(uintptr_t)node_meta[i].dst.data;
+                            for (int j = 0; j < 4; j++) w.ne[j] = node_meta[i].src0.ne[j];
+                            w.src0_nb1 = (int64_t)node_meta[i].src0.nb[1];
+                            w.src0_nb2 = (int64_t)node_meta[i].src0.nb[2];
+                            w.src0_nb3 = (int64_t)node_meta[i].src0.nb[3];
+                            w.dst_nb1  = (int64_t)node_meta[i].dst.nb[1];
+                            w.dst_nb2  = (int64_t)node_meta[i].dst.nb[2];
+                            w.dst_nb3  = (int64_t)node_meta[i].dst.nb[3];
+
+                            w.rp.n_past     = ((const int32_t *) node_meta[i].op_params)[0];
+                            w.rp.n_dims     = ((const int32_t *) node_meta[i].op_params)[1];
+                            w.rp.mode       = ((const int32_t *) node_meta[i].op_params)[2];
+                            w.rp.n_ctx      = ((const int32_t *) node_meta[i].op_params)[3];
+                            w.rp.n_ctx_orig = ((const int32_t *) node_meta[i].op_params)[4];
+                            memcpy(&w.rp.freq_base,   (const int32_t *) node_meta[i].op_params +  5, sizeof(float));
+                            memcpy(&w.rp.freq_scale,  (const int32_t *) node_meta[i].op_params +  6, sizeof(float));
+                            memcpy(&w.rp.ext_factor,  (const int32_t *) node_meta[i].op_params +  7, sizeof(float));
+                            memcpy(&w.rp.attn_factor, (const int32_t *) node_meta[i].op_params +  8, sizeof(float));
+                            memcpy(&w.rp.beta_fast,   (const int32_t *) node_meta[i].op_params +  9, sizeof(float));
+                            memcpy(&w.rp.beta_slow,   (const int32_t *) node_meta[i].op_params + 10, sizeof(float));
+                            if (w.rp.mode & GGML_ROPE_TYPE_MROPE) {
+                                memcpy(w.rp.sections, (const int32_t *) node_meta[i].op_params + 11, sizeof(int32_t)*4);
+                            } else {
+                                memset(w.rp.sections, 0, sizeof(w.rp.sections));
+                            }
+
+                            rope_f32_compute(&w, tid, nth);
+                        }
                     }
                 }
                 break;

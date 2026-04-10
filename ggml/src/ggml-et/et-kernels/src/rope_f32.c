@@ -390,6 +390,20 @@ struct ggml_et_rope_params {
     rope_params_t rope_params;
 };
 
+// Compact work descriptor — avoids putting 4 full ggml_tensor copies (~1400 B)
+// on every hart's stack in monolithic mode.  Only the fields the ROPE
+// computation actually touches are kept here (~172 B).
+typedef struct {
+    const float*   src0_data;
+    const int32_t* src1_data;
+    const float*   freq_factors;  // NULL if not present
+    float*         dst_data;
+    int64_t        ne[4];         // head_dim, heads, seq_len, batch (from src0)
+    int64_t        src0_nb1, src0_nb2, src0_nb3;
+    int64_t        dst_nb1, dst_nb2, dst_nb3;
+    rope_params_t  rp;
+} rope_f32_work_t;
+
 //------------------------------------------------------------------------------
 // Existing scalar helpers
 //------------------------------------------------------------------------------
@@ -785,57 +799,20 @@ static inline void compute_imrope_cache(
 }
 
 //------------------------------------------------------------------------------
-// Entry point
+// Core computation — works from the compact rope_f32_work_t descriptor.
+// Keeps the heavy cos/sin caches on THIS frame only (~2 KB), while the
+// caller avoids putting 4 full ggml_tensor copies on the stack (~1.4 KB
+// saved in monolithic mode).
 //------------------------------------------------------------------------------
 
-#ifdef ENABLE_MONOLITHIC_COMPUTE
-#define ROPE_F32_FUNC rope_f32_impl
-#else
-#define ROPE_F32_FUNC entry_point
-#endif
+static int rope_f32_compute(const rope_f32_work_t* w,
+                            int thread_id, int num_threads) {
+    const int64_t head_dim = w->ne[0];
+    const int64_t heads    = w->ne[1];
+    const int64_t seq_len  = w->ne[2];
+    const int64_t batch    = w->ne[3];
 
-int ROPE_F32_FUNC(struct ggml_et_rope_params* params, void* env) {
-    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
-
-    if (!kernel_env) {
-        return -1;
-    }
-
-    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
-    int num_threads = get_num_threads(kernel_env->shire_mask);
-
-    if (thread_id < 0) {
-        return -1;
-    }
-
-    if (params == 0 || ((uint64_t)params & 0x7) != 0) {
-        return -1;
-    }
-
-    struct ggml_tensor* src0 = &params->src0;
-    struct ggml_tensor* src1 = &params->src1;
-    struct ggml_tensor* src2 = &params->src2;
-    struct ggml_tensor* dst  = &params->dst;
-
-    if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_I32 || dst->type != GGML_TYPE_F32) {
-        return -1;
-    }
-
-    const float* src0_data    = (const float*)src0->data;
-    const int32_t* src1_data  = (const int32_t*)src1->data;
-    const float* freq_factors = (src2 && src2->data) ? (const float*)src2->data : NULL;
-    float* dst_data           = (float*)dst->data;
-
-    if (!src0_data || !src1_data || !dst_data) {
-        return -1;
-    }
-
-    const int64_t head_dim = src0->ne[0];
-    const int64_t heads    = src0->ne[1];
-    const int64_t seq_len  = src0->ne[2];
-    const int64_t batch    = src0->ne[3];
-
-    const rope_params_t* rope_params = &params->rope_params;
+    const rope_params_t* rope_params = &w->rp;
     const int32_t n_dims   = rope_params->n_dims;
     const float freq_base  = rope_params->freq_base;
     const float freq_scale = rope_params->freq_scale;
@@ -890,10 +867,10 @@ int ROPE_F32_FUNC(struct ggml_et_rope_params* params, void* env) {
 
         if (is_imrope) {
             // IMROPE: src1 layout is [p_t(0..S-1), p_h(0..S-1), p_w(0..S-1), p_e(0..S-1)]
-            const int32_t pt = src1_data[s]              + rope_params->n_past;
-            const int32_t ph = src1_data[s + seq_len]    + rope_params->n_past;
-            const int32_t pw = src1_data[s + seq_len * 2] + rope_params->n_past;
-            const int32_t pe = src1_data[s + seq_len * 3] + rope_params->n_past;
+            const int32_t pt = w->src1_data[s]              + rope_params->n_past;
+            const int32_t ph = w->src1_data[s + seq_len]    + rope_params->n_past;
+            const int32_t pw = w->src1_data[s + seq_len * 2] + rope_params->n_past;
+            const int32_t pe = w->src1_data[s + seq_len * 3] + rope_params->n_past;
 
             if (pt != last_pos || ph != last_pos_h || pw != last_pos_w || pe != last_pos_e) {
                 compute_imrope_cache(
@@ -901,7 +878,7 @@ int ROPE_F32_FUNC(struct ggml_et_rope_params* params, void* env) {
                     n_dims, theta_scale,
                     pt, ph, pw, pe,
                     rope_params->sections,
-                    freq_factors, freq_scale,
+                    w->freq_factors, freq_scale,
                     corr_dims, rope_params->ext_factor, rope_params->attn_factor
                 );
                 last_pos   = pt;
@@ -910,24 +887,24 @@ int ROPE_F32_FUNC(struct ggml_et_rope_params* params, void* env) {
                 last_pos_e = pe;
             }
         } else {
-            const int32_t pos = src1_data[s] + rope_params->n_past;
+            const int32_t pos = w->src1_data[s] + rope_params->n_past;
 
             if (pos != last_pos) {
                 compute_rope_cache(
                     cos_cache, sin_cache,
                     n_dims, theta_scale, pos,
-                    freq_factors, freq_scale,
+                    w->freq_factors, freq_scale,
                     corr_dims, rope_params->ext_factor, rope_params->attn_factor
                 );
                 last_pos = pos;
             }
         }
 
-        const float* head_src = (const float*)((const char*)src0_data +
-            b * src0->nb[3] + s * src0->nb[2] + h * src0->nb[1]);
+        const float* head_src = (const float*)((const char*)w->src0_data +
+            b * w->src0_nb3 + s * w->src0_nb2 + h * w->src0_nb1);
 
-        float* head_dst = (float*)((char*)dst_data +
-            b * dst->nb[3] + s * dst->nb[2] + h * dst->nb[1]);
+        float* head_dst = (float*)((char*)w->dst_data +
+            b * w->dst_nb3 + s * w->dst_nb2 + h * w->dst_nb1);
 
         // Copy dimensions beyond n_dims unchanged
         for (int64_t d = n_dims; d < head_dim; ++d) {
@@ -977,4 +954,62 @@ int ROPE_F32_FUNC(struct ggml_et_rope_params* params, void* env) {
     }
 
     return 0;
+}
+
+//------------------------------------------------------------------------------
+// Entry point — standalone kernel API (thin wrapper around rope_f32_compute)
+//------------------------------------------------------------------------------
+
+#ifdef ENABLE_MONOLITHIC_COMPUTE
+#define ROPE_F32_FUNC rope_f32_impl
+#else
+#define ROPE_F32_FUNC entry_point
+#endif
+
+int ROPE_F32_FUNC(struct ggml_et_rope_params* params, void* env) {
+    kernel_environment_t* kernel_env = (kernel_environment_t*)env;
+
+    if (!kernel_env) {
+        return -1;
+    }
+
+    int thread_id = get_relative_thread_id(kernel_env->shire_mask);
+    int num_threads = get_num_threads(kernel_env->shire_mask);
+
+    if (thread_id < 0) {
+        return -1;
+    }
+
+    if (params == 0 || ((uint64_t)params & 0x7) != 0) {
+        return -1;
+    }
+
+    struct ggml_tensor* src0 = &params->src0;
+    struct ggml_tensor* src1 = &params->src1;
+    struct ggml_tensor* src2 = &params->src2;
+    struct ggml_tensor* dst  = &params->dst;
+
+    if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_I32 || dst->type != GGML_TYPE_F32) {
+        return -1;
+    }
+
+    if (!src0->data || !src1->data || !dst->data) {
+        return -1;
+    }
+
+    rope_f32_work_t w;
+    w.src0_data    = (const float*)src0->data;
+    w.src1_data    = (const int32_t*)src1->data;
+    w.freq_factors = (src2 && src2->data) ? (const float*)src2->data : NULL;
+    w.dst_data     = (float*)dst->data;
+    for (int j = 0; j < 4; j++) w.ne[j] = src0->ne[j];
+    w.src0_nb1 = (int64_t)src0->nb[1];
+    w.src0_nb2 = (int64_t)src0->nb[2];
+    w.src0_nb3 = (int64_t)src0->nb[3];
+    w.dst_nb1  = (int64_t)dst->nb[1];
+    w.dst_nb2  = (int64_t)dst->nb[2];
+    w.dst_nb3  = (int64_t)dst->nb[3];
+    w.rp       = params->rope_params;
+
+    return rope_f32_compute(&w, thread_id, num_threads);
 }
