@@ -35,8 +35,9 @@ find_package(runtime REQUIRED)
 
 # --- Kernel list (single source of truth, shared with et-kernels) ---
 if(ENABLE_MONOLITHIC_COMPUTE)
-    # In monolithic mode, only build op_cgraph which includes all kernels
-    set(KERNELS op_cgraph)
+    # In monolithic mode, build op_cgraph which includes most kernels,
+    # plus memops which is used separately for memset operations
+    set(KERNELS op_cgraph memops)
 else()
     # In standalone mode, build all individual kernels
     set(KERNELS

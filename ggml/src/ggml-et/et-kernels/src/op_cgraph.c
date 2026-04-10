@@ -63,7 +63,7 @@
 #include "ssm_conv_f32.c"
 #include "ssm_scan_f32.c"
 #include "im2col.c"
-#include "memops.c"
+// memops.c excluded - built as standalone kernel for memset operations
 #else
 // Stub definitions when ENABLE_MONOLITHIC_COMPUTE is disabled
 // These won't be called since the monolithic path is not used
@@ -297,12 +297,7 @@ struct ggml_et_rope_params {
     rope_params_t rope_params;
 };
 
-struct memset_params {
-    void* dst_ptr;
-    uint8_t value;
-    size_t size;
-    int32_t op_type;
-};
+// memset_params excluded - defined in memops.c which is built as standalone kernel
 
 struct ggml_et_flash_attn_ext_params {
     struct ggml_tensor src0;
@@ -357,7 +352,7 @@ static inline int rwkv_wkv7_f32_impl(struct ggml_et_rwkv_wkv7_params* params, vo
 static inline int ssm_conv_f32_impl(struct ggml_et_ssm_conv_params* params, void* env) { (void)params; (void)env; return -1; }
 static inline int ssm_scan_f32_impl(struct ggml_et_ssm_scan_params* params, void* env) { (void)params; (void)env; return -1; }
 static inline int im2col_impl(struct ggml_et_binary_params* params, void* env) { (void)params; (void)env; return -1; }
-static inline int memops_impl(struct memset_params* params, void* env) { (void)params; (void)env; return -1; }
+// memops_impl excluded - memops is built as standalone kernel
 #endif
 
 // ========================================================================

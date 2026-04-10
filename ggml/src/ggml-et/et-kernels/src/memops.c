@@ -105,13 +105,9 @@ static void memset_tail(uint8_t* start, uint8_t* end, uint8_t val)
 
 #define ALIGN_UP(ptr, align) ((uint8_t*)(((uintptr_t)(ptr) + (align) - 1) & ~((uintptr_t)(align) - 1)))
 
-#ifdef ENABLE_MONOLITHIC_COMPUTE
-#define MEMOPS_FUNC memops_impl
-#else
-#define MEMOPS_FUNC entry_point
-#endif
-
-int MEMOPS_FUNC(struct memset_params* params, kernel_environment_t* env) {
+// memops is always built as standalone kernel, even in monolithic mode
+// (used separately for memset operations)
+int entry_point(struct memset_params* params, kernel_environment_t* env) {
     uint64_t hart_id = get_hart_id();
 
     // Only even harts have tensor engine access
