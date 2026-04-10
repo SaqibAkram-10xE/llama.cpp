@@ -468,143 +468,123 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
         if (node_op_val == GGML_OP_NONE) continue;
         // device_barrier(32);
   
-        /*switch (node_op_val) {
+        switch (node_op_val) {
             case GGML_OP_SQR:
-                ggml_et_op_sqr(dev_ctx, node);
                 break;
 
             case GGML_OP_UNARY:
-                ggml_et_op_unary(dev_ctx, node);
                 break;
 
             case GGML_OP_SUM_ROWS:
-                ggml_et_op_sum_rows(dev_ctx, node);
                 break;
 
             case GGML_OP_SUB:
             case GGML_OP_ADD:
             case GGML_OP_MUL:
-                ggml_et_op_mul(dev_ctx, node);
+                struct ggml_et_binary_params params;
+                convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                const enum ggml_op el_op = (node_op_val == GGML_OP_MUL) ? GGML_OP_MUL : GGML_OP_ADD;
+                convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, el_op);
+
+                if (params.dst.type != GGML_TYPE_F32 ||
+                    params.src0.type != GGML_TYPE_F32 ||
+                    params.src1.type != GGML_TYPE_F32) {
+                    break;
+                }
+                el_map_f32_impl(&params, env);
+
+                // ggml_et_op_mul(dev_ctx, node);
                 break;
 
             case GGML_OP_CUMSUM:
-                ggml_et_op_cumsum(dev_ctx, node);
                 break;
 
             case GGML_OP_MUL_MAT:
-                ggml_et_op_mul_mat(dev_ctx, node);
                 break;
 
             case GGML_OP_MUL_MAT_ID:
-                ggml_et_op_mul_mat_id(dev_ctx, node);
                 break;
 
             case GGML_OP_ROPE:
-                ggml_et_op_rope(dev_ctx, node);
                 break;
 
             case GGML_OP_RMS_NORM:
-                ggml_et_op_rms_norm(dev_ctx, node);
                 break;
 
             case GGML_OP_NORM:
-                ggml_et_op_norm(dev_ctx, node);
                 break;
 
             case GGML_OP_L2_NORM:
-                ggml_et_op_l2_norm(dev_ctx, node);
                 break;
 
             case GGML_OP_GROUP_NORM:
-                ggml_et_op_group_norm(dev_ctx, node);
                 break;
 
             case GGML_OP_SCALE:
-                ggml_et_op_scale(dev_ctx, node);
                 break;
 
             case GGML_OP_GLU:
-                ggml_et_op_glu(dev_ctx, node);
                 break;
 
             case GGML_OP_SOFT_MAX:
-                ggml_et_op_softmax(dev_ctx, node);
                 break;
 
             case GGML_OP_IM2COL:
-                ggml_et_op_im2col(dev_ctx, node);
                 break;
 
             case GGML_OP_FLASH_ATTN_EXT:
-                ggml_et_op_flash_attn_ext(dev_ctx, node);
                 break;
 
             case GGML_OP_GET_ROWS:
-                ggml_et_op_get_rows(dev_ctx, node);
                 break;
 
             case GGML_OP_CONT:
-                ggml_et_op_cont(dev_ctx, node);
                 break;
 
             case GGML_OP_CPY:
-                ggml_et_op_cpy(dev_ctx, node);
                 break;
 
             case GGML_OP_CONCAT:
-                ggml_et_op_concat(dev_ctx, node);
                 break;
 
             case GGML_OP_REPEAT:
-                ggml_et_op_repeat(dev_ctx, node);
                 break;
 
             case GGML_OP_SSM_CONV:
-                ggml_et_op_ssm_conv(dev_ctx, node);
                 break;
 
             case GGML_OP_SSM_SCAN:
-                ggml_et_op_ssm_scan(dev_ctx, node);
                 break;
 
             case GGML_OP_PAD:
-                ggml_et_op_pad(dev_ctx, node);
                 break;
 
             case GGML_OP_SET_ROWS:
-                ggml_et_op_set_rows(dev_ctx, node);
                 break;
 
             case GGML_OP_FILL:
-                ggml_et_op_fill(dev_ctx, node);
                 break;
 
             case GGML_OP_DIAG:
-                ggml_et_op_diag(dev_ctx, node);
                 break;
 
             case GGML_OP_TRI:
-                ggml_et_op_tri(dev_ctx, node);
                 break;
 
             case GGML_OP_SOLVE_TRI:
-                ggml_et_op_solve_tri(dev_ctx, node);
                 break;
 
             case GGML_OP_SET:
-                ggml_et_op_set(dev_ctx, node);
                 break;
 
             case GGML_OP_RWKV_WKV6:
-                ggml_et_op_rwkv_wkv6(dev_ctx, node);
                 break;
 
             case GGML_OP_RWKV_WKV7:
-                ggml_et_op_rwkv_wkv7(dev_ctx, node);
                 break;
 
             case GGML_OP_GATED_DELTA_NET:
-                ggml_et_op_gated_delta_net(dev_ctx, node);
                 break;
 
             case GGML_OP_RESHAPE:
@@ -614,9 +594,9 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 // These are metadata-only operations that require no computation
                 break;
 
-            default:.
+            default:
                 break;
-        }*/
+        }
 
         /*switch (op) {
             case GGML_OP_SQR:           ggml_et_op_sqr(env, &node_meta[i]); break;
