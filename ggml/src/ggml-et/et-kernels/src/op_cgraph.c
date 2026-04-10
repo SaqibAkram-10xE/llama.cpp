@@ -27,7 +27,8 @@ struct ggml_et_im2col_params {
     struct ggml_tensor dst;
 };
 
-// ROPE parameters (from rope_f32.c)
+// ROPE parameters (from rope_f32.c) - only define if not already defined
+#ifndef rope_params_t_defined
 typedef struct {
     int32_t n_past;
     int32_t n_dims;
@@ -42,8 +43,11 @@ typedef struct {
     float   beta_slow;
     int32_t sections[4];
 } rope_params_t;
+#define rope_params_t_defined
+#endif
 
-// ROPE kernel parameters structure (from rope_f32.c)
+// ROPE kernel parameters structure (from rope_f32.c) - only define if not already defined
+#ifndef ggml_et_rope_params_defined
 struct ggml_et_rope_params {
     struct ggml_tensor src0;
     struct ggml_tensor src1;
@@ -51,8 +55,11 @@ struct ggml_et_rope_params {
     struct ggml_tensor dst;
     rope_params_t rope_params;
 };
+#define ggml_et_rope_params_defined
+#endif
 
-// Compact ROPE work descriptor (from rope_f32.c)
+// Compact ROPE work descriptor (from rope_f32.c) - only define if not already defined
+#ifndef rope_f32_work_t_defined
 typedef struct {
     const float*   src0_data;
     const int32_t* src1_data;
@@ -63,6 +70,8 @@ typedef struct {
     int64_t        dst_nb1, dst_nb2, dst_nb3;
     rope_params_t  rp;
 } rope_f32_work_t;
+#define rope_f32_work_t_defined
+#endif
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
 // Include kernel implementations
@@ -387,7 +396,10 @@ static inline int ssm_conv_f32_impl(struct ggml_et_ssm_conv_params* params, void
 static inline int ssm_scan_f32_impl(struct ggml_et_ssm_scan_params* params, void* env) { (void)params; (void)env; return -1; }
 static inline int im2col_f32_impl(struct ggml_et_im2col_params* params, void* env) { (void)params; (void)env; return -1; }
 static inline int im2col_impl(struct ggml_et_binary_params* params, void* env) { (void)params; (void)env; return -1; }
+#ifndef rope_f32_compute_defined
 static inline int rope_f32_compute(const rope_f32_work_t* w, int thread_id, int num_threads) { (void)w; (void)thread_id; (void)num_threads; return -1; }
+#define rope_f32_compute_defined
+#endif
 // memops_impl excluded - memops is built as standalone kernel
 #endif
 

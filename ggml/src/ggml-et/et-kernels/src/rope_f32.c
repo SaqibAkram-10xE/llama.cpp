@@ -366,6 +366,7 @@
 #define ROPE_INV_TWO_PI 0.15915494309189533577f
 
 // ROPE operation parameters structure (matches ggml-et-ops.h)
+#ifndef rope_params_t_defined
 typedef struct {
     int32_t n_past;
     int32_t n_dims;        // Number of dimensions to apply ROPE to (must be even)
@@ -380,8 +381,11 @@ typedef struct {
     float   beta_slow;     // Slow beta for YaRN
     int32_t sections[4];   // Sections for multi-modal ROPE
 } rope_params_t;
+#define rope_params_t_defined
+#endif
 
 // ROPE kernel parameters structure (matches ggml_et_rope_params)
+#ifndef ggml_et_rope_params_defined
 struct ggml_et_rope_params {
     struct ggml_tensor src0;  // F32 input tensor
     struct ggml_tensor src1;  // I32 position tensor
@@ -389,10 +393,13 @@ struct ggml_et_rope_params {
     struct ggml_tensor dst;   // F32 output tensor
     rope_params_t rope_params;
 };
+#define ggml_et_rope_params_defined
+#endif
 
 // Compact work descriptor — avoids putting 4 full ggml_tensor copies (~1400 B)
 // on every hart's stack in monolithic mode.  Only the fields the ROPE
 // computation actually touches are kept here (~172 B).
+#ifndef rope_f32_work_t_defined
 typedef struct {
     const float*   src0_data;
     const int32_t* src1_data;
@@ -403,6 +410,8 @@ typedef struct {
     int64_t        dst_nb1, dst_nb2, dst_nb3;
     rope_params_t  rp;
 } rope_f32_work_t;
+#define rope_f32_work_t_defined
+#endif
 
 //------------------------------------------------------------------------------
 // Existing scalar helpers
@@ -805,6 +814,7 @@ static inline void compute_imrope_cache(
 // saved in monolithic mode).
 //------------------------------------------------------------------------------
 
+#ifndef rope_f32_compute_defined
 static int rope_f32_compute(const rope_f32_work_t* w,
                             int thread_id, int num_threads) {
     const int64_t head_dim = w->ne[0];
@@ -955,6 +965,8 @@ static int rope_f32_compute(const rope_f32_work_t* w,
 
     return 0;
 }
+#define rope_f32_compute_defined
+#endif
 
 //------------------------------------------------------------------------------
 // Entry point — standalone kernel API (thin wrapper around rope_f32_compute)
