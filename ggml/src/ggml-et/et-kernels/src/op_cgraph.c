@@ -478,29 +478,124 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case GGML_OP_SUM_ROWS:
                 break;
 
-            case GGML_OP_SUB:
-            case GGML_OP_ADD:
             case GGML_OP_MUL:
-                struct ggml_et_binary_params params;
-                convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
-                convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
-                const enum ggml_op el_op = (node_op_val == GGML_OP_MUL) ? GGML_OP_MUL : GGML_OP_ADD;
-                convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, el_op);
+            case GGML_OP_ADD:
+                {
+                    struct ggml_et_binary_params params;
+                    convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                    const enum ggml_op el_op = (node_op_val == GGML_OP_MUL) ? GGML_OP_MUL : GGML_OP_ADD;
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, el_op);
 
-                if (params.dst.type != GGML_TYPE_F32 ||
-                    params.src0.type != GGML_TYPE_F32 ||
-                    params.src1.type != GGML_TYPE_F32) {
-                    break;
+                    if (params.dst.type != GGML_TYPE_F32 ||
+                        params.src0.type != GGML_TYPE_F32 ||
+                        params.src1.type != GGML_TYPE_F32) {
+                        break;
+                    }
+                    el_map_f32_impl(&params, env);
                 }
-                el_map_f32_impl(&params, env);
+                break;
 
-                // ggml_et_op_mul(dev_ctx, node);
+            case GGML_OP_SUB:
+                {
+                    struct ggml_et_binary_params params;
+                    convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                    const enum ggml_op el_op = GGML_OP_SUB;
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, el_op);
+
+                    if (params.dst.type != GGML_TYPE_F32 ||
+                        params.src0.type != GGML_TYPE_F32 ||
+                        params.src1.type != GGML_TYPE_F32) {
+                        break;
+                    }
+                    el_map_f32_impl(&params, env);
+                }
                 break;
 
             case GGML_OP_CUMSUM:
                 break;
 
             case GGML_OP_MUL_MAT:
+                {
+                    struct ggml_et_binary_params params;
+                    convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_MUL_MAT);
+
+                    if (params.dst.type == GGML_TYPE_F32 &&
+                        params.src0.type == GGML_TYPE_Q8_0 &&
+                        params.src1.type == GGML_TYPE_F32) {
+                        mul_mat_Q8_0_impl(&params, env);
+                    }
+                    else if (params.dst.type == GGML_TYPE_F32 &&
+                        params.src0.type == GGML_TYPE_F16 &&
+                        params.src1.type == GGML_TYPE_F16) {
+                        // F16 x F16 -> F32 scalar path
+                        // int tid, nth;
+                        // if (cg_thread_setup(env, &tid, &nth)) break;
+                        // if (tid & 1) break; // skip odd threads
+                        // int eff_tid = tid / 2;
+                        // int eff_nth = (nth + 1) / 2;
+
+                        // const uint16_t * s0 = (const uint16_t *)params.src0.data;
+                        // const uint16_t * s1 = (const uint16_t *)params.src1.data;
+                        // float * d = (float *)params.dst.data;
+
+                        // const int64_t K = params.src0.ne[0];
+                        // const int64_t M = params.src0.ne[1];
+                        // const int64_t N = params.src1.ne[1];
+                        // const int64_t ne02 = params.src0.ne[2], ne03 = params.src0.ne[3];
+                        // const int64_t ne12 = params.src1.ne[2], ne13 = params.src1.ne[3];
+                        // const int64_t ne2  = params.dst.ne[2],  ne3  = params.dst.ne[3];
+
+                        // const size_t nb01 = params.src0.nb[1], nb02 = params.src0.nb[2], nb03 = params.src0.nb[3];
+                        // const size_t nb11 = params.src1.nb[1], nb12 = params.src1.nb[2], nb13 = params.src1.nb[3];
+                        // const size_t nb1  = params.dst.nb[1],  nb2  = params.dst.nb[2],  nb3  = params.dst.nb[3];
+
+                        // const int64_t r2 = ne12 / ne02;
+                        // const int64_t r3 = ne13 / ne03;
+
+                        // const int64_t total = M * N * ne2 * ne3;
+                        // const int64_t per_thread = 16;
+                        // const int64_t stride = per_thread * eff_nth;
+
+                        // for (int64_t base = eff_tid * per_thread; base < total; base += stride) {
+                        //     for (int64_t j = 0; j < per_thread && (base + j) < total; j++) {
+                        //         const int64_t idx = base + j;
+                        //         const int64_t i3 = idx / (M * N * ne2);
+                        //         const int64_t rem3 = idx % (M * N * ne2);
+                        //         const int64_t i2 = rem3 / (M * N);
+                        //         const int64_t rem2 = rem3 % (M * N);
+                        //         const int64_t n = rem2 / M;
+                        //         const int64_t m = rem2 % M;
+
+                        //         const int64_t i03 = i3 / r3, i02 = i2 / r2;
+
+                        //         const uint16_t * a_row = (const uint16_t *)((const char *)s0 + m * nb01 + i02 * nb02 + i03 * nb03);
+                        //         const uint16_t * b_row = (const uint16_t *)((const char *)s1 + n * nb11 + i2 * nb12 + i3 * nb13);
+
+                        //         float sum = 0.0f;
+                        //         for (int64_t k = 0; k < K; k++) {
+                        //             sum += fp16_to_fp32(a_row[k]) * fp16_to_fp32(b_row[k]);
+                        //         }
+
+                        //         volatile float * out = (volatile float *)((char *)d + m * sizeof(float) + n * nb1 + i2 * nb2 + i3 * nb3);
+                        //         atomic_store_f32(out, sum);
+                        //     }
+                        // }
+                    }
+                    else if (params.dst.type == GGML_TYPE_F32 &&
+                        params.src0.type == GGML_TYPE_F16 &&
+                        params.src1.type == GGML_TYPE_F32) {
+                        mul_mat_f16_impl(&params, env);
+                    }
+                    else if (params.dst.type == GGML_TYPE_F32 &&
+                        params.src0.type == GGML_TYPE_F32 &&
+                        params.src1.type == GGML_TYPE_F32) {
+                        mul_mat_f32_impl(&params, env);
+                    }
+                }
                 break;
 
             case GGML_OP_MUL_MAT_ID:
@@ -510,6 +605,15 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 break;
 
             case GGML_OP_RMS_NORM:
+                {
+                    struct ggml_et_rms_norm_params params;
+                    convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_RMS_NORM);
+                    memcpy(&params.eps, node_meta[i].op_params, sizeof(float));
+                    if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
+                        rms_norm_f32_impl(&params, env);
+                    }
+                }
                 break;
 
             case GGML_OP_NORM:
@@ -525,21 +629,140 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 break;
 
             case GGML_OP_GLU:
+                {
+                    struct ggml_et_glu_params params;
+                    convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GLU);
+                    memcpy(&params.glu_op_type, &node_meta[i].op_params[0], sizeof(int32_t));
+                    memcpy(&params.swapped, &node_meta[i].op_params[1], sizeof(int32_t));
+                    if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32 &&
+                        (params.glu_op_type == GGML_GLU_OP_SWIGLU || params.glu_op_type == GGML_GLU_OP_GEGLU)) {
+                        glu_f32_impl(&params, env);
+                    }
+                }
                 break;
 
             case GGML_OP_SOFT_MAX:
+                {
+                    struct ggml_et_softmax_params params;
+                    convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.src2, &node_meta[i].src2, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_SOFT_MAX);
+                    memcpy(&params.scale, &node_meta[i].op_params[0], sizeof(float));
+                    memcpy(&params.max_bias, &node_meta[i].op_params[1], sizeof(float));
+                    if (params.dst.type == GGML_TYPE_F32 && params.src0.type == GGML_TYPE_F32) {
+                        softmax_f32_impl(&params, env);
+                    }
+                }
                 break;
 
             case GGML_OP_IM2COL:
                 break;
 
             case GGML_OP_FLASH_ATTN_EXT:
+                {
+                    struct ggml_et_flash_attn_ext_params params;
+                    convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.src2, &node_meta[i].src2, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_FLASH_ATTN_EXT);
+                    memcpy(&params.scale, &node_meta[i].op_params[0], sizeof(float));
+                    // Note: mask (src3) and sinks (src4) are not available in ggml_node_meta_et
+                    // This implementation is limited to unmasked flash attention
+                    params.has_mask = 0;
+                    memset(&params.mask, 0, sizeof(params.mask));
+
+                    // Use matrix engine kernel when K/V are F16 and dk is a multiple of 32
+                    if (params.dst.type == GGML_TYPE_F32 &&
+                        params.src0.type == GGML_TYPE_F32 &&
+                        params.src1.type == GGML_TYPE_F16 &&
+                        params.src2.type == GGML_TYPE_F16 &&
+                        (params.src0.ne[0] % 32) == 0) {
+                        flash_attn_ext_f16_me_impl(&params, env);
+                    } else if (params.dst.type == GGML_TYPE_F32 &&
+                               params.src0.type == GGML_TYPE_F32) {
+                        flash_attn_ext_f32_impl(&params, env);
+                    }
+                }
                 break;
 
             case GGML_OP_GET_ROWS:
+                {
+                    struct ggml_et_get_rows_params params;
+                    convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
+                    if (params.dst.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I32 &&
+                        (params.src0.type == GGML_TYPE_F32 || params.src0.type == GGML_TYPE_Q8_0 ||
+                         params.src0.type == GGML_TYPE_Q4_0 || params.src0.type == GGML_TYPE_Q4_K)) {
+                        get_rows_f32_impl(&params, env);
+                    }
+                }
                 break;
 
             case GGML_OP_CONT:
+                {
+                    void * src0_data = (void *)(uintptr_t)node_meta[i].src0.data;
+                    void * dst_data  = (void *)(uintptr_t)node_meta[i].dst.data;
+                    if (!src0_data || !dst_data) break;
+
+                    const int64_t ne0 = node_meta[i].dst.ne[0], ne1 = node_meta[i].dst.ne[1];
+                    const int64_t ne2 = node_meta[i].dst.ne[2], ne3 = node_meta[i].dst.ne[3];
+                    const int64_t ne00 = node_meta[i].src0.ne[0], ne01 = node_meta[i].src0.ne[1];
+                    const int64_t ne02 = node_meta[i].src0.ne[2], ne03 = node_meta[i].src0.ne[3];
+
+                    const size_t nb00 = (size_t)node_meta[i].src0.nb[0], nb01 = (size_t)node_meta[i].src0.nb[1];
+                    const size_t nb02 = (size_t)node_meta[i].src0.nb[2], nb03 = (size_t)node_meta[i].src0.nb[3];
+
+                    if (node_meta[i].dst.type != node_meta[i].src0.type) {
+                        break;
+                    }
+
+                    if (node_meta[i].dst.type == GGML_TYPE_F16) {
+                     /*   int tid, nth;
+                        if (cg_thread_setup(env, &tid, &nth)) break;
+
+                        const int64_t src_elements = ne00 * ne01 * ne02 * ne03;
+                        const int64_t dst_elements = ne0 * ne1 * ne2 * ne3;
+                        if (src_elements != dst_elements) {
+                            break;
+                        }
+
+                        const int64_t total_rows = ne01;
+                        const int64_t rows_per_thread = (total_rows + nth - 1) / nth;
+                        const int64_t start_row = tid * rows_per_thread;
+                        const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
+
+                        if (start_row >= total_rows) {
+                            break;
+                        }
+
+                        for (int64_t i03 = 0; i03 < ne03; i03++) {
+                            for (int64_t i02 = 0; i02 < ne02; i02++) {
+                                const int64_t dst_linear_base = i03 * ne02 * ne01 * ne00 + i02 * ne01 * ne00;
+
+                                for (int64_t i01 = start_row; i01 < end_row; i01++) {
+                                    const int64_t dst_linear_row_base = dst_linear_base + i01 * ne00;
+
+                                    for (int64_t i00 = 0; i00 < ne00; i00++) {
+                                        const int64_t src_offset_bytes = i00*nb00 + i01*nb01 + i02*nb02 + i03*nb03;
+                                        const uint16_t* src_ptr = (const uint16_t*)((const char*)src0_data + src_offset_bytes);
+                                        const int64_t dst_linear_idx = dst_linear_row_base + i00;
+
+                                        atomic_store_f16((volatile uint16_t*)((char*)dst_data + dst_linear_idx * sizeof(uint16_t)), *src_ptr);
+                                    }
+                                }
+                            }
+                        }*/
+                    } else if (node_meta[i].dst.type == GGML_TYPE_F32) {
+                        struct ggml_et_cont_params params;
+                        convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                        convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_CONT);
+                        cont_f32_impl(&params, env);
+                    }
+                }
                 break;
 
             case GGML_OP_CPY:
@@ -561,6 +784,16 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 break;
 
             case GGML_OP_SET_ROWS:
+                {
+                    struct ggml_et_set_rows_params params;
+                    convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
+                    convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_SET_ROWS);
+                    if (params.src0.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I64 &&
+                        (params.dst.type == GGML_TYPE_F32 || params.dst.type == GGML_TYPE_F16)) {
+                        set_rows_f32_impl(&params, env);
+                    }
+                }
                 break;
 
             case GGML_OP_FILL:
