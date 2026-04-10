@@ -22,6 +22,8 @@
 #include "platform.h"
 #include "math_fp.h"
 
+#ifndef GGML_ET_FLASH_ATTN_EXT_PARAMS_DEFINED
+#define GGML_ET_FLASH_ATTN_EXT_PARAMS_DEFINED
 struct ggml_et_flash_attn_ext_params {
     struct ggml_tensor src0;     // Q tensor (F32)
     struct ggml_tensor src1;     // K tensor (F16 or F32)
@@ -31,6 +33,7 @@ struct ggml_et_flash_attn_ext_params {
     float scale;                 // Scale factor applied to QK
     int32_t has_mask;            // nonzero if mask is present
 };
+#endif
 
 // Maximum head dimension supported (128 covers all common LLMs).
 #define FA_DV_MAX 128
@@ -65,6 +68,8 @@ static inline float dot_qk(const float * q, const char * k_row,
     return acc;
 }
 
+#ifndef GET_MASK_VAL_DEFINED
+#define GET_MASK_VAL_DEFINED
 static inline float get_mask_val(const struct ggml_tensor * mask,
                                  int64_t iq1, int64_t ik1,
                                  int64_t iq2, int64_t iq3) {
@@ -80,6 +85,7 @@ static inline float get_mask_val(const struct ggml_tensor * mask,
     // F16
     return fp16_to_fp32(*(const uint16_t *)(base + ik1 * mask->nb[0]));
 }
+#endif
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
 #define FLASH_ATTN_EXT_F32_FUNC flash_attn_ext_f32_impl

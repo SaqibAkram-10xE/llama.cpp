@@ -23,6 +23,8 @@ struct ggml_et_concat_params {
 
 // Copy n floats from src to dst using 8-wide vector loads/stores.
 // n must be a multiple of 16 (cacheline-aligned).
+#ifndef COPY_ROW_ALIGNED_DEFINED
+#define COPY_ROW_ALIGNED_DEFINED
 static inline void copy_row_aligned(float* dst, const float* src, int32_t n) {
     for (int32_t i = 0; i < n; i += 8) {
         __asm__ volatile(
@@ -34,6 +36,7 @@ static inline void copy_row_aligned(float* dst, const float* src, int32_t n) {
         );
     }
 }
+#endif
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
 #define CONCAT_F32_FUNC concat_f32_impl

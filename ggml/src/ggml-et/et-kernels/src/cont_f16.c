@@ -11,10 +11,13 @@
 #include "ggml_tensor.h"
 #include "platform.h"
 
+#ifndef GGML_ET_CONT_PARAMS_DEFINED
+#define GGML_ET_CONT_PARAMS_DEFINED
 struct ggml_et_cont_params {
     struct ggml_tensor src0;     // F16 input tensor (non-contiguous)
     struct ggml_tensor dst;      // F16 output tensor (contiguous)
 };
+#endif
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
 #define CONT_F16_FUNC cont_f16_impl

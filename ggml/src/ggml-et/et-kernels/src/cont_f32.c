@@ -14,12 +14,17 @@
 #include "ggml_tensor.h"
 #include "platform.h"
 
+#ifndef GGML_ET_CONT_PARAMS_DEFINED
+#define GGML_ET_CONT_PARAMS_DEFINED
 struct ggml_et_cont_params {
     struct ggml_tensor src0;     // F32 input tensor (non-contiguous)
     struct ggml_tensor dst;      // F32 output tensor (contiguous)
 };
+#endif
 
 // Vectorized copy with scalar tail
+#ifndef VEC_COPY_F32_DEFINED
+#define VEC_COPY_F32_DEFINED
 static inline void vec_copy_f32(float* dst, const float* src, int32_t n) {
     int32_t i = 0;
     const int32_t vec_end = (n / 8) * 8;
@@ -36,6 +41,7 @@ static inline void vec_copy_f32(float* dst, const float* src, int32_t n) {
         dst[i] = src[i];
     }
 }
+#endif
 
 // Scalar copy
 static inline void scalar_copy_f32(float* dst, const float* src, int32_t n) {

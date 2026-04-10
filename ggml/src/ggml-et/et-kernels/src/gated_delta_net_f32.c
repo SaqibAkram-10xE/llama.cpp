@@ -36,6 +36,8 @@ struct ggml_et_gated_delta_net_params {
     float   scale;      // 1/sqrt(S_v)
 };
 
+#ifndef HSUM_F10_DEFINED
+#define HSUM_F10_DEFINED
 static inline float hsum_f10(void) {
     float result;
     __asm__ __volatile__(
@@ -51,6 +53,7 @@ static inline float hsum_f10(void) {
     );
     return result;
 }
+#endif
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
 #define GATED_DELTA_NET_F32_FUNC gated_delta_net_f32_impl

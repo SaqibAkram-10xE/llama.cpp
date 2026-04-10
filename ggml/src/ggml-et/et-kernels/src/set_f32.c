@@ -23,6 +23,8 @@ struct ggml_et_set_params {
     int32_t offset;
 };
 
+#ifndef COPY_ROW_ALIGNED_DEFINED
+#define COPY_ROW_ALIGNED_DEFINED
 static inline void copy_row_aligned(float * dst, const float * src, int32_t n) {
     for (int32_t i = 0; i < n; i += 8) {
         __asm__ volatile(
@@ -34,6 +36,7 @@ static inline void copy_row_aligned(float * dst, const float * src, int32_t n) {
         );
     }
 }
+#endif
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
 #define SET_F32_FUNC set_f32_impl

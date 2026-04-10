@@ -30,6 +30,8 @@ struct ggml_et_rwkv_wkv7_params {
 };
 
 // Horizontal sum of 8-wide vector register f10 -> scalar float
+#ifndef HSUM_F10_DEFINED
+#define HSUM_F10_DEFINED
 static inline float hsum_f10(void) {
     float result;
     __asm__ __volatile__(
@@ -45,6 +47,7 @@ static inline float hsum_f10(void) {
     );
     return result;
 }
+#endif
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
 #define RWKV_WKV7_F32_FUNC rwkv_wkv7_f32_impl

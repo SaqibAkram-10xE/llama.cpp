@@ -25,6 +25,8 @@ struct ggml_et_pad_params {
 };
 
 // Vectorized copy with scalar tail
+#ifndef VEC_COPY_F32_DEFINED
+#define VEC_COPY_F32_DEFINED
 static inline void vec_copy_f32(float* dst, const float* src, int32_t n) {
     int32_t i = 0;
     const int32_t vec_end = (n / 8) * 8;
@@ -41,6 +43,7 @@ static inline void vec_copy_f32(float* dst, const float* src, int32_t n) {
         dst[i] = src[i];
     }
 }
+#endif
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
 #define PAD_F32_FUNC pad_f32_impl

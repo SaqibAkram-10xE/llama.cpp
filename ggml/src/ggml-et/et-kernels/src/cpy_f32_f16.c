@@ -10,10 +10,13 @@
 #include "platform.h"
 #include "math_fp.h"
 
+#ifndef GGML_ET_CONT_PARAMS_DEFINED
+#define GGML_ET_CONT_PARAMS_DEFINED
 struct ggml_et_cont_params {
     struct ggml_tensor src0;
     struct ggml_tensor dst;
 };
+#endif
 
 #ifdef ENABLE_MONOLITHIC_COMPUTE
 #define CPY_F32_F16_FUNC cpy_f32_f16_impl

@@ -58,6 +58,8 @@ typedef uint16_t et_fp16_t;
 #define SCP_KP1_OFF       (SCP_KP0_OFF + SCP_KPANEL_SIZE)       // 4096
 #define SCP_PER_MINION    (SCP_KP1_OFF + SCP_KPANEL_SIZE)       // 6144
 
+#ifndef GGML_ET_FLASH_ATTN_EXT_PARAMS_DEFINED
+#define GGML_ET_FLASH_ATTN_EXT_PARAMS_DEFINED
 struct ggml_et_flash_attn_ext_params {
     struct ggml_tensor src0;     // Q (F32)
     struct ggml_tensor src1;     // K (F16)
@@ -67,7 +69,10 @@ struct ggml_et_flash_attn_ext_params {
     float scale;
     int32_t has_mask;
 };
+#endif
 
+#ifndef GET_MASK_VAL_DEFINED
+#define GET_MASK_VAL_DEFINED
 static inline float get_mask_val(const struct ggml_tensor * mask,
                                  int64_t iq1, int64_t ik1,
                                  int64_t iq2, int64_t iq3) {
@@ -81,6 +86,7 @@ static inline float get_mask_val(const struct ggml_tensor * mask,
     }
     return fp16_to_fp32(*(const uint16_t *)(base + ik1 * mask->nb[0]));
 }
+#endif
 
 static inline const char * get_mask_row_base(const struct ggml_tensor * mask,
                                              int64_t iq1, int64_t iq2, int64_t iq3) {
