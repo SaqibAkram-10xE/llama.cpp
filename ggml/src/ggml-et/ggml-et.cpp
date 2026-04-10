@@ -588,8 +588,6 @@ static enum ggml_status ggml_backend_et_graph_compute(ggml_backend_t backend, gg
     for (int i = 0; i < cgraph->n_nodes; i++) {
         ggml_tensor * node = cgraph->nodes[i];
 
-        printf("Executing op: %s\n", ggml_op_name(node->op));
-        
         if (node->op == GGML_OP_NONE) {
             continue;
         }
