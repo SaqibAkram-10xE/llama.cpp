@@ -381,6 +381,8 @@ struct ggml_cgraph_et {
     uint8_t data[];
 };
 
+#define GGML_ROPE_TYPE_MROPE  8
+
 // ========================================================================
 // Helpers
 // ========================================================================
@@ -606,7 +608,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     // FENCE;
                     // et_barrier(ET_BARRIER_GLOBAL);
                     // et_barrier(ET_BARRIER_SHIRE);
-                    device_barrier(32);
+                    // device_barrier(32);
                     struct ggml_et_rope_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
@@ -916,7 +918,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             node_op_val != GGML_OP_VIEW    &&
             node_op_val != GGML_OP_PERMUTE &&
             node_op_val != GGML_OP_TRANSPOSE) {
-            // device_barrier(32);
+            device_barrier(32);
             et_barrier(ET_BARRIER_GLOBAL);
         }
     }
