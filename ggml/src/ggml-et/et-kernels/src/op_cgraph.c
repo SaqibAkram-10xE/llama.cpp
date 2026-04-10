@@ -424,6 +424,16 @@ static inline void convert_to_ggml_tensor(struct ggml_tensor * d,
     }
 }
 
+// Thread setup helper — returns -1 if this hart should not participate
+static inline int cg_thread_setup(void * env, int * out_tid, int * out_nth) {
+    kernel_environment_t * ke = (kernel_environment_t *)env;
+    if (!ke) return -1;
+    *out_tid = get_relative_thread_id(ke->shire_mask);
+    *out_nth = get_num_threads(ke->shire_mask);
+    if (*out_tid < 0) return -1;
+    return 0;
+}
+
 
 // // FCC consume - blocks until a credit is available on the specified FCC register
 // inline __attribute__((always_inline)) void fcc_consume(uint64_t fcc_reg)
@@ -591,58 +601,58 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                         params.src0.type == GGML_TYPE_F16 &&
                         params.src1.type == GGML_TYPE_F16) {
                         // F16 x F16 -> F32 scalar path
-                        // int tid, nth;
-                        // if (cg_thread_setup(env, &tid, &nth)) break;
-                        // if (tid & 1) break; // skip odd threads
-                        // int eff_tid = tid / 2;
-                        // int eff_nth = (nth + 1) / 2;
+                        int tid, nth;
+                        if (cg_thread_setup(env, &tid, &nth)) break;
+                        if (tid & 1) break; // skip odd threads
+                        int eff_tid = tid / 2;
+                        int eff_nth = (nth + 1) / 2;
 
-                        // const uint16_t * s0 = (const uint16_t *)params.src0.data;
-                        // const uint16_t * s1 = (const uint16_t *)params.src1.data;
-                        // float * d = (float *)params.dst.data;
+                        const uint16_t * s0 = (const uint16_t *)params.src0.data;
+                        const uint16_t * s1 = (const uint16_t *)params.src1.data;
+                        float * d = (float *)params.dst.data;
 
-                        // const int64_t K = params.src0.ne[0];
-                        // const int64_t M = params.src0.ne[1];
-                        // const int64_t N = params.src1.ne[1];
-                        // const int64_t ne02 = params.src0.ne[2], ne03 = params.src0.ne[3];
-                        // const int64_t ne12 = params.src1.ne[2], ne13 = params.src1.ne[3];
-                        // const int64_t ne2  = params.dst.ne[2],  ne3  = params.dst.ne[3];
+                        const int64_t K = params.src0.ne[0];
+                        const int64_t M = params.src0.ne[1];
+                        const int64_t N = params.src1.ne[1];
+                        const int64_t ne02 = params.src0.ne[2], ne03 = params.src0.ne[3];
+                        const int64_t ne12 = params.src1.ne[2], ne13 = params.src1.ne[3];
+                        const int64_t ne2  = params.dst.ne[2],  ne3  = params.dst.ne[3];
 
-                        // const size_t nb01 = params.src0.nb[1], nb02 = params.src0.nb[2], nb03 = params.src0.nb[3];
-                        // const size_t nb11 = params.src1.nb[1], nb12 = params.src1.nb[2], nb13 = params.src1.nb[3];
-                        // const size_t nb1  = params.dst.nb[1],  nb2  = params.dst.nb[2],  nb3  = params.dst.nb[3];
+                        const size_t nb01 = params.src0.nb[1], nb02 = params.src0.nb[2], nb03 = params.src0.nb[3];
+                        const size_t nb11 = params.src1.nb[1], nb12 = params.src1.nb[2], nb13 = params.src1.nb[3];
+                        const size_t nb1  = params.dst.nb[1],  nb2  = params.dst.nb[2],  nb3  = params.dst.nb[3];
 
-                        // const int64_t r2 = ne12 / ne02;
-                        // const int64_t r3 = ne13 / ne03;
+                        const int64_t r2 = ne12 / ne02;
+                        const int64_t r3 = ne13 / ne03;
 
-                        // const int64_t total = M * N * ne2 * ne3;
-                        // const int64_t per_thread = 16;
-                        // const int64_t stride = per_thread * eff_nth;
+                        const int64_t total = M * N * ne2 * ne3;
+                        const int64_t per_thread = 16;
+                        const int64_t stride = per_thread * eff_nth;
 
-                        // for (int64_t base = eff_tid * per_thread; base < total; base += stride) {
-                        //     for (int64_t j = 0; j < per_thread && (base + j) < total; j++) {
-                        //         const int64_t idx = base + j;
-                        //         const int64_t i3 = idx / (M * N * ne2);
-                        //         const int64_t rem3 = idx % (M * N * ne2);
-                        //         const int64_t i2 = rem3 / (M * N);
-                        //         const int64_t rem2 = rem3 % (M * N);
-                        //         const int64_t n = rem2 / M;
-                        //         const int64_t m = rem2 % M;
+                        for (int64_t base = eff_tid * per_thread; base < total; base += stride) {
+                            for (int64_t j = 0; j < per_thread && (base + j) < total; j++) {
+                                const int64_t idx = base + j;
+                                const int64_t i3 = idx / (M * N * ne2);
+                                const int64_t rem3 = idx % (M * N * ne2);
+                                const int64_t i2 = rem3 / (M * N);
+                                const int64_t rem2 = rem3 % (M * N);
+                                const int64_t n = rem2 / M;
+                                const int64_t m = rem2 % M;
 
-                        //         const int64_t i03 = i3 / r3, i02 = i2 / r2;
+                                const int64_t i03 = i3 / r3, i02 = i2 / r2;
 
-                        //         const uint16_t * a_row = (const uint16_t *)((const char *)s0 + m * nb01 + i02 * nb02 + i03 * nb03);
-                        //         const uint16_t * b_row = (const uint16_t *)((const char *)s1 + n * nb11 + i2 * nb12 + i3 * nb13);
+                                const uint16_t * a_row = (const uint16_t *)((const char *)s0 + m * nb01 + i02 * nb02 + i03 * nb03);
+                                const uint16_t * b_row = (const uint16_t *)((const char *)s1 + n * nb11 + i2 * nb12 + i3 * nb13);
 
-                        //         float sum = 0.0f;
-                        //         for (int64_t k = 0; k < K; k++) {
-                        //             sum += fp16_to_fp32(a_row[k]) * fp16_to_fp32(b_row[k]);
-                        //         }
+                                float sum = 0.0f;
+                                for (int64_t k = 0; k < K; k++) {
+                                    sum += fp16_to_fp32(a_row[k]) * fp16_to_fp32(b_row[k]);
+                                }
 
-                        //         volatile float * out = (volatile float *)((char *)d + m * sizeof(float) + n * nb1 + i2 * nb2 + i3 * nb3);
-                        //         atomic_store_f32(out, sum);
-                        //     }
-                        // }
+                                volatile float * out = (volatile float *)((char *)d + m * sizeof(float) + n * nb1 + i2 * nb2 + i3 * nb3);
+                                atomic_store_f32(out, sum);
+                            }
+                        }
                     }
                     else if (params.dst.type == GGML_TYPE_F32 &&
                         params.src0.type == GGML_TYPE_F16 &&
@@ -848,8 +858,9 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.dst, &node_meta[i].dst, GGML_OP_GET_ROWS);
                     if (params.dst.type == GGML_TYPE_F32 && params.src1.type == GGML_TYPE_I32 &&
-                        (params.src0.type == GGML_TYPE_F32 || params.src0.type == GGML_TYPE_Q8_0 ||
-                         params.src0.type == GGML_TYPE_Q4_0 || params.src0.type == GGML_TYPE_Q4_K)) {
+                        (params.src0.type == GGML_TYPE_F32 || params.src0.type == GGML_TYPE_F16 ||
+                         params.src0.type == GGML_TYPE_Q8_0 || params.src0.type == GGML_TYPE_Q4_0 ||
+                         params.src0.type == GGML_TYPE_Q4_K)) {
                         get_rows_f32_impl(&params, env);
                     }
                 }
@@ -874,7 +885,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                     }
 
                     if (node_meta[i].dst.type == GGML_TYPE_F16) {
-                     /*   int tid, nth;
+                        int tid, nth;
                         if (cg_thread_setup(env, &tid, &nth)) break;
 
                         const int64_t src_elements = ne00 * ne01 * ne02 * ne03;
@@ -908,7 +919,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                                     }
                                 }
                             }
-                        }*/
+                        }
                     } else if (node_meta[i].dst.type == GGML_TYPE_F32) {
                         struct ggml_et_cont_params params;
                         convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
