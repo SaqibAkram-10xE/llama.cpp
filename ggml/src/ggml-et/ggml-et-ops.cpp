@@ -2518,6 +2518,23 @@ bool ggml_et_op_cg(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph
         if (node->src[2]) {
             src2 = node->src[2];
         }
+        // Check src[3]-src[6]
+        struct ggml_tensor * src3 = NULL;
+        if (node->src[3]) {
+            src3 = node->src[3];
+        }
+        struct ggml_tensor * src4 = NULL;
+        if (node->src[4]) {
+            src4 = node->src[4];
+        }
+        struct ggml_tensor * src5 = NULL;
+        if (node->src[5]) {
+            src5 = node->src[5];
+        }
+        struct ggml_tensor * src6 = NULL;
+        if (node->src[6]) {
+            src6 = node->src[6];
+        }
         // Only fill metadata if tensors exist
         if (node) {
             fill_tensor_meta(&node_meta[i].dst, node);
@@ -2530,6 +2547,18 @@ bool ggml_et_op_cg(ggml_backend_et_device_context* dev_ctx, ggml_cgraph * cgraph
         }
         if (src2) {
             fill_tensor_meta(&node_meta[i].src2, src2);
+        }
+        if (src3) {
+            fill_tensor_meta(&node_meta[i].src3, src3);
+        }
+        if (src4) {
+            fill_tensor_meta(&node_meta[i].src4, src4);
+        }
+        if (src5) {
+            fill_tensor_meta(&node_meta[i].src5, src5);
+        }
+        if (src6) {
+            fill_tensor_meta(&node_meta[i].src6, src6);
         }
         // Copy op_params
         memcpy(node_meta[i].op_params, node->op_params, sizeof(node->op_params));

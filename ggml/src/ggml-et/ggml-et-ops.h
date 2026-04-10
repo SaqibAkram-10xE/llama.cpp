@@ -319,6 +319,10 @@ struct ggml_node_meta_et {
     struct ggml_tensor_et src0;
     struct ggml_tensor_et src1;
     struct ggml_tensor_et src2;
+    struct ggml_tensor_et src3;
+    struct ggml_tensor_et src4;
+    struct ggml_tensor_et src5;
+    struct ggml_tensor_et src6;
     struct ggml_tensor_et dst;
     int32_t op_params[16];
 };
