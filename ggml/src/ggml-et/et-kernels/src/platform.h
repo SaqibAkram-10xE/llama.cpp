@@ -582,13 +582,16 @@ device_barrier(uint32_t num_shires)
     const uint32_t thread    = (uint32_t)(hart_id & 0x1);          // thread 0 or 1
 
     // --- Step 1: Intra-shire barrier (FLB 0, FCC 0) ---
+    FENCE; // drain store buffer to L1 before FLB so flush_shire_l1_l2 captures all writes
     if (flbarrier(0, 63)) {
         // Last hart: flush cache, then wake all local harts
         flush_shire_l1_l2();
+        FENCE;
         fcc_send(SHIRE_OWN, 0, 0, ALL_MINIONS_MASK);
         fcc_send(SHIRE_OWN, 1, 0, ALL_MINIONS_MASK);
     }
     fcc_consume(0);
+    FENCE; // ensure post-flush reads see DRAM, not stale L1 prefetches
 
     // --- Step 2: Cross-shire sync (FCC 1) ---
     // Master shire = shire 0.  Uses minions 1..(num_shires-1) as collectors.
@@ -624,6 +627,10 @@ device_barrier(uint32_t num_shires)
         // ALL worker shire harts wait for wake-up from master
         fcc_consume(1);
     }
+
+    // Final FENCE after cross-shire sync: ensure all harts' subsequent reads
+    // see DRAM-fresh data, not stale L1 cached from before the barrier
+    FENCE;
 }
 
 #endif // PLATFORM_H

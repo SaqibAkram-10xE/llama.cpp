@@ -1254,8 +1254,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             node_op_val != GGML_OP_PERMUTE &&
             node_op_val != GGML_OP_TRANSPOSE) {
             device_barrier(32);
-            // et_barrier(ET_BARRIER_GLOBAL);
         }
+
     }
 
     return 0;
