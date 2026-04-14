@@ -584,7 +584,9 @@ device_barrier(uint32_t num_shires)
     // --- Step 1: Intra-shire barrier (FLB 0, FCC 0) ---
     // Pure synchronization, matching gp-sdk barrier<Scope::shire>.
     // Cache flush is the CALLER's responsibility (all harts must flush before calling).
+    // flush_shire_l1_l2();
     if (flbarrier(0, 63)) {
+        flush_shire_l1_l2();
         fcc_send(SHIRE_OWN, 0, 0, ALL_MINIONS_MASK);
         fcc_send(SHIRE_OWN, 1, 0, ALL_MINIONS_MASK);
     }
