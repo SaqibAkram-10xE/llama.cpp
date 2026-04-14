@@ -1256,8 +1256,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             // All harts flush their caches before the barrier so writes are
             // globally visible.  device_barrier is pure synchronization
             // (matching gp-sdk), cache management is the caller's job.
-            // FENCE;
-            // flush_shire_l1_l2();
+            FENCE;
+            flush_shire_l1_l2();
             device_barrier(32);
         }
 
