@@ -1200,53 +1200,6 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
                 break;
         }
 
-        /*switch (op) {
-            case GGML_OP_SQR:           ggml_et_op_sqr(env, &node_meta[i]); break;
-            case GGML_OP_UNARY:         ggml_et_op_unary(env, &node_meta[i]); break;
-            case GGML_OP_SUM_ROWS:      ggml_et_op_sum_rows(env, &node_meta[i]); break;
-            case GGML_OP_MUL:           ggml_et_op_mul(env, &node_meta[i]); break;
-            case GGML_OP_ADD:           ggml_et_op_add(env, &node_meta[i]); break;
-            case GGML_OP_SUB:           ggml_et_op_sub(env, &node_meta[i]); break;
-            case GGML_OP_CUMSUM:        ggml_et_op_cumsum(env, &node_meta[i]); break;
-            case GGML_OP_MUL_MAT:       ggml_et_op_mul_mat(env, &node_meta[i]); break;
-            case GGML_OP_MUL_MAT_ID:    ggml_et_op_mul_mat_id(env, &node_meta[i]); break;
-            case GGML_OP_ROPE:          ggml_et_op_rope(env, &node_meta[i]); break;
-            case GGML_OP_RMS_NORM:      ggml_et_op_rms_norm(env, &node_meta[i]); break;
-            case GGML_OP_NORM:          ggml_et_op_norm(env, &node_meta[i]); break;
-            case GGML_OP_L2_NORM:       ggml_et_op_l2_norm(env, &node_meta[i]); break;
-            case GGML_OP_SCALE:         ggml_et_op_scale(env, &node_meta[i]); break;
-            case GGML_OP_GLU:           ggml_et_op_glu(env, &node_meta[i]); break;
-            case GGML_OP_SOFT_MAX:      ggml_et_op_softmax(env, &node_meta[i]); break;
-            case GGML_OP_FLASH_ATTN_EXT: ggml_et_op_flash_attn_ext(env, &node_meta[i]); break;
-            case GGML_OP_GET_ROWS:      ggml_et_op_get_rows(env, &node_meta[i]); break;
-            case GGML_OP_CONT:          ggml_et_op_cont(env, &node_meta[i]); break;
-            case GGML_OP_CPY:           ggml_et_op_cpy(env, &node_meta[i]); break;
-            case GGML_OP_CONCAT:        ggml_et_op_concat(env, &node_meta[i]); break;
-            case GGML_OP_REPEAT:        ggml_et_op_repeat(env, &node_meta[i]); break;
-            case GGML_OP_SSM_CONV:      ggml_et_op_ssm_conv(env, &node_meta[i]); break;
-            case GGML_OP_SSM_SCAN:      ggml_et_op_ssm_scan(env, &node_meta[i]); break;
-            case GGML_OP_PAD:           ggml_et_op_pad(env, &node_meta[i]); break;
-            case GGML_OP_SET_ROWS:      ggml_et_op_set_rows(env, &node_meta[i]); break;
-            case GGML_OP_FILL:          ggml_et_op_fill(env, &node_meta[i]); break;
-            case GGML_OP_DIAG:          ggml_et_op_diag(env, &node_meta[i]); break;
-            case GGML_OP_TRI:           ggml_et_op_tri(env, &node_meta[i]); break;
-            case GGML_OP_SOLVE_TRI:     ggml_et_op_solve_tri(env, &node_meta[i]); break;
-            case GGML_OP_SET:           ggml_et_op_set(env, &node_meta[i]); break;
-            case GGML_OP_RWKV_WKV6:     ggml_et_op_rwkv_wkv6(env, &node_meta[i]); break;
-            case GGML_OP_RWKV_WKV7:     ggml_et_op_rwkv_wkv7(env, &node_meta[i]); break;
-            case GGML_OP_GATED_DELTA_NET: ggml_et_op_gated_delta_net(env, &node_meta[i]); break;
-
-            case GGML_OP_RESHAPE:
-            case GGML_OP_VIEW:
-            case GGML_OP_PERMUTE:
-            case GGML_OP_TRANSPOSE:
-                // Metadata-only ops (no compute needed)
-                break;
-
-            default:
-                // Log error logic would go here if available on device
-                return -1; 
-        }*/
                 
         // Skip barrier for metadata-only ops and NONE
         if (node_op_val != GGML_OP_RESHAPE &&
@@ -1256,8 +1209,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             // All harts flush their caches before the barrier so writes are
             // globally visible.  device_barrier is pure synchronization
             // (matching gp-sdk), cache management is the caller's job.
-            // FENCE;
-            // flush_shire_l1_l2();
+            FENCE;
+            flush_shire_l1_l2();
             device_barrier(32);
         }
 
