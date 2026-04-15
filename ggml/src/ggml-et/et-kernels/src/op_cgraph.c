@@ -1206,11 +1206,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             node_op_val != GGML_OP_VIEW    &&
             node_op_val != GGML_OP_PERMUTE &&
             node_op_val != GGML_OP_TRANSPOSE) {
-            // All harts flush their caches before the barrier so writes are
-            // globally visible.  device_barrier is pure synchronization
-            // (matching gp-sdk), cache management is the caller's job.
-            FENCE;
-            flush_shire_l1_l2();
+            FENCE; // drain all stores to L1 before barrier
             device_barrier(32);
         }
 

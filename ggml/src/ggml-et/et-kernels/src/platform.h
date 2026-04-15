@@ -546,14 +546,45 @@ evict_to_l2(const void *addr, uint64_t nlines, uint64_t stride)
     );
 }
 
-// Evict whole shire L1+L2 via firmware syscall
+// Evict whole shire L1+L2 via firmware syscall (HEAVY — avoid in hot loops)
 static inline void __attribute__((always_inline)) flush_shire_l1_l2(void) {
-    register uint64_t a0 __asm__("a0") = 11; // SYSCALL_CACHE_OPS_EVICT_WHOLE_L1_L2 11
+    register uint64_t a0 __asm__("a0") = 11; // SYSCALL_CACHE_OPS_EVICT_WHOLE_L1_L2
     register uint64_t a1 __asm__("a1") = 0;
     register uint64_t a2 __asm__("a2") = 0;
     register uint64_t a3 __asm__("a3") = 0;
     __asm__ __volatile__("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3) : "memory");
 }
+
+// Evict this minion's L1 cache to L2 (lightweight, per-minion).
+// Matches uberkernel's ecall_l1_evict_all().
+//   use_tmask: 0 = evict all, 1 = use tensor mask
+//   dest:      0x0=L1, 0x1=L2, 0x2=L3, 0x3=Mem
+static inline void __attribute__((always_inline))
+ecall_l1_evict_all(uint64_t use_tmask, uint64_t dest) {
+    register uint64_t a0 __asm__("a0") = 6; // SYSCALL_CACHE_OPS_EVICT_L1
+    register uint64_t a1 __asm__("a1") = use_tmask;
+    register uint64_t a2 __asm__("a2") = dest;
+    register uint64_t a3 __asm__("a3") = 0;
+    __asm__ __volatile__("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3) : "memory");
+}
+
+// Evict one L2 cache bank to L3/DRAM.
+// Matches uberkernel's ecall_shire_cache_bank_op().
+//   shire: target shire (0xFF = own shire)
+//   bank:  L2 bank index (0-3)
+//   op:    0x3 = SC_CACHEOP_L2_EVICT
+static inline void __attribute__((always_inline))
+ecall_shire_cache_bank_op(uint64_t shire, uint64_t bank, uint64_t op) {
+    register uint64_t a0 __asm__("a0") = 7; // SYSCALL_SHIRE_CACHE_BANK_OP
+    register uint64_t a1 __asm__("a1") = shire;
+    register uint64_t a2 __asm__("a2") = bank;
+    register uint64_t a3 __asm__("a3") = op;
+    __asm__ __volatile__("ecall" : "+r"(a0) : "r"(a1), "r"(a2), "r"(a3) : "memory");
+}
+
+#define SC_CACHEOP_L2_EVICT 0x3
+#define CACHE_DEST_L2       0x1
+#define CACHE_DEST_MEM      0x3
 
 // FIXME: relocate this section
 // ========================================================================
@@ -581,12 +612,23 @@ device_barrier(uint32_t num_shires)
     const uint32_t local_id  = (uint32_t)((hart_id >> 1) & 0x1F); // minion id within shire (0-31)
     const uint32_t thread    = (uint32_t)(hart_id & 0x1);          // thread 0 or 1
 
-    // --- Step 1: Intra-shire barrier (FLB 0, FCC 0) ---
-    // Pure synchronization, matching gp-sdk barrier<Scope::shire>.
-    // Cache flush is the CALLER's responsibility (all harts must flush before calling).
-    // flush_shire_l1_l2();
-    if (flbarrier(0, 63)) {
-        flush_shire_l1_l2();
+    // --- Step 1: Intra-shire sync + cache eviction (uberkernel pattern) ---
+    // Caller must FENCE before calling to drain stores to L1.
+    //
+    // Phase A: All minions evict own L1 → L2  (32 lightweight ecalls).
+    // FLB 0: ensures all L1 evictions complete.
+    // Phase B: 4 elected minions evict L2 banks → L3  (4 ecalls).
+    // FLB 1: ensures all L2 evictions complete.
+    // FCC 0: wakes all harts.
+    //
+    // Based on uberkernel's sync_compute_code(), adapted for dual-thread compute.
+    // Unlike uberkernel (thread 0 only computes), we use both threads, so both evict.
+    ecall_l1_evict_all(0, CACHE_DEST_MEM);       // all 64 harts evict own L1→DDR
+    flbarrier(0, 63);                           // sync: all L1 evictions done
+    if (local_id < 4 && thread == 0) {
+        ecall_shire_cache_bank_op(SHIRE_OWN, local_id, SC_CACHEOP_L2_EVICT);
+    }
+    if (flbarrier(1, 63)) {                     // sync: all L2 evictions done
         fcc_send(SHIRE_OWN, 0, 0, ALL_MINIONS_MASK);
         fcc_send(SHIRE_OWN, 1, 0, ALL_MINIONS_MASK);
     }
