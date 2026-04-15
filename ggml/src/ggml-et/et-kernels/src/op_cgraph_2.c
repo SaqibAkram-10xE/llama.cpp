@@ -987,6 +987,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             node_op_val != GGML_OP_PERMUTE &&
             node_op_val != GGML_OP_TRANSPOSE &&
             node_op_val != GGML_OP_NONE) {
+            FENCE; // drain all stores to L1 before barrier
             device_barrier(32);
         }
 

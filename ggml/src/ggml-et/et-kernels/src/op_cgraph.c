@@ -5699,6 +5699,7 @@ int entry_point(struct ggml_cgraph_et * cg, void * env) {
             op != GGML_OP_VIEW    &&
             op != GGML_OP_PERMUTE &&
             op != GGML_OP_TRANSPOSE) {
+            // FENCE;
             // device_barrier(32);
         }
         // device_barrier(32);
