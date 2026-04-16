@@ -766,7 +766,7 @@ static bool et_ggml_is_row_contiguous(const ggml_tensor * t) {
     return t->nb[0] == ggml_type_size(t->type);
 }
 
-/*static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     GGML_UNUSED(dev);
 
     bool supported = false;
@@ -1488,9 +1488,9 @@ static bool et_ggml_is_row_contiguous(const ggml_tensor * t) {
     //     ggml_et_dump_operator_metadata(op);
     // }
     return supported;
-}*/
+}
 // Old one
-static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
+/*static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggml_tensor * op) {
     GGML_UNUSED(dev);
 
     // Log what operations are being queried for support (device level)
@@ -1695,7 +1695,7 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
     }
 
     return supported;
-}
+}*/
 
 
 

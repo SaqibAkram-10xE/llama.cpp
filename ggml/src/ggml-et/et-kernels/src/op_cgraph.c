@@ -525,7 +525,12 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
     const int n_nodes = cg->n_nodes;
 
     // device_barrier(32);
-
+    // int hart = get_hart_id();
+    // if (hart == 0) {
+    //     et_printf("et_cgraph: starting graph execution on hart %d\n", hart);
+    // }else{
+    //     return 0;
+    // }
 
     for (int i = 0; i < n_nodes; i++)
     {
@@ -1206,8 +1211,8 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             node_op_val != GGML_OP_VIEW    &&
             node_op_val != GGML_OP_PERMUTE &&
             node_op_val != GGML_OP_TRANSPOSE) {
-            FENCE; // drain all stores to L1 before barrier
-            device_barrier(32);
+            // FENCE; // drain all stores to L1 before barrier
+            // device_barrier(32);
         }
 
     }
