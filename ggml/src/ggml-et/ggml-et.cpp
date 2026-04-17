@@ -560,12 +560,31 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
     switch (op->op) {
         case GGML_OP_MUL:
         case GGML_OP_ADD:
+            // supported = op->type == GGML_TYPE_F32 &&
+            //            op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+            //            op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
+            //            ggml_is_contiguous(op) &&
+            //            ggml_is_contiguous(op->src[0]) &&
+            //            ggml_is_contiguous(op->src[1]);
+
             supported = op->type == GGML_TYPE_F32 &&
                        op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
                        op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&
-                       ggml_is_contiguous(op) &&
-                       ggml_is_contiguous(op->src[0]) &&
-                       ggml_is_contiguous(op->src[1]);
+                       op->ne[0] % 16 == 0 && // cache-aligned
+                       op->src[0]->ne[0] % 16 == 0 &&
+                       (op->src[1]->ne[0] % 16 == 0 || op->src[1]->ne[0] == 1) &&
+                       op->nb[0] == sizeof(float) &&
+                       op->src[0]->nb[0] == sizeof(float) &&
+                       (op->src[1]->nb[0] == sizeof(float) || op->src[1]->ne[0] == 1) &&
+                       op->nb[1] == op->ne[0] * sizeof(float) &&
+                       op->src[0]->nb[1] == op->src[0]->ne[0] * sizeof(float);
+
+            if (!supported && op->type == GGML_TYPE_F32 &&
+                op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+                op->src[1] && op->src[1]->type == GGML_TYPE_F32) {
+                fprintf(stderr, "[ET] %s REJECTED: dst ne0=%ld, src0 ne0=%ld, src1 ne0=%ld\n",
+                        ggml_op_name(op->op), op->ne[0], op->src[0]->ne[0], op->src[1]->ne[0]);
+            }
             break;
         case GGML_OP_MUL_MAT:
             // Support Q8_0 x F32 -> F32, F16 x F32 -> F32, and F32 x F32 -> F32 matrix multiplication
@@ -717,6 +736,14 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
         default:
             supported = false;
             break;
+    }
+
+    static int reject_log_count = 0;
+    if (!supported && reject_log_count < 50) {
+        fprintf(stderr, "[ET] UNSUPPORTED OP: %s type=%s ne=[%ld,%ld,%ld,%ld]\n",
+                ggml_op_name(op->op), ggml_type_name(op->type),
+                op->ne[0], op->ne[1], op->ne[2], op->ne[3]);
+        reject_log_count++;
     }
 
     return supported;
