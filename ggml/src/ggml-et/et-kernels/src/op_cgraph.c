@@ -1728,6 +1728,7 @@ static inline int64_t gcd_i64(int64_t a, int64_t b) {
     return a;
 }
 
+
 // Block operation implementations using ET vector instructions
 static inline void block_mul_cache_aligned(float* dst_block, const float* src0_block, const float* src1_block, int elements) {
     // Process 8 elements at a time using vector multiplication
@@ -1814,7 +1815,53 @@ static inline void block_sub_cache_aligned(float* dst_block, const float* src0_b
 }
 
 
-int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
+// Broadcast variants: src1 is a single scalar, broadcast to all 8 lanes via fbc.ps
+static inline void block_mul_broadcast(float* dst_block, const float* src0_block, float scalar, int elements) {
+    for (int32_t i = 0; i < elements; i += 8) {
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"
+            "fbc.ps f11, %[s]\n"
+            "fmul.ps f12, f10, f11\n"
+            "fsw.ps f12, %[dst_vec]\n"
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [s] "m"(scalar)
+            : "f10", "f11", "f12"
+        );
+    }
+}
+
+static inline void block_add_broadcast(float* dst_block, const float* src0_block, float scalar, int elements) {
+    for (int32_t i = 0; i < elements; i += 8) {
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"
+            "fbc.ps f11, %[s]\n"
+            "fadd.ps f12, f10, f11\n"
+            "fsw.ps f12, %[dst_vec]\n"
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [s] "m"(scalar)
+            : "f10", "f11", "f12"
+        );
+    }
+}
+
+static inline void block_sub_broadcast(float* dst_block, const float* src0_block, float scalar, int elements) {
+    for (int32_t i = 0; i < elements; i += 8) {
+        __asm__ volatile(
+            "flw.ps f10, %[src0_vec]\n"
+            "fbc.ps f11, %[s]\n"
+            "fsub.ps f12, f10, f11\n"
+            "fsw.ps f12, %[dst_vec]\n"
+            : [dst_vec] "=m"(*(float(*)[8])&dst_block[i])
+            : [src0_vec] "m"(*(const float(*)[8])&src0_block[i]),
+              [s] "m"(scalar)
+            : "f10", "f11", "f12"
+        );
+    }
+}
+
+int el_map_f32(struct ggml_et_binary_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
 
     if (!kernel_env) {
@@ -1862,42 +1909,86 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
     const size_t nb00 = src0->nb[0], nb01 = src0->nb[1], nb02 = src0->nb[2], nb03 = src0->nb[3];
     const size_t nb10 = src1->nb[0], nb11 = src1->nb[1], nb12 = src1->nb[2], nb13 = src1->nb[3];
 
-    // Calculate total number of rows using src0's dimensions (matching CPU reference)
-    // For element-wise ops, src0 and dst have the same shape
-    const int64_t total_rows = ne02 * ne01 * ne03;
-    // const int64_t total_rows = ne1 * ne2 * ne3;
+    bool cache_aligned = (dst->ne[0] % 16 == 0);
+    if(!cache_aligned) {
+        return 1;
+    }
+
+    // Fast path: no broadcasting, contiguous
+    const bool no_broadcast = (ne10 == ne0 && ne11 == ne1 && ne12 == ne2 && ne13 == ne3);
+    const bool all_contiguous = (nb0 == 4 && nb00 == 4 && nb10 == 4 &&
+                                 nb1 == ne0 * 4 && nb01 == ne0 * 4 && nb11 == ne0 * 4);
+
+    if (no_broadcast && all_contiguous) {
+        const int64_t total_elements = ne0 * ne1 * ne2 * ne3;
+        const int64_t elements_per_cacheline = 16;  // 64 bytes / 4 bytes
+        const int64_t total_cachelines = (total_elements + elements_per_cacheline - 1) / elements_per_cacheline;
+
+        // iGCD-based cache line distribution for better alignment
+        const int64_t CACHE_LINE_BYTES = 64;
+        const int64_t row_bytes = ne0 * sizeof(float);
+        const int64_t row_gcd = gcd_i64(row_bytes, CACHE_LINE_BYTES);
+        const int64_t cachelines_per_group = CACHE_LINE_BYTES / row_gcd;
+
+        int64_t cl_per_thread = (total_cachelines + num_threads - 1) / num_threads;
+        if (cachelines_per_group > 1) {
+            cl_per_thread = ((cl_per_thread + cachelines_per_group - 1) / cachelines_per_group) * cachelines_per_group;
+        }
+
+        const int64_t cl_start = thread_id * cl_per_thread;
+        int64_t cl_end = cl_start + cl_per_thread;
+        if (cl_end > total_cachelines) cl_end = total_cachelines;
+
+        if (cl_start >= total_cachelines) {
+            return 0;
+        }
+
+        const int64_t elem_start = cl_start * elements_per_cacheline;
+        int64_t elem_end = cl_end * elements_per_cacheline;
+        if (elem_end > total_elements) elem_end = total_elements;
+        const int32_t count = (int32_t)(elem_end - elem_start);
+
+        switch (operation) {
+            case GGML_OP_MUL:
+                block_mul_cache_aligned(dst_data + elem_start, src0_data + elem_start, src1_data + elem_start, count);
+                break;
+            case GGML_OP_ADD:
+                block_add_cache_aligned(dst_data + elem_start, src0_data + elem_start, src1_data + elem_start, count);
+                break;
+            case GGML_OP_SUB:
+                block_sub_cache_aligned(dst_data + elem_start, src0_data + elem_start, src1_data + elem_start, count);
+                break;
+            default:
+                return 1;
+        }
+        return 0;
+    }
+
+    // Slow path: broadcasting or non-contiguous: row based or bcast on last row
+    // Calculate total number of rows using dst dimensions
+    const int64_t total_rows = ne1 * ne2 * ne3;
 
     // Cache line alignment: prevent false sharing between threads
     // Each cache line is 64 bytes = 16 floats
     const int64_t CACHE_LINE_BYTES = 64;
-    const int64_t row_bytes = ne00 * sizeof(float);
+    const int64_t row_bytes = ne0 * sizeof(float);
     const int64_t row_gcd = gcd_i64(row_bytes, CACHE_LINE_BYTES);
     const int64_t rows_per_cache_group = CACHE_LINE_BYTES / row_gcd;
 
     // Distribute rows across threads, rounding up to cache line boundaries
     int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
-    
+
     // Round rows_per_thread up to nearest multiple of rows_per_cache_group
     // This ensures each thread's memory region starts at a cache line boundary
     if (rows_per_cache_group > 1) {
         rows_per_thread = ((rows_per_thread + rows_per_cache_group - 1) / rows_per_cache_group) * rows_per_cache_group;
     }
 
-    // // Calculate total number of rows (flatten dimensions 1,2,3)
-    // const int64_t total_rows = ne1 * ne2 * ne3;
-
-    // // Distribute rows across threads using ceiling division to handle remainder
-    // const int64_t rows_per_thread = (total_rows + num_threads - 1) / num_threads;
     const int64_t start_row = thread_id * rows_per_thread;
     const int64_t end_row = (start_row + rows_per_thread < total_rows) ? (start_row + rows_per_thread) : total_rows;
 
     if (start_row >= total_rows) {
         return 0;
-    }
-
-    bool cache_aligned = (dst->ne[0] % 16 == 0);
-    if(!cache_aligned) {
-        return 1;
     }
 
     for (int64_t ir = start_row; ir < end_row; ir++) {
@@ -1916,29 +2007,43 @@ int el_map_f32(struct ggml_et_elmap_params* params, void* env) {
         const float* src0_ptr = (const float*)((const char*)src0_data + i03*nb03 + i02*nb02 + i01*nb01);
         const float* src1_ptr = (const float*)((const char*)src1_data + i13*nb13 + i12*nb12 + i11*nb11);
 
-        // Broadcasting in dimension 0: src1 repeats across src0
-        const int64_t nr0 = ne0 / ne10;  // How many times src1 is repeated in dimension 0
-
-        for (int64_t r = 0; r < nr0; r++) {
-            // Process ne10 elements at a time using block functions
-            const float* src0_block = src0_ptr + r * ne10;
-            float* dst_block = dst_ptr + r * ne10;
-
+        if (ne10 == 1) {
+            // Broadcast scalar: src1 has ne[0]=1, broadcast across entire row
+            float scalar = src1_ptr[0];
             switch (operation) {
                 case GGML_OP_MUL:
-                    block_mul(dst_block, src0_block, src1_ptr, (int)ne10);
-                    // block_mul_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
+                    block_mul_broadcast(dst_ptr, src0_ptr, scalar, (int)ne0);
                     break;
                 case GGML_OP_ADD:
-                    block_add(dst_block, src0_block, src1_ptr, (int)ne10);
-                    // block_add_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
+                    block_add_broadcast(dst_ptr, src0_ptr, scalar, (int)ne0);
                     break;
                 case GGML_OP_SUB:
-                    // block_sub(dst_block, src0_block, src1_ptr, (int)ne10);
-                    block_sub_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
+                    block_sub_broadcast(dst_ptr, src0_ptr, scalar, (int)ne0);
                     break;
                 default:
                     return 1;
+            }
+        } else {
+            // Broadcasting in dimension 0: src1 repeats across src0
+            const int64_t nr0 = ne0 / ne10;
+
+            for (int64_t r = 0; r < nr0; r++) {
+                const float* src0_block = src0_ptr + r * ne10;
+                float* dst_block = dst_ptr + r * ne10;
+
+                switch (operation) {
+                    case GGML_OP_MUL:
+                        block_mul_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
+                        break;
+                    case GGML_OP_ADD:
+                        block_add_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
+                        break;
+                    case GGML_OP_SUB:
+                        block_sub_cache_aligned(dst_block, src0_block, src1_ptr, (int)ne10);
+                        break;
+                    default:
+                        return 1;
+                }
             }
         }
     }
@@ -2357,7 +2462,7 @@ device_barrier(uint32_t num_shires)
     // --- Step 1: Intra-shire barrier (FLB 0, FCC 0) ---
     if (flbarrier(0, 63)) {
         // Last hart: flush cache, then wake all local harts
-        flush_shire_l1_l2();
+        // flush_shire_l1_l2();
         fcc_send(SHIRE_OWN, 0, 0, ALL_MINIONS_MASK);
         fcc_send(SHIRE_OWN, 1, 0, ALL_MINIONS_MASK);
     }
@@ -2423,7 +2528,7 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             case HOST_GGML_OP_MUL:
             case HOST_GGML_OP_ADD:
                 {
-                    struct ggml_et_elmap_params params;
+                    struct ggml_et_binary_params params;
                     convert_to_ggml_tensor(&params.src0, &node_meta[i].src0, GGML_OP_NONE);
                     convert_to_ggml_tensor(&params.src1, &node_meta[i].src1, GGML_OP_NONE);
                     const enum ggml_op el_op = (node_op_val == HOST_GGML_OP_MUL) ? GGML_OP_MUL : GGML_OP_ADD;
@@ -2592,9 +2697,11 @@ int entry_point(struct ggml_cgraph_et* cg, void* env) {
             node_op_val != HOST_GGML_OP_PERMUTE &&
             node_op_val != HOST_GGML_OP_TRANSPOSE &&
             node_op_val != HOST_GGML_OP_NONE) {
-            // device_barrier_refined(32);
+            // Flush caches BEFORE barrier so ALL harts flush their own L1
+            FENCE;
+            flush_shire_l1_l2();
             device_barrier(32);
-            
+
         }
     }
 
