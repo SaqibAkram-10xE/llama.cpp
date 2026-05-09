@@ -479,6 +479,7 @@ int entry_point(struct ggml_et_rope_params* params, void* env) {
     }
 
     const float* src0_data    = (const float*)src0->data;
+    // evict_region_past_l2(src0_data, tensor_bytes(src0));
     const int32_t* src1_data  = (const int32_t*)src1->data;
     const float* freq_factors = (src2 && src2->data) ? (const float*)src2->data : NULL;
     float* dst_data           = (float*)dst->data;
@@ -488,7 +489,7 @@ int entry_point(struct ggml_et_rope_params* params, void* env) {
     }
 
 #ifdef BUILD_FOR_UBERKERNEL
-    evict_region_past_l2(src0->data, tensor_bytes(src0));
+    // evict_region_past_l2(src0->data, tensor_bytes(src0));
     // et_barrier(ET_BARRIER_GLOBAL);
 #endif
 

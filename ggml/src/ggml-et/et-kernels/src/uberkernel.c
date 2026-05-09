@@ -660,7 +660,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 // int thread_id = get_relative_thread_id(kernel_env->shire_mask);
                 // int local_tid = thread_id % 32; // hart within shire
                 // if (local_tid == 0) {
-                    evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
+                    // evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                     if (p->bias.data) {
                         evict_region_past_l2(p->bias.data, tensor_bytes(&p->bias));
                     }
