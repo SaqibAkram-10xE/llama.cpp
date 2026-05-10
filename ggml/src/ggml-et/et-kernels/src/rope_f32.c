@@ -447,9 +447,6 @@ static inline void compute_imrope_cache(
 // Entry point
 //------------------------------------------------------------------------------
 
-static inline size_t tensor_bytes(const struct ggml_tensor *t) {
-    return (size_t)t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3] * t->nb[0];
-}
 
 int entry_point(struct ggml_et_rope_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
@@ -479,7 +476,6 @@ int entry_point(struct ggml_et_rope_params* params, void* env) {
     }
 
     const float* src0_data    = (const float*)src0->data;
-    // evict_region_past_l2(src0_data, tensor_bytes(src0));
     const int32_t* src1_data  = (const int32_t*)src1->data;
     const float* freq_factors = (src2 && src2->data) ? (const float*)src2->data : NULL;
     float* dst_data           = (float*)dst->data;

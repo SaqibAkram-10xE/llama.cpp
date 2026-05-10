@@ -490,6 +490,7 @@ int entry_point(struct ggml_et_flash_attn_ext_params * params, void * env) {
     // past total_rows still call the barriers but skip the packing work.
     
     et_barrier(ET_BARRIER_SHIRE);
+    // et_barrier(ET_BARRIER_GLOBAL);
    
     if (is_hart1) {
         // et_barrier(ET_BARRIER_GLOBAL);
