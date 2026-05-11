@@ -16,6 +16,9 @@ struct ggml_et_rms_norm_mul_params {
     float eps;                // Epsilon for numerical stability
 };
 
+static inline size_t tensor_bytes(const struct ggml_tensor *t) {
+    return (size_t)t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3] * t->nb[0];
+}
 
 int entry_point(struct ggml_et_rms_norm_mul_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
@@ -40,11 +43,13 @@ int entry_point(struct ggml_et_rms_norm_mul_params* params, void* env) {
     struct ggml_tensor* dst = &params->dst;
     float eps = params->eps;
 
+
     if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
         return -1; // Unsupported type combination
     }
 
     float* src0_data = (float*)src0->data;
+    // evict_region_past_l2(src0_data, tensor_bytes(&params->src0));
     float* src1_data = (float*)src1->data;
     float* dst_data = (float*)dst->data;
 
@@ -78,6 +83,7 @@ int entry_point(struct ggml_et_rms_norm_mul_params* params, void* env) {
     const float inv_ne0 = et_fdiv(1.0f, (float)(int32_t)ne0);
     const int32_t total_rows = (int32_t)(ne1 * ne2 * ne3);
     const int shire_threads = SOC_MINIONS_PER_SHIRE * NUM_HARTS_PER_MINION;
+    evict_region_past_l2(src0_data, tensor_bytes(&params->src0));
 
     if (total_rows >= shire_threads) {
         // Row-parallel: each thread processes whole rows
