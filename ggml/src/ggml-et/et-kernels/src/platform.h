@@ -615,7 +615,7 @@ static void evict_region_past_l2(const void *addr, size_t bytes) {
     uint64_t end  = ((uint64_t)addr + bytes + CL - 1) & ~(CL - 1);
     uint64_t nlines = (end - base) / CL;
 
-    // FENCE;
+    // // FENCE;
 
     for (uint64_t off = 0; off < nlines; off += 16) {
         uint64_t batch = nlines - off;
@@ -625,7 +625,7 @@ static void evict_region_past_l2(const void *addr, size_t bytes) {
  
     // cache_ops_priv_evict_sw(0, /*to_L2*/2, 0, 0, CL);
 
-
+    // cache_ops_priv_cache_invalidate(1, 0);
 
     // WAIT_CACHEOPS;
 

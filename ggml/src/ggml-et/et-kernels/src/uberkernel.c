@@ -299,14 +299,15 @@ static void evict_region_past_l2_local(const void *addr, size_t bytes) {
 
     // FENCE;
 
-    // for (uint64_t off = 0; off < nlines; off += 16) {
-    //     uint64_t batch = nlines - off;
-    //     if (batch > 16) batch = 16;
-    //     evict_past_l2((const void *)(base + off * CL), batch, CL);
-    // }
+    for (uint64_t off = 0; off < nlines; off += 16) {
+        uint64_t batch = nlines - off;
+        if (batch > 16) batch = 16;
+        // evict_past_l2((const void *)(base + off * CL), batch, CL);
+        cache_ops_evict_va(0, 01, (base + off * CL), batch, CL, 0);
+    }
 
-    cache_ops_priv_evict_sw(0, /*to_L2*/2, 0, 0, CL);
-
+    // cache_ops_priv_evict_sw(0, /*to_L2*/2, 0, 0, CL);
+    // cache_ops_priv_evict_whole_l1_l2();
 
 
     // WAIT_CACHEOPS;
@@ -339,6 +340,9 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
         return -1;
     }
 
+    // et_barrier_global(32ULL);
+
+
     for (uint32_t i = 0; i < params->num_insts; ++i) {
         struct ggml_et_uberkernel_inst * inst =
             (struct ggml_et_uberkernel_inst *)((uint8_t *) insts + (i * params->inst_stride));
@@ -346,7 +350,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
         int rc = -1;
         
         // et_barrier(ET_BARRIER_GLOBAL);
-        et_barrier_global(32ULL);
+        // et_barrier_global(32ULL);
 
         switch (inst->kernel_id) {
     
@@ -397,8 +401,8 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
 
             case GGML_ET_UBERKERNEL_KERNEL_SET_ROWS_F32: {
                 struct uber_set_rows_params *p = (struct uber_set_rows_params *) inst_params;
-                evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
-                // evict_region_past_l2_local(p->src1.data, tensor_bytes(&p->src1));
+                // evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
+                evict_region_past_l2_local(p->src1.data, tensor_bytes(&p->src1));
                 rc = set_rows_f32_impl((struct uber_set_rows_params *) inst_params, env);
                 // rc = set_rows_f32_entry((struct ggml_et_set_rows_params *) inst_params, env);
                 break;
@@ -586,8 +590,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
         if (rc != 0) {
             return rc;
         }
-
-        // et_barrier(ET_BARRIER_GLOBAL);
+        et_barrier_global(32ULL);
     }
 
     return 0;

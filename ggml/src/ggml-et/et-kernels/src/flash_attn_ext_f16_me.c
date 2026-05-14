@@ -490,12 +490,8 @@ int entry_point(struct ggml_et_flash_attn_ext_params * params, void * env) {
     // past total_rows still call the barriers but skip the packing work.
     
     et_barrier(ET_BARRIER_SHIRE);
-    // et_barrier(ET_BARRIER_GLOBAL);
    
     if (is_hart1) {
-        // et_barrier(ET_BARRIER_GLOBAL);
-        // et_barrier(ET_BARRIER_SHIRE);
-
         uint32_t chunk_id = 0;
         const int64_t row_base = (int64_t)shire_id + local_tile_idx * NUM_COMPUTE_SHIRES;
 
@@ -566,15 +562,8 @@ int entry_point(struct ggml_et_flash_attn_ext_params * params, void * env) {
             }
         }
 
-        // FENCE;
-        // et_barrier(ET_BARRIER_GLOBAL);
         return 0;
     }
-
-    // Hart 0: tensor engine compute
-// #ifndef UBERKERNEL_SUPPRESS_SCP_SETUP
-//     setup_cache_scp();
-// #endif
     // CLEAR_TENSOR_ERROR;
 
     // Q converted to F16 (one row at a time)
