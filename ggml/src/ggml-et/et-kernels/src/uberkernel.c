@@ -384,7 +384,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
             }
             case GGML_ET_UBERKERNEL_KERNEL_RMS_NORM_MUL_F32: {
                 struct uber_rms_norm_mul_params *p = (struct uber_rms_norm_mul_params *) inst_params;
-                evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
+                // evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 // evict_region_past_l2_local(p->src0.data, tensor_bytes(&p->src0));
                 rc = rms_norm_mul_f32_entry((struct ggml_et_rms_norm_mul_params *) inst_params, env);
                 break;
@@ -532,11 +532,12 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 break;
             }
             
-            case GGML_ET_UBERKERNEL_KERNEL_GATED_DELTA_NET_F32: {
-                struct uber_gated_delta_net_params *p = (struct uber_gated_delta_net_params *) inst_params;
-                rc = gated_delta_net_f32_entry((struct ggml_et_gated_delta_net_params *) inst_params, env);
-                break;
-            }
+            // case GGML_ET_UBERKERNEL_KERNEL_GATED_DELTA_NET_F32: {
+            //     struct uber_gated_delta_net_params *p = (struct uber_gated_delta_net_params *) inst_params;
+            //     evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
+            //     rc = gated_delta_net_f32_entry((struct ggml_et_gated_delta_net_params *) inst_params, env);
+            //     break;
+            // }
             case GGML_ET_UBERKERNEL_KERNEL_SSM_SCAN_F32: {
                 struct uber_ssm_scan_params *p = (struct uber_ssm_scan_params *) inst_params;
                 rc = ssm_scan_f32_entry((struct ggml_et_ssm_scan_params *) inst_params, env);
@@ -576,6 +577,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
             }
             case GGML_ET_UBERKERNEL_KERNEL_MUL_MAT_Q8_0: {
                 struct ggml_et_mm_q8_params *p = (struct ggml_et_mm_q8_params *) inst_params;
+                // evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 rc = mul_mat_Q8_0_entry(p, env);
                 break;
             }

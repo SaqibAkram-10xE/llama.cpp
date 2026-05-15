@@ -88,7 +88,7 @@ set(UBERKERNEL_SUPPORTED_KERNELS
     fill_f32
     flash_attn_ext_f16_me
     flash_attn_ext_f32     # disabled for debugging
-    gated_delta_net_f32
+    # gated_delta_net_f32
     get_rows_f32
     glu_f32
     group_norm_f32
