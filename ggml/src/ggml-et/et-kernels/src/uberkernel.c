@@ -355,6 +355,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = el_map_f32_entry(p, env);
                 break;
             }
@@ -366,6 +367,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                     evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 }
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = glu_f32_entry((struct ggml_et_glu_params *) inst_params, env);
                 break;
             }
@@ -374,6 +376,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = unary_f32_entry((struct ggml_et_unary_params *) inst_params, env);
                 break;
             }
@@ -382,6 +385,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_rope_params *p = (struct uber_rope_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = rope_f32_entry((struct ggml_et_rope_params *) inst_params, env);
                 break;
             }
@@ -390,6 +394,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_rms_norm_params *p = (struct uber_rms_norm_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = rms_norm_f32_entry((struct ggml_et_rms_norm_params *) inst_params, env);
                 break;
             }
@@ -397,6 +402,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_rms_norm_mul_params *p = (struct uber_rms_norm_mul_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = rms_norm_mul_f32_entry((struct ggml_et_rms_norm_mul_params *) inst_params, env);
                 break;
             }
@@ -405,6 +411,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_softmax_params *p = (struct uber_softmax_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = softmax_f32_entry((struct ggml_et_softmax_params *) inst_params, env);
                 break;
             }
@@ -413,6 +420,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_set_rows_params *p = (struct uber_set_rows_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = set_rows_f32_impl((struct uber_set_rows_params *) inst_params, env);
                 // rc = set_rows_f32_entry((struct ggml_et_set_rows_params *) inst_params, env);
                 break;
@@ -422,6 +430,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_get_rows_params *p = (struct uber_get_rows_params *) inst_params;
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = get_rows_f32_entry((struct ggml_et_get_rows_params *) inst_params, env);
                 break;
             }
@@ -430,6 +439,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_cont_params *p = (struct uber_cont_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = cont_f32_entry((struct ggml_et_cont_params *) inst_params, env);
                 break;
             }
@@ -439,6 +449,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = sqr_f32_entry((struct ggml_et_sqr_params *) inst_params, env);
                 break;
             }
@@ -446,6 +457,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = scale_f32_entry((struct ggml_et_scale_params *) inst_params, env);
                 break;
             }
@@ -453,6 +465,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = sum_rows_f32_entry((struct ggml_et_sum_rows_params *) inst_params, env);
                 break;
             }
@@ -460,6 +473,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = cumsum_f32_entry((struct ggml_et_cumsum_params *) inst_params, env);
                 break;
             }
@@ -467,6 +481,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = norm_f32_entry((struct ggml_et_norm_params *) inst_params, env);
                 break;
             }
@@ -474,6 +489,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = l2_norm_f32_entry((struct ggml_et_l2_norm_params *) inst_params, env);
                 break;
             }
@@ -481,6 +497,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = group_norm_f32_entry((struct ggml_et_group_norm_params *) inst_params, env);
                 break;
             }
@@ -488,6 +505,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = repeat_f32_entry((struct ggml_et_repeat_params *) inst_params, env);
                 break;
             }
@@ -495,6 +513,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = diag_f32_entry((struct ggml_et_diag_params *) inst_params, env);
                 break;
             }
@@ -502,6 +521,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = tri_f32_entry((struct ggml_et_tri_params *) inst_params, env);
                 break;
             }
@@ -509,6 +529,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = pad_f32_entry((struct ggml_et_pad_params *) inst_params, env);
                 break;
             }
@@ -516,6 +537,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = cont_f16_entry((struct ggml_et_cont_params *) inst_params, env);
                 break;
             }
@@ -523,11 +545,13 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_unary_params *p = (struct uber_unary_params *) inst_params;
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = cpy_f32_f16_entry((struct ggml_et_cont_params *) inst_params, env);
                 break;
             }
             // fill: no input to evict (writes dst from scalar constant)
             case GGML_ET_UBERKERNEL_KERNEL_FILL_F32: {
+                et_barrier_global(32ULL);
                 rc = fill_f32_entry((struct ggml_et_fill_params *) inst_params, env);
                 break;
             }
@@ -537,6 +561,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = set_f32_entry((struct ggml_et_set_params *) inst_params, env);
                 break;
             }
@@ -546,6 +571,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = concat_f32_entry((struct ggml_et_concat_params *) inst_params, env);
                 break;
             }
@@ -554,6 +580,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = ssm_conv_f32_entry((struct ggml_et_ssm_conv_params *) inst_params, env);
                 break;
             }
@@ -562,6 +589,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = solve_tri_f32_entry((struct ggml_et_solve_tri_params *) inst_params, env);
                 break;
             }
@@ -570,6 +598,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = im2col_entry((struct ggml_et_im2col_params *) inst_params, env);
                 break;
             }
@@ -579,6 +608,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct uber_mul_mat_id_params *p = (struct uber_mul_mat_id_params *) inst_params;
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = mul_mat_id_f32_entry((struct ggml_et_mul_mat_id_params *) inst_params, env);
                 break;
             }
@@ -588,6 +618,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 evict_region_past_l2(p->src2.data, tensor_bytes(&p->src2));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = flash_attn_ext_f32_entry((struct ggml_et_flash_attn_ext_params *) inst_params, env);
                 break;
             }
@@ -597,12 +628,14 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 evict_region_past_l2(p->src2.data, tensor_bytes(&p->src2));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = flash_attn_ext_f16_me_entry((struct ggml_et_flash_attn_ext_params *) inst_params, env);
                 break;
             }
             
             case GGML_ET_UBERKERNEL_KERNEL_GATED_DELTA_NET_F32: {
                 struct uber_gated_delta_net_params *p = (struct uber_gated_delta_net_params *) inst_params;
+                et_barrier_global(32ULL);
                 rc = gated_delta_net_f32_entry((struct ggml_et_gated_delta_net_params *) inst_params, env);
                 break;
             }
@@ -611,15 +644,18 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = ssm_scan_f32_entry((struct ggml_et_ssm_scan_params *) inst_params, env);
                 break;
             }
             // rwkv: raw float* params, no ggml_tensor fields to evict via
             case GGML_ET_UBERKERNEL_KERNEL_RWKV_WKV6_F32: {
+                et_barrier_global(32ULL);
                 rc = rwkv_wkv6_f32_entry((struct ggml_et_rwkv_wkv6_params *) inst_params, env);
                 break;
             }
             case GGML_ET_UBERKERNEL_KERNEL_RWKV_WKV7_F32: {
+                et_barrier_global(32ULL);
                 rc = rwkv_wkv7_f32_entry((struct ggml_et_rwkv_wkv7_params *) inst_params, env);
                 break;
             }
@@ -630,6 +666,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct ggml_et_binary_params *p = (struct ggml_et_binary_params *) inst_params;
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = mul_mat_f16_entry(p, env);
                 break;
             }
@@ -637,6 +674,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct ggml_et_binary_params *p = (struct ggml_et_binary_params *) inst_params;
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = mul_mat_f16_matrix_engine_entry(p, env);
                 break;
             }
@@ -644,6 +682,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct ggml_et_binary_params *p = (struct ggml_et_binary_params *) inst_params;
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = mul_mat_f32_entry(p, env);
                 break;
             }
@@ -651,6 +690,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                 struct ggml_et_binary_params *p = (struct ggml_et_binary_params *) inst_params;
                 evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = mul_mat_f32_matrix_engine_entry(p, env);
                 break;
             }
@@ -661,6 +701,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
                     evict_region_past_l2(p->bias.data, tensor_bytes(&p->bias));
                 }
                 WAIT_CACHEOPS;
+                et_barrier_global(32ULL);
                 rc = mul_mat_Q8_0_entry(p, env);
                 break;
             }
