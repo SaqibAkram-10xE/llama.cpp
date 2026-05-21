@@ -5,6 +5,32 @@
 #include <fstream>
 #include <cstdlib>
 #include <cstring>
+#include <set>
+#include <string>
+#include <sstream>
+
+// When GGML_ET_UBERKERNEL_ONLY is set (comma-separated kernel names),
+// only those kernels are batched into the uberkernel; all others fall
+// back to standalone launch.  Unset = all kernels allowed.
+static const std::set<std::string> & ggml_et_uberkernel_whitelist() {
+    static std::set<std::string> wl;
+    static bool parsed = false;
+    if (!parsed) {
+        parsed = true;
+        const char * env = std::getenv("GGML_ET_UBERKERNEL_ONLY");
+        if (env && env[0]) {
+            std::istringstream ss(env);
+            std::string tok;
+            while (std::getline(ss, tok, ',')) {
+                if (!tok.empty()) wl.insert(tok);
+            }
+            GGML_LOG_INFO("ET uberkernel whitelist (%zu kernels):", wl.size());
+            for (auto & k : wl) GGML_LOG_INFO(" %s", k.c_str());
+            GGML_LOG_INFO("\n");
+        }
+    }
+    return wl;
+}
 
 #define ET_TRACE_DECODER_IMPL
 #include <et-trace/decoder.h>
@@ -401,7 +427,9 @@ static bool ggml_et_launch_uberkernel(ggml_backend_et_device_context * dev_ctx,
 
     ggml_backend_et_uberkernel_context * uk_ctx = &dev_ctx->uberkernel;
     const uint16_t uberkernel_id = ggml_et_uberkernel_kernel_id_from_name(kernel_name.c_str());
-    if (uberkernel_id == GGML_ET_UBERKERNEL_KERNEL_INVALID) {
+    const auto & wl = ggml_et_uberkernel_whitelist();
+    const bool excluded = !wl.empty() && wl.find(kernel_name) == wl.end();
+    if (uberkernel_id == GGML_ET_UBERKERNEL_KERNEL_INVALID || excluded) {
         if (!ggml_et_launch_uberkernel_segment(dev_ctx, uk_ctx)) {
             return false;
         }

@@ -84,7 +84,7 @@ set(UBERKERNEL_SUPPORTED_KERNELS
     cpy_f32_f16
     cumsum_f32
     diag_f32
-    el_map_f32
+    # el_map_f32
     fill_f32
     flash_attn_ext_f16_me
     flash_attn_ext_f32     # disabled for debugging

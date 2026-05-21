@@ -346,7 +346,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
         int rc = -1;
         
         // et_barrier(ET_BARRIER_GLOBAL);
-        et_barrier_global(32ULL);
+        // et_barrier_global(32ULL);
 
         // Drain store buffer from previous kernel to L1 before evictions.
         // Without FENCE, evict_past_l2 operates on stale L1 data while
@@ -355,15 +355,15 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
 
         switch (inst->kernel_id) {
     
-            case GGML_ET_UBERKERNEL_KERNEL_EL_MAP_F32: {
-                struct ggml_et_binary_params *p = (struct ggml_et_binary_params *) inst_params;
-                evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
-                evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
-                WAIT_CACHEOPS;
-                et_barrier_global(32ULL);
-                rc = el_map_f32_entry(p, env);
-                break;
-            }
+            // case GGML_ET_UBERKERNEL_KERNEL_EL_MAP_F32: {
+            //     struct ggml_et_binary_params *p = (struct ggml_et_binary_params *) inst_params;
+            //     evict_region_past_l2(p->src0.data, tensor_bytes(&p->src0));
+            //     evict_region_past_l2(p->src1.data, tensor_bytes(&p->src1));
+            //     WAIT_CACHEOPS;
+            //     et_barrier_global(32ULL);
+            //     rc = el_map_f32_entry(p, env);
+            //     break;
+            // }
 
             case GGML_ET_UBERKERNEL_KERNEL_GLU_F32: {
                 struct uber_glu_params *p = (struct uber_glu_params *) inst_params;
@@ -719,7 +719,7 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
             return rc;
         }
 
-        // et_barrier(ET_BARRIER_GLOBAL);
+        et_barrier(ET_BARRIER_GLOBAL);
     }
 
     return 0;
