@@ -345,10 +345,6 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
         void * inst_params = params_blob + inst->params_offset;
         int rc = -1;
         
-        // Producer-side: flush dirty L1 from previous op to DRAM
-        FENCE;
-        cache_ops_priv_evict_l1(0, 2);
-
         // et_barrier(ET_BARRIER_GLOBAL);
         et_barrier_global(32ULL);
 
@@ -679,10 +675,6 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
 
         // et_barrier(ET_BARRIER_GLOBAL);
     }
-
-    // Final producer flush after last op
-    FENCE;
-    cache_ops_priv_evict_l1(0, 2);
 
     return 0;
 }
