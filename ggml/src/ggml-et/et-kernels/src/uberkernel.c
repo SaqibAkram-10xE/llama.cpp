@@ -348,6 +348,11 @@ int entry_point(struct ggml_et_uberkernel_params * params, void * env) {
         // et_barrier(ET_BARRIER_GLOBAL);
         et_barrier_global(32ULL);
 
+        // Drain store buffer from previous kernel to L1 before evictions.
+        // Without FENCE, evict_past_l2 operates on stale L1 data while
+        // fresh stores remain invisible in the store buffer.
+        FENCE;
+
         switch (inst->kernel_id) {
     
             case GGML_ET_UBERKERNEL_KERNEL_EL_MAP_F32: {
