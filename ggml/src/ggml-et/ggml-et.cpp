@@ -1100,9 +1100,13 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
                 // Check ROPE mode - support standard (0x0), NEOX (0x2), and IMROPE (0x28)
                 const int mode = ((const int32_t *) op->op_params)[2];
                 const int ndims = ((const int32_t *) op->op_params)[1];
+                // Per-(batch,seq) row must be CL-aligned for the kernel's
+                // head-group partitioning to avoid cross-hart CL sharing.
+                const int64_t row_b = op->src[0]->ne[0] * op->src[0]->ne[1] * (int64_t)sizeof(float);
                 supported = ((mode == 0x0) ||
                              (((mode & GGML_ROPE_TYPE_NEOX) || mode == GGML_ROPE_TYPE_IMROPE) && ndims % 16 == 0))
-                            && (ndims <= 512);
+                            && (ndims <= 512)
+                            && (row_b % 64 == 0);
             } else {
                 supported = false;
             }

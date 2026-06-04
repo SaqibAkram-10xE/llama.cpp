@@ -547,10 +547,13 @@ int entry_point(struct ggml_et_rope_params* params, void* env) {
     );
     et_barrier(ET_BARRIER_GLOBAL);
 
-    // Distribute by individual heads: total = batch * seq_len * heads.
-    const int64_t total_heads = batch * seq_len * heads;
-    const int64_t start_wu = (total_heads * thread_id) / num_threads;
-    const int64_t end_wu   = (total_heads * (thread_id + 1)) / num_threads;
+    // L1D is incoherent; group adjacent heads into CL-aligned work-units so
+    // harts never share a 64 B line on the scalar stores below.
+    const int64_t g              = et_rows_per_cacheline_group((int64_t)head_dim, (int64_t)sizeof(float));
+    const int64_t groups_per_row = heads / g;
+    const int64_t total_groups   = batch * seq_len * groups_per_row;
+    const int64_t start_wu       = (total_groups * thread_id) / num_threads;
+    const int64_t end_wu         = (total_groups * (thread_id + 1)) / num_threads;
 
     if (start_wu >= end_wu) {
         return 0;
@@ -569,9 +572,9 @@ int entry_point(struct ggml_et_rope_params* params, void* env) {
     int32_t last_pos_e = -1;
 
     for (int64_t wu = start_wu; wu < end_wu; ++wu) {
-        const int64_t h = wu % heads;
-        const int64_t s = (wu / heads) % seq_len;
-        const int64_t b = wu / (heads * seq_len);
+        const int64_t hg = wu % groups_per_row;
+        const int64_t s  = (wu / groups_per_row) % seq_len;
+        const int64_t b  = wu / (groups_per_row * seq_len);
 
         if (is_imrope) {
             // IMROPE: src1 layout is [p_t(0..S-1), p_h(0..S-1), p_w(0..S-1), p_e(0..S-1)]
@@ -607,6 +610,10 @@ int entry_point(struct ggml_et_rope_params* params, void* env) {
                 last_pos = pos;
             }
         }
+
+        const int64_t h_start = hg * g;
+        const int64_t h_end   = h_start + g;
+        for (int64_t h = h_start; h < h_end; ++h) {
 
         const float* head_src = (const float*)((const char*)src0_data +
             b * src0->nb[3] + s * src0->nb[2] + h * src0->nb[1]);
@@ -658,6 +665,7 @@ int entry_point(struct ggml_et_rope_params* params, void* env) {
                 head_dst[dim_in_head]     = x0 * cos_cache[pair_idx] - x1 * sin_cache[pair_idx];
                 head_dst[dim_in_head + 1] = x0 * sin_cache[pair_idx] + x1 * cos_cache[pair_idx];
             }
+        }
         }
     }
 

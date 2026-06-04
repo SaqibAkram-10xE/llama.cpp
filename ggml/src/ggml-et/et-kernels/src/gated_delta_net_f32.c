@@ -22,8 +22,8 @@ struct ggml_et_gated_delta_net_params {
     struct ggml_tensor v;         // [S_v, H, n_tokens, n_seqs]
     struct ggml_tensor g;         // [1 or S_v, H, n_tokens, n_seqs]
     struct ggml_tensor beta;      // [1, H, n_tokens, n_seqs]
-    struct ggml_tensor state_in;  // [S_v, S_v, H, n_seqs]
-    struct ggml_tensor dst;       // [S_v*H, n_tokens*n_seqs + S_v*n_seqs]
+    struct ggml_tensor state_in;  // [S_v*S_v*H, K, n_seqs]
+    struct ggml_tensor dst;       // [S_v*H, n_tokens*n_seqs + S_v*n_seqs*K]
     int32_t S_v;        // head dimension
     int32_t H;          // number of value heads
     int32_t H_q;        // number of Q heads
@@ -33,6 +33,7 @@ struct ggml_et_gated_delta_net_params {
     int32_t n_seqs_q;   // Q sequence count
     int32_t n_seqs_k;   // K sequence count
     int32_t kda;        // 1 if per-element gate, 0 if scalar
+    int32_t K;          // snapshot slot count
     float   scale;      // 1/sqrt(S_v)
 };
 
@@ -96,6 +97,7 @@ int entry_point(struct ggml_et_gated_delta_net_params* params, void* env) {
     const int32_t n_seqs_q = params->n_seqs_q;
     const int32_t n_seqs_k = params->n_seqs_k;
     const int32_t kda      = params->kda;
+    const int32_t K        = params->K;
     const float   scale    = params->scale;
 
     if (!q || !k || !v || !g || !beta || !state_in || !dst_data) {
@@ -117,6 +119,15 @@ int entry_point(struct ggml_et_gated_delta_net_params* params, void* env) {
     const int32_t attn_elems = S_v * H * n_tokens * n_seqs;
     float* attn_out_base  = dst_data;
     float* state_out_base = dst_data + attn_elems;
+
+    // n-way merge: state input has K snapshot slots; we read slot 0 as the
+    // recurrence start. Output trails attn with K snapshot planes; only the
+    // last min(n_tokens, K) tokens write into them (target_slot = t - shift).
+    // We use slot K-1 as the live RMW buffer because t=n_tokens-1 lands there
+    // naturally — no extra final copy needed.
+    const int32_t state_plane_floats   = S_v * S_v * H * n_seqs;
+    const int32_t state_in_seq_stride  = (int32_t)(state_tsr->nb[2] / sizeof(float));
+    const int32_t shift                = n_tokens - K;
 
     const int32_t G0 = kda ? S_v : 1;
 
@@ -173,9 +184,13 @@ int entry_point(struct ggml_et_gated_delta_net_params* params, void* env) {
         const int32_t seq_q = (n_seqs_q == n_seqs) ? seq : (seq * n_seqs_q / n_seqs);
         const int32_t seq_k = (n_seqs_k == n_seqs) ? seq : (seq * n_seqs_k / n_seqs);
 
-        const int32_t state_base = (seq * H + head) * S_v * S_v;
-        float* s_out = state_out_base + state_base;
-        const float* s_in = state_in + state_base;
+        const int32_t head_state_off = (seq * H + head) * S_v * S_v;
+        // Live RMW buffer = last snapshot plane (slot K-1). For K=1 this is
+        // identical to the original single-snapshot layout.
+        float* s_out = state_out_base + (K - 1) * state_plane_floats + head_state_off;
+        // Input state: slot 0 of seq `seq`, head `head`. Per-seq stride comes
+        // from the tensor's nb[2] (=> K * H * S_v^2 floats for K>1).
+        const float* s_in = state_in + seq * state_in_seq_stride + head * S_v * S_v;
 
         // Skip the explicit s_in -> s_out copy. At t=0 pass A/B read through
         // src_state = s_in; pass B writes the first new row to s_out. From
@@ -326,6 +341,25 @@ int entry_point(struct ggml_et_gated_delta_net_params* params, void* env) {
                 __asm__ volatile("mova.m.x %[ms]\n" : : [ms] "r"(default_mask));
 
                 attn_ptr[j] = attn_val * scale;
+            }
+
+            // n-way merge snapshot: live state lives in slot K-1 (== s_out).
+            // For target_slot in [0, K-1), copy this thread's row block out.
+            // target_slot == K-1 is the live buffer itself => no copy.
+            // target_slot < 0 (only when n_tokens < K) => earlier slots are
+            // caller-owned per the op contract, skip.
+            if (K > 1) {
+                const int32_t target_slot = t - shift;
+                if (target_slot >= 0 && target_slot < K - 1) {
+                    float* snap = state_out_base + target_slot * state_plane_floats + head_state_off;
+                    for (int32_t j = j_start; j < j_end; j++) {
+                        const float* src = s_out + j * S_v;
+                        float*       dst = snap  + j * S_v;
+                        for (int32_t i = 0; i < S_v; i++) {
+                            dst[i] = src[i];
+                        }
+                    }
+                }
             }
 
             // After t=0, state lives in s_out; flip src_state so subsequent
