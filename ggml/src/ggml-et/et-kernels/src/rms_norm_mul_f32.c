@@ -16,6 +16,9 @@ struct ggml_et_rms_norm_mul_params {
     float eps;                // Epsilon for numerical stability
 };
 
+static inline size_t tensor_bytes(const struct ggml_tensor *t) {
+    return (size_t)t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3] * t->nb[0];
+}
 
 int entry_point(struct ggml_et_rms_norm_mul_params* params, void* env) {
     kernel_environment_t* kernel_env = (kernel_environment_t*)env;
@@ -38,6 +41,7 @@ int entry_point(struct ggml_et_rms_norm_mul_params* params, void* env) {
     struct ggml_tensor* src0 = &params->src0;
     struct ggml_tensor* src1 = &params->src1;
     struct ggml_tensor* dst = &params->dst;
+
     float eps = params->eps;
 
     if (src0->type != GGML_TYPE_F32 || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
@@ -47,7 +51,13 @@ int entry_point(struct ggml_et_rms_norm_mul_params* params, void* env) {
     float* src0_data = (float*)src0->data;
     float* src1_data = (float*)src1->data;
     float* dst_data = (float*)dst->data;
-
+// #ifdef ET_UBERKERNEL
+//     evict_region_past_l2(src0_data, tensor_bytes(src0));
+//     evict_region_past_l2(src1_data, tensor_bytes(src1));
+//     // WAIT_CACHEOPS;
+//     FENCE;
+//     // et_barrier(ET_BARRIER_GLOBAL);
+// #endif
     if (!src0_data || !src1_data || !dst_data) {
         return -1; // Null data pointer
     }
@@ -74,6 +84,7 @@ int entry_point(struct ggml_et_rms_norm_mul_params* params, void* env) {
     if (src0->ne[0] != ne0 || src0->ne[1] != ne1 || src0->ne[2] != ne2 || src0->ne[3] != ne3) {
         return -1; // Shape mismatch
     }
+    // et_barrier(ET_BARRIER_GLOBAL);
 
     const float inv_ne0 = et_fdiv(1.0f, (float)(int32_t)ne0);
     const int32_t total_rows = (int32_t)(ne1 * ne2 * ne3);
@@ -84,7 +95,6 @@ int entry_point(struct ggml_et_rms_norm_mul_params* params, void* env) {
         for (int64_t i3 = 0; i3 < ne3; i3++) {
             for (int64_t i2 = 0; i2 < ne2; i2++) {
                 for (int64_t i1 = thread_id; i1 < ne1; i1 += num_threads) {
-
                 const float* src_ptr = (const float*)((const char*)src0_data + i3*nb03 + i2*nb02 + i1*nb01);
                 float* dst_ptr = (float*)((char*)dst_data + i3*nb3 + i2*nb2 + i1*nb1);
 
@@ -145,13 +155,19 @@ int entry_point(struct ggml_et_rms_norm_mul_params* params, void* env) {
                         : "f12", "f14", "f15"
                     );
                 }
-
+// #ifdef ET_UBERKERNEL
+//                 FENCE;
+//                 evict_region_past_l2(dst_ptr, (size_t)ne0 * sizeof(float));
+//                 WAIT_CACHEOPS;
+//                 FENCE;
+// #endif
                 __asm__ volatile("mova.m.x %0" :: "r"(saved_mask));
                 }
             }
         }
     } else {
         // Intra-row: threads within each shire cooperate on rows via L2 SCP.
+        // L2 SCP + barrier are shire-local, so use shire-local thread index.
         int shire_tid = thread_id % shire_threads;
         int threads_per_row = shire_threads / total_rows;
         int my_row    = shire_tid / threads_per_row;
@@ -268,6 +284,12 @@ int entry_point(struct ggml_et_rms_norm_mul_params* params, void* env) {
                     : "f12", "f14", "f15"
                 );
             }
+// #ifdef ET_UBERKERNEL
+//             FENCE;
+//             evict_region_past_l2(dst_ptr + my_start, (size_t)(my_end - my_start) * sizeof(float));
+//             WAIT_CACHEOPS;
+//             FENCE;
+// #endif
         }
 
         __asm__ volatile("mova.m.x %0" :: "r"(saved_mask));
