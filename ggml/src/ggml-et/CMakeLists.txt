@@ -38,6 +38,7 @@ set(KERNELS
     mul_mat_Q8_0
     mul_mat_Q4_0
     mul_mat_Q4_0_matrix_engine
+    mul_mat_Q4_K
     mul_mat_f16
     mul_mat_f16_matrix_engine
     rope_f32
@@ -103,6 +104,10 @@ set(UBERKERNEL_SUPPORTED_KERNELS
     mul_mat_f32_matrix_engine
     mul_mat_id_f32
     mul_mat_Q4_0
+    # mul_mat_Q4_K: scalar affine dequant corrupts the shared FP register file in
+    # the uberkernel context (same class of issue as get_rows_f32 above). Kept in
+    # the standalone KERNELS list only; uberkernel mode auto-falls-back to a
+    # standalone launch for kernels absent from this set.
     mul_mat_Q8_0
     norm_f32
     pad_f32

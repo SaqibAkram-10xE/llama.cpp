@@ -874,14 +874,69 @@ static inline float q4_dot_compute(const block_q4_0 * q_row, const float * b_col
     return q4_dot_reduce();
 }
 
-static inline void q4_dot_compute_x2_aligned(const block_q4_0 * q_row0,
-                                             const block_q4_0 * q_row1,
-                                             const float *      b_col,
-                                             int64_t            K_blocks,
-                                             float *            out0,
-                                             float *            out1) {
-    const int32_t gather_pattern[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
-    __asm__ volatile("flw.ps f31, %[g]\n" : : [g] "m"(*(const int32_t (*)[8]) gather_pattern) : "f31");
+// Full-row dot product for Q4_K weights against an F32 activation column.
+//
+// Unlike Q4_0/Q8_0 (whose dequant is a pure per-block scale, so the scale can
+// be factored out of the dot product), Q4_K reconstructs each weight via an
+// affine transform `w = d*scale*q - dmin*min` with per-group scales/mins inside
+// each 256-element super-block. That makes the cheap "scale the integer dot"
+// trick inapplicable.
+//
+// The dequant math mirrors dequantize_q4_K_block exactly, but the per-element
+// product is folded straight into a scalar accumulator instead of being staged
+// through a temporary buffer. This deliberately avoids a large (1KB) on-stack
+// dequant buffer and the vector-mask save/restore of the F32 dot helper, both
+// of which are unsafe in the shared uberkernel context (the same 256-float
+// buffer is why get_rows_f32 is excluded from UBERKERNEL_SUPPORTED_KERNELS).
+//
+// K_sblocks is the number of QK_K (256) element super-blocks in the row
+// (i.e. K / QK_K).
+static inline float compute_row_dot_q4_K(const block_q4_K* q_row,
+                                         const float* b_col,
+                                         int64_t K_sblocks) {
+    float acc = 0.0f;
+    for (int64_t sb = 0; sb < K_sblocks; sb++) {
+        const block_q4_K* block = q_row + sb;
+        const float* b = b_col + sb * QK_K;
+        const uint8_t* q = block->qs;
+        const float d   = fp16_to_fp32(block->d);
+        const float min = fp16_to_fp32(block->dmin);
+
+        int is = 0;
+        uint8_t sc, m;
+        for (int j = 0; j < QK_K; j += 64) {
+            get_scale_min_k4(is + 0, block->scales, &sc, &m);
+            const float d1 = d * sc;
+            const float m1 = min * m;
+            get_scale_min_k4(is + 1, block->scales, &sc, &m);
+            const float d2 = d * sc;
+            const float m2 = min * m;
+            for (int l = 0; l < 32; ++l) {
+                acc += (d1 * (float)(q[l] & 0xF) - m1) * (*b++);
+            }
+            for (int l = 0; l < 32; ++l) {
+                acc += (d2 * (float)(q[l] >> 4) - m2) * (*b++);
+            }
+            q += 32;
+            is += 2;
+        }
+    }
+    return acc;
+}
+
+static inline void q4_dot_compute_x2_aligned(const block_q4_0* q_row0,
+                                             const block_q4_0* q_row1,
+                                             const float* b_col,
+                                             int64_t K_blocks,
+                                             float* out0,
+                                             float* out1) {
+    const int32_t gather_pattern[8] = {0, 1, 2, 3, 4, 5, 6, 7};
+    __asm__ volatile(
+        "flw.ps f31, %[g]\n"
+        :
+        : [g] "m"(*(const int32_t(*)[8])gather_pattern)
+        : "f31"
+    );
     __asm__ volatile(
         "fbci.pi f20, 0\n"
         "fbci.pi f21, 0\n" ::
