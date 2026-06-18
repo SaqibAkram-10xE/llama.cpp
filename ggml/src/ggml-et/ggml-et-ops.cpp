@@ -114,13 +114,8 @@ static ggml_et_cpu_compare_config glu_cpu_compare_config = {
 };
 
 static ggml_et_cpu_compare_config mul_mat_cpu_compare_config = {
-    // /* .enabled = */ false,
-    // /* .use_cpu_result = */ false,
-    // /* .log_differences = */ true,
-    // /* .tolerance = */ 0.01,
-    // /* .max_log_elements = */ 4096
-    /* .enabled = */ true,
-    /* .use_cpu_result = */ true,
+    /* .enabled = */ false,
+    /* .use_cpu_result = */ false,
     /* .log_differences = */ true,
     /* .tolerance = */ 0.01,
     /* .max_log_elements = */ 4096
