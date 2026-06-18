@@ -1010,8 +1010,7 @@ static inline void q4_dot_compute_x2_aligned(const block_q4_0 * q_row0,
 // product is folded straight into a scalar accumulator instead of being staged
 // through a temporary buffer. This deliberately avoids a large (1KB) on-stack
 // dequant buffer and the vector-mask save/restore of the F32 dot helper, both
-// of which are unsafe in the shared uberkernel context (the same 256-float
-// buffer is why get_rows_f32 is excluded from UBERKERNEL_SUPPORTED_KERNELS).
+// of which are unsafe in the uberkernel context.
 //
 // K_sblocks is the number of QK_K (256) element super-blocks in the row
 // (i.e. K / QK_K).
