@@ -26,10 +26,6 @@
 #define TILE_KB           32      /* K-tile size in Q4_K super-blocks (8192 elems, 32KB B data) */
 #define KSPLIT_GROUP_ROWS 4
 
-static inline size_t tensor_bytes(const struct ggml_tensor * t) {
-    return (size_t) t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3] * t->nb[0];
-}
-
 int entry_point(struct ggml_et_binary_params* params, void* env) {
     uint64_t hart_id = get_hart_id();
 
@@ -88,12 +84,6 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
                               && (K_blocks >= KSPLIT_MIN_K_BLOCKS)
                               && (rows_per_minion > 4)
                               && (rows_per_minion <= KSPLIT_MAX_ROWS);
-
-    // ET-SoC-1 L1/L2 are incoherent. mul_mat_Q8_0 evicts src1 here so the kernel
-    // re-fetches activations from L3/DRAM instead of reading stale lines left by
-    // the producing op; mul_mat_Q4_K was missing this.
-    evict_region_past_l2(params->src0.data, tensor_bytes(&params->src0));
-    evict_region_past_l2(params->src1.data, tensor_bytes(&params->src1));
 
     if (use_ksplit) {
         /* Each hart processes half the K dimension */
