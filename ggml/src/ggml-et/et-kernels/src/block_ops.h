@@ -1014,6 +1014,27 @@ static inline void q4_dot_compute_x2_aligned(const block_q4_0 * q_row0,
 //
 // K_sblocks is the number of QK_K (256) element super-blocks in the row
 // (i.e. K / QK_K).
+static inline float sw_fp16_to_fp32(uint16_t h) {
+    uint32_t sign = (uint32_t)(h & 0x8000) << 16;
+    uint32_t exp  = (h >> 10) & 0x1F;
+    uint32_t mant = h & 0x3FF;
+    uint32_t f;
+    if (exp == 0) {
+        if (mant == 0) { f = sign; }
+        else {
+            exp = 127 - 15 + 1;
+            while ((mant & 0x400) == 0) { mant <<= 1; exp--; }
+            mant &= 0x3FF;
+            f = sign | (exp << 23) | (mant << 13);
+        }
+    } else if (exp == 0x1F) {
+        f = sign | 0x7F800000u | (mant << 13);
+    } else {
+        f = sign | ((exp + (127 - 15)) << 23) | (mant << 13);
+    }
+    float out; __builtin_memcpy(&out, &f, 4); return out;
+}
+
 static inline float compute_row_dot_q4_K(const block_q4_K* q_row,
                                          const float* b_col,
                                          int64_t K_sblocks) {
@@ -1022,8 +1043,8 @@ static inline float compute_row_dot_q4_K(const block_q4_K* q_row,
         const block_q4_K* block = q_row + sb;
         const float* b = b_col + sb * QK_K;
         const uint8_t* q = block->qs;
-        const float d   = fp16_to_fp32(block->d);
-        const float min = fp16_to_fp32(block->dmin);
+        const float d   = sw_fp16_to_fp32(block->d);
+        const float min = sw_fp16_to_fp32(block->dmin);
 
         int is = 0;
         uint8_t sc, m;
