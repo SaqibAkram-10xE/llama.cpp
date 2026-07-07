@@ -43,6 +43,17 @@
 #ifndef KWIN
 #define KWIN    16      // K-blocks per dequant window (cache depth)
 #endif
+// BAL is the producer/consumer balance point: reuse factors r<=BAL are treated
+// as "free" (dequant is the bottleneck), r>BAL is penalized because the
+// consumer (+ C round-trip) becomes the bottleneck. TIE_PREFER_LARGE selects
+// the LARGEST r among equal scores (max reuse / least dequant) instead of the
+// smallest.
+#ifndef BAL
+#define BAL 8
+#endif
+#ifndef TIE_PREFER_LARGE
+#define TIE_PREFER_LARGE 0
+#endif
 
 #define MACHINE_SLOTS (NUM_COMPUTE_SHIRES * MINIONS_PER_SHIRE)  // 1024
 
@@ -306,14 +317,21 @@ int entry_point(struct ggml_et_binary_params *params, void *env) {
         int64_t n_groups = (n_tiles + r - 1) / r;
         int64_t base_units = m_tiles * n_groups * batch_count;
         int64_t waves = (base_units + MACHINE_SLOTS - 1) / MACHINE_SLOTS;
-        
-        int64_t penalty = (r > 8) ? r : 8;
+
+        int64_t penalty = (r > BAL) ? r : BAL;
         int64_t score = waves * penalty;
-        
+
+#if TIE_PREFER_LARGE
+        if (score <= min_score) {   // largest r among equal scores = max reuse
+            min_score = score;
+            best_r = r;
+        }
+#else
         if (score < min_score) {
             min_score = score;
             best_r = r;
         }
+#endif
     }
     int64_t ru_n = best_r;
 
