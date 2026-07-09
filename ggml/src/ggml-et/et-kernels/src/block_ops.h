@@ -1067,3 +1067,45 @@ static inline float compute_row_dot_q4_K(const block_q4_K* q_row,
     }
     return acc;
 }
+
+// Full-row dot product for Q6_K weights against an F32 activation column.
+//
+// Q6_K reconstructs each weight as `w = d * scale * ((ql|qh) - 32)` with a
+// per-16-element int8 scale inside each 256-element super-block. Mirrors
+// dequantize_q6_K_block, folding the product into a scalar accumulator to avoid
+// the 1KB on-stack dequant buffer / vector-mask save-restore used elsewhere.
+//
+// K_sblocks is the number of QK_K (256) element super-blocks in the row.
+static inline float compute_row_dot_q6_K(const block_q6_K* q_row,
+                                         const float* b_col,
+                                         int64_t K_sblocks) {
+    float acc = 0.0f;
+    for (int64_t sb = 0; sb < K_sblocks; sb++) {
+        const block_q6_K* block = q_row + sb;
+        const float* b = b_col + sb * QK_K;
+        const float d  = sw_fp16_to_fp32(block->d);
+
+        const uint8_t* ql = block->ql;
+        const uint8_t* qh = block->qh;
+        const int8_t*  sc = block->scales;
+
+        for (int n = 0; n < QK_K; n += 128) {
+            for (int l = 0; l < 32; ++l) {
+                const int is = l / 16;
+                const int8_t q1 = (int8_t)((ql[l +  0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
+                const int8_t q2 = (int8_t)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+                const int8_t q3 = (int8_t)((ql[l +  0] >>  4) | (((qh[l] >> 4) & 3) << 4)) - 32;
+                const int8_t q4 = (int8_t)((ql[l + 32] >>  4) | (((qh[l] >> 6) & 3) << 4)) - 32;
+                acc += d * sc[is + 0] * q1 * b[l +  0];
+                acc += d * sc[is + 2] * q2 * b[l + 32];
+                acc += d * sc[is + 4] * q3 * b[l + 64];
+                acc += d * sc[is + 6] * q4 * b[l + 96];
+            }
+            b  += 128;
+            ql += 64;
+            qh += 32;
+            sc += 8;
+        }
+    }
+    return acc;
+}

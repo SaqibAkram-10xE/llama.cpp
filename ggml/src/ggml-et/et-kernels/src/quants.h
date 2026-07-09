@@ -69,4 +69,31 @@ static inline void dequantize_q4_K_block(const block_q4_K * block, float * dst) 
     }
 }
 
+// Dequantize one Q6_K super-block (256 elements) to F32. Each 6-bit weight is
+// (ql nibble | qh 2-bit) - 32, scaled by an int8 per-16 scale and the fp16 d.
+static inline void dequantize_q6_K_block(const block_q6_K * block, float * dst) {
+    const float          d  = fp16_to_fp32(block->d);
+    const uint8_t      * ql = block->ql;
+    const uint8_t      * qh = block->qh;
+    const int8_t       * sc = block->scales;
+
+    for (int n = 0; n < QK_K; n += 128) {
+        for (int l = 0; l < 32; ++l) {
+            const int is = l / 16;
+            const int8_t q1 = (int8_t)((ql[l +  0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
+            const int8_t q2 = (int8_t)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
+            const int8_t q3 = (int8_t)((ql[l +  0] >>  4) | (((qh[l] >> 4) & 3) << 4)) - 32;
+            const int8_t q4 = (int8_t)((ql[l + 32] >>  4) | (((qh[l] >> 6) & 3) << 4)) - 32;
+            dst[l +  0] = d * sc[is + 0] * q1;
+            dst[l + 32] = d * sc[is + 2] * q2;
+            dst[l + 64] = d * sc[is + 4] * q3;
+            dst[l + 96] = d * sc[is + 6] * q4;
+        }
+        dst += 128;
+        ql  += 64;
+        qh  += 32;
+        sc  += 8;
+    }
+}
+
 #endif  // QUANTS_H

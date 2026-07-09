@@ -137,6 +137,22 @@ static void copy_q4_K_row(float * dst, const block_q4_K * src_blocks, int64_t nu
     }
 }
 
+// Copy a row of Q6_K data to F32 destination (with dequantization)
+static void copy_q6_K_row(float * dst, const block_q6_K * src_blocks, int64_t num_elements) {
+    const int64_t num_blocks = (num_elements + QK_K - 1) / QK_K;
+
+    for (int64_t block_idx = 0; block_idx < num_blocks; block_idx++) {
+        const int64_t elements_in_block = (block_idx == num_blocks - 1) ? (num_elements - block_idx * QK_K) : QK_K;
+
+        float temp_buffer[QK_K];
+        dequantize_q6_K_block(&src_blocks[block_idx], temp_buffer);
+
+        for (int64_t i = 0; i < elements_in_block; i++) {
+            dst[block_idx * QK_K + i] = temp_buffer[i];
+        }
+    }
+}
+
 static void dequantize_q8_0_block_cache_aligned(const block_q8_0 * block, float * dst) {
     const int8_t * qs_ptr = block->qs;
 
@@ -521,7 +537,7 @@ int entry_point(struct ggml_et_get_rows_params * params, void * env) {
     }
 
     if (src0->type != GGML_TYPE_F32 && src0->type != GGML_TYPE_F16 && src0->type != GGML_TYPE_Q8_0 &&
-        src0->type != GGML_TYPE_Q4_0 && src0->type != GGML_TYPE_Q4_K) {
+        src0->type != GGML_TYPE_Q4_0 && src0->type != GGML_TYPE_Q4_K && src0->type != GGML_TYPE_Q6_K) {
         return -1;  // Unsupported input type
     }
 
@@ -605,6 +621,13 @@ int entry_point(struct ggml_et_get_rows_params * params, void * env) {
             const block_q4_K * src_blocks       = (const block_q4_K *) src0_data + src_block_offset;
             float *            dst_row          = dst_data + dst_offset * ne00;
             copy_q4_K_row(dst_row, src_blocks, ne00);
+        } else if (src0->type == GGML_TYPE_Q6_K) {
+            // Q6_K source: dequantize while copying
+            const int64_t      blocks_per_row   = (ne00 + QK_K - 1) / QK_K;
+            const int64_t      src_block_offset = (row_index * blocks_per_row) + (batch_offset / ne00) * blocks_per_row;
+            const block_q6_K * src_blocks       = (const block_q6_K *) src0_data + src_block_offset;
+            float *            dst_row          = dst_data + dst_offset * ne00;
+            copy_q6_K_row(dst_row, src_blocks, ne00);
         }
     }
 
