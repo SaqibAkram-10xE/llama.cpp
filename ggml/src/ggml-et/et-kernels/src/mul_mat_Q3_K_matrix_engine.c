@@ -116,6 +116,13 @@ static inline float __attribute__((always_inline)) me_sw_fp16(uint16_t h) {
     float out; __builtin_memcpy(&out, &f, 4); return out;
 }
 
+// EXPERIMENT: use the hardware fcvt.ps.f16 (fp16_to_fp32, math_fp.h) for the
+// super-block scale instead of the software me_sw_fp16 above. Hardware fcvt was
+// observed to corrupt Q4_K scales after the attention block; trying it here for
+// the other K-quants. If it produces garbage, flip ME_FP16 back to me_sw_fp16.
+// #define ME_FP16(h) fp16_to_fp32(h)  // hardware fcvt: garbage for Q3/Q5/Q6 (fcvt-after-attention bug)
+#define ME_FP16(h) me_sw_fp16(h)
+
 // Dequantize one 32-element Q3_K GROUP of TILE_M weight rows into the FP32 panel,
 // written in TenB [k][m] order: panel[k*TILE_M + m].
 //
@@ -140,7 +147,7 @@ dequant_q3_K_panel(float *panel, const char *src0_batch,
     for (int j = 0; j < TILE_M; ++j) {
         const block_q3_K *blk =
             (const block_q3_K *)(src0_batch + (mb + j) * nb1_0) + sb;
-        const float          d  = me_sw_fp16(blk->d);
+        const float          d  = ME_FP16(blk->d);
         const uint8_t      * qs = blk->qs + qoff;
         const uint8_t      * hm = blk->hmask;
         int8_t scales[16];
