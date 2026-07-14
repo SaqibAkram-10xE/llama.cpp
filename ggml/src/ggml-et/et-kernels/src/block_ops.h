@@ -1068,46 +1068,86 @@ static inline float compute_row_dot_q4_K(const block_q4_K* q_row,
     return acc;
 }
 
-// Full-row dot product for Q6_K weights against an F32 activation column.
-//
-// Q6_K reconstructs each weight as `w = d * scale * ((ql|qh) - 32)` with a
-// per-16-element int8 scale inside each 256-element super-block. Mirrors
-// dequantize_q6_K_block, folding the product into a scalar accumulator to avoid
-// the 1KB on-stack dequant buffer / vector-mask save-restore used elsewhere.
-//
-// K_sblocks is the number of QK_K (256) element super-blocks in the row.
-static inline float compute_row_dot_q6_K(const block_q6_K* q_row,
-                                         const float* b_col,
-                                         int64_t K_sblocks) {
-    float acc = 0.0f;
+// Vectorized (8-wide) full-row dot for Q4_K. Affine 8-groups-of-32 layout
+// w = d*sc*nibble - dmin*m (no qh bit). Group g -> qs pair g/2, nibble
+// low(g even)/high(g odd). f10 scale term, f9 min term; result = f10 - f9.
+#define Q4V_LO "fandi.pi f12, f11, 15\n\t"
+#define Q4V_HI "fsrli.pi f12, f11, 4\n\t fandi.pi f12, f12, 15\n\t"
+#define Q4V_CHUNK(NIB, qlp, bp, dscb, dmb)                               \
+    __asm__ volatile(                                                    \
+        "fgb.ps     f11, f31(%[q])\n\t"                                  \
+        NIB                                                              \
+        "fcvt.ps.pw f12, f12, rne\n\t"                                   \
+        "fbcx.ps    f16, %[dsc]\n\t"                                     \
+        "flw.ps     f15, 0(%[b])\n\t"                                    \
+        "fmul.ps    f12, f12, f16\n\t"                                   \
+        "fmadd.ps   f10, f12, f15, f10\n\t"                              \
+        "fbcx.ps    f17, %[dm]\n\t"                                      \
+        "fmadd.ps   f9, f15, f17, f9\n\t"                                \
+        :: [q] "r"(qlp), [b] "r"(bp), [dsc] "r"(dscb), [dm] "r"(dmb)     \
+        : "f11", "f12", "f15", "f16", "f17")
+#define Q4V_GROUP(NIB, pp)                                               \
+    do {                                                                 \
+        const uint8_t* qlb = block->qs + (pp) * 32;                      \
+        Q4V_CHUNK(NIB, qlb + 0,  bg + 0,  dscb, dmb);                    \
+        Q4V_CHUNK(NIB, qlb + 8,  bg + 8,  dscb, dmb);                    \
+        Q4V_CHUNK(NIB, qlb + 16, bg + 16, dscb, dmb);                    \
+        Q4V_CHUNK(NIB, qlb + 24, bg + 24, dscb, dmb);                    \
+    } while (0)
+
+static inline float compute_row_dot_q4_K_vec(const block_q4_K* q_row,
+                                             const float* b_col,
+                                             int64_t K_sblocks) {
+    unsigned long saved_mask;
+    __asm__ volatile("mova.x.m %0" : "=r"(saved_mask));
+    __asm__ volatile("mov.m.x m0, x0, 0xFF");
+
+    static const int32_t __attribute__((aligned(64))) gp[8] = { 0, 1, 2, 3, 4, 5, 6, 7 };
+    __asm__ volatile("flw.ps f31, %[g]\n\t"
+                     "fbci.ps f10, 0\n\t"
+                     "fbci.ps f9, 0\n\t"
+                     :: [g] "m"(*(const int32_t(*)[8]) gp)
+                     : "f31", "f10", "f9");
+
     for (int64_t sb = 0; sb < K_sblocks; sb++) {
-        const block_q6_K* block = q_row + sb;
+        const block_q4_K* block = q_row + sb;
         const float* b = b_col + sb * QK_K;
-        const float d  = sw_fp16_to_fp32(block->d);
+        const float d   = sw_fp16_to_fp32(block->d);
+        const float min = sw_fp16_to_fp32(block->dmin);
 
-        const uint8_t* ql = block->ql;
-        const uint8_t* qh = block->qh;
-        const int8_t*  sc = block->scales;
+        for (int g = 0; g < 8; ++g) {
+            uint8_t sc, m;
+            get_scale_min_k4(g, block->scales, &sc, &m);
+            const float dscf = d * (float) sc;
+            const float dmf  = min * (float) m;
+            uint32_t dscb, dmb;
+            __builtin_memcpy(&dscb, &dscf, 4);
+            __builtin_memcpy(&dmb, &dmf, 4);
+            const float* bg = b + g * 32;
+            const int p = g >> 1;
 
-        for (int n = 0; n < QK_K; n += 128) {
-            for (int l = 0; l < 32; ++l) {
-                const int is = l / 16;
-                const int8_t q1 = (int8_t)((ql[l +  0] & 0xF) | (((qh[l] >> 0) & 3) << 4)) - 32;
-                const int8_t q2 = (int8_t)((ql[l + 32] & 0xF) | (((qh[l] >> 2) & 3) << 4)) - 32;
-                const int8_t q3 = (int8_t)((ql[l +  0] >>  4) | (((qh[l] >> 4) & 3) << 4)) - 32;
-                const int8_t q4 = (int8_t)((ql[l + 32] >>  4) | (((qh[l] >> 6) & 3) << 4)) - 32;
-                acc += d * sc[is + 0] * q1 * b[l +  0];
-                acc += d * sc[is + 2] * q2 * b[l + 32];
-                acc += d * sc[is + 4] * q3 * b[l + 64];
-                acc += d * sc[is + 6] * q4 * b[l + 96];
+            if (g & 1) {
+                Q4V_GROUP(Q4V_HI, p);
+            } else {
+                Q4V_GROUP(Q4V_LO, p);
             }
-            b  += 128;
-            ql += 64;
-            qh += 32;
-            sc += 8;
         }
     }
-    return acc;
+
+    float final_sum;
+    __asm__ volatile(
+        "fswizz.ps f1, f10, 0xB1 \n\t fadd.ps f2, f10, f1, rne \n\t"
+        "fswizz.ps f3, f2, 0x4E \n\t fadd.ps f4, f2, f3, rne \n\t"
+        "fmvz.x.ps t0, f4, 4 \n\t fbcx.ps f5, t0 \n\t fadd.ps f6, f4, f5, rne \n\t"
+        "fswizz.ps f1, f9, 0xB1 \n\t fadd.ps f2, f9, f1, rne \n\t"
+        "fswizz.ps f3, f2, 0x4E \n\t fadd.ps f4, f2, f3, rne \n\t"
+        "fmvz.x.ps t0, f4, 4 \n\t fbcx.ps f5, t0 \n\t fadd.ps f7, f4, f5, rne \n\t"
+        "fsub.ps   %[out], f6, f7, rne \n\t"
+        : [out] "=f"(final_sum)
+        :: "t0", "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f9", "f10");
+
+    __asm__ volatile("mova.m.x %0" ::"r"(saved_mask));
+    return final_sum;
 }
 
 // Vectorized (8-wide) full-row dot for Q6_K, modeled on the q4_0/q8_0 vector
@@ -1213,6 +1253,12 @@ static inline float compute_row_dot_q6_K_vec(const block_q6_K* q_row,
     __asm__ volatile("mova.m.x %0" ::"r"(saved_mask));
     return final_sum;
 }
+
+// NOTE: two further Q6_K dot experiments were tried and REMOVED as neither
+// helped - the generation dot is memory/overhead bound, not compute bound:
+//   * gather-reduced (ql/qh gathered once, reused across sub-groups, 64->24
+//     fgb/super-block) - perf-neutral (14.95 vs 14.93 t/s).
+//   * 4 rotating accumulators to pipeline the fmadd chain - also neutral (15.02).
 
 // Vectorized (8-wide) full-row dot for Q5_K. Same 8-groups-of-32 affine layout
 // as Q4_K plus a 5th bit from qh: w = d*sc*(nibble + qh_bit*16) - dmin*m.
@@ -1477,109 +1523,4 @@ static inline float compute_row_dot_q3_K_vec(const block_q3_K* q_row,
 
     __asm__ volatile("mova.m.x %0" ::"r"(saved_mask));
     return final_sum;
-}
-
-// Full-row dot product for Q2_K weights against an F32 activation column.
-// Affine 2-bit dequant `w = d*(sc&0xF)*q - dmin*(sc>>4)`, mirroring
-// dequantize_q2_K_block. K_sblocks is the number of QK_K super-blocks.
-static inline float compute_row_dot_q2_K(const block_q2_K* q_row,
-                                         const float* b_col,
-                                         int64_t K_sblocks) {
-    float acc = 0.0f;
-    for (int64_t sb = 0; sb < K_sblocks; sb++) {
-        const block_q2_K* block = q_row + sb;
-        const float* b = b_col + sb * QK_K;
-        const float d   = sw_fp16_to_fp32(block->d);
-        const float min = sw_fp16_to_fp32(block->dmin);
-        const uint8_t* q = block->qs;
-
-        int is = 0;
-        for (int n = 0; n < QK_K; n += 128) {
-            int shift = 0;
-            for (int j = 0; j < 4; ++j) {
-                uint8_t sc = block->scales[is++];
-                float dl = d * (sc & 0xF), ml = min * (sc >> 4);
-                for (int l = 0; l < 16; ++l)
-                    acc += (dl * ((int8_t)((q[l] >> shift) & 3)) - ml) * (*b++);
-                sc = block->scales[is++];
-                dl = d * (sc & 0xF); ml = min * (sc >> 4);
-                for (int l = 0; l < 16; ++l)
-                    acc += (dl * ((int8_t)((q[l + 16] >> shift) & 3)) - ml) * (*b++);
-                shift += 2;
-            }
-            q += 32;
-        }
-    }
-    return acc;
-}
-
-// Full-row dot product for Q3_K weights against an F32 activation column.
-// 3-bit dequant `w = d*(scale-32)*(q2 - (hbit?0:4))`, mirroring
-// dequantize_q3_K_block. K_sblocks is the number of QK_K super-blocks.
-static inline float compute_row_dot_q3_K(const block_q3_K* q_row,
-                                         const float* b_col,
-                                         int64_t K_sblocks) {
-    float acc = 0.0f;
-    for (int64_t sb = 0; sb < K_sblocks; sb++) {
-        const block_q3_K* block = q_row + sb;
-        const float* b = b_col + sb * QK_K;
-        const float d_all = sw_fp16_to_fp32(block->d);
-        const uint8_t* q  = block->qs;
-        const uint8_t* hm = block->hmask;
-        uint8_t m = 1;
-
-        int8_t scales[16];
-        unpack_q3_K_scales(block->scales, scales);
-
-        int is = 0;
-        for (int n = 0; n < QK_K; n += 128) {
-            int shift = 0;
-            for (int j = 0; j < 4; ++j) {
-                float dl = d_all * (scales[is++] - 32);
-                for (int l = 0; l < 16; ++l)
-                    acc += (dl * ((int8_t)((q[l + 0] >> shift) & 3) - ((hm[l + 0] & m) ? 0 : 4))) * (*b++);
-                dl = d_all * (scales[is++] - 32);
-                for (int l = 0; l < 16; ++l)
-                    acc += (dl * ((int8_t)((q[l + 16] >> shift) & 3) - ((hm[l + 16] & m) ? 0 : 4))) * (*b++);
-                shift += 2;
-                m <<= 1;
-            }
-            q += 32;
-        }
-    }
-    return acc;
-}
-
-// Full-row dot product for Q5_K weights against an F32 activation column.
-// Affine dequant like Q4_K with an extra high bit from qh, mirroring
-// dequantize_q5_K_block. K_sblocks is the number of QK_K super-blocks.
-static inline float compute_row_dot_q5_K(const block_q5_K* q_row,
-                                         const float* b_col,
-                                         int64_t K_sblocks) {
-    float acc = 0.0f;
-    for (int64_t sb = 0; sb < K_sblocks; sb++) {
-        const block_q5_K* block = q_row + sb;
-        const float* b = b_col + sb * QK_K;
-        const uint8_t* ql = block->qs;
-        const uint8_t* qh = block->qh;
-        const float d   = sw_fp16_to_fp32(block->d);
-        const float min = sw_fp16_to_fp32(block->dmin);
-
-        int is = 0;
-        uint8_t sc, mm;
-        uint8_t u1 = 1, u2 = 2;
-        for (int j = 0; j < QK_K; j += 64) {
-            get_scale_min_k4(is + 0, block->scales, &sc, &mm);
-            const float d1 = d * sc, m1 = min * mm;
-            get_scale_min_k4(is + 1, block->scales, &sc, &mm);
-            const float d2 = d * sc, m2 = min * mm;
-            for (int l = 0; l < 32; ++l)
-                acc += (d1 * ((ql[l] & 0xF) + (qh[l] & u1 ? 16 : 0)) - m1) * (*b++);
-            for (int l = 0; l < 32; ++l)
-                acc += (d2 * ((ql[l] >>  4) + (qh[l] & u2 ? 16 : 0)) - m2) * (*b++);
-            ql += 32; is += 2;
-            u1 <<= 2; u2 <<= 2;
-        }
-    }
-    return acc;
 }

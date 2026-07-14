@@ -23,13 +23,23 @@
 #define TILE_KB           32      /* K-tile size in Q5_K super-blocks (8192 elems) */
 #define KSPLIT_GROUP_ROWS 4
 
-// Vectorized (8-wide) dot, modeled on mul_mat_Q8_0.c. Flip to the scalar
-// compute_row_dot_q5_K for reference / debugging.
+// Vectorized (8-wide) dot
 #define Q5K_DOT(a, b, c) compute_row_dot_q5_K_vec(a, b, c)
-// #define Q5K_DOT(a, b, c) compute_row_dot_q5_K(a, b, c)
+
+#ifdef ET_UBERKERNEL
+static inline size_t tensor_bytes(const struct ggml_tensor* t) {
+    return (size_t) t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3] * t->nb[0];
+}
+#endif
 
 int entry_point(struct ggml_et_binary_params* params, void* env) {
     uint64_t hart_id = get_hart_id();
+
+#ifdef ET_UBERKERNEL
+    // Uberkernel coherency: src1 (activations) may be stale in L1/L2; force
+    // re-read from L3/DRAM. src0 (weights) is read-only, never stale.
+    evict_region_past_l2(params->src1.data, tensor_bytes(&params->src1));
+#endif
 
     // Matrix dimensions
     const int64_t K    = params->src0.ne[0];
@@ -324,5 +334,12 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
         }
     }
 
+#ifdef ET_UBERKERNEL
+    // Publish dst to L3/DRAM for the next uberkernel op.
+    FENCE;
+    evict_region_past_l2(params->dst.data, tensor_bytes(&params->dst));
+    WAIT_CACHEOPS;
+    FENCE;
+#endif
     return 0;
 }
