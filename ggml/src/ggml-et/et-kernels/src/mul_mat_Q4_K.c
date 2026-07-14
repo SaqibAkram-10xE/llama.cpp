@@ -5,7 +5,7 @@
 // Structure mirrors mul_mat_Q4_0.c. The key difference is the block size:
 // Q4_K packs 256 elements per super-block (8 groups of 32) with per-group
 // scales/mins, versus 32 elements per block for Q4_0. The actual dequant +
-// dot work is delegated to compute_row_dot_q4_K() in block_ops.h. The K-tiling
+// dot work is delegated to Q4K_DOT() in block_ops.h. The K-tiling
 // and K-split thresholds below are expressed in super-blocks but chosen so the
 // element-level behaviour matches the Q4_0 kernel (one Q4_K super-block == 8
 // Q4_0 blocks, so the block thresholds are divided by 8).
@@ -26,8 +26,23 @@
 #define TILE_KB           32      /* K-tile size in Q4_K super-blocks (8192 elems, 32KB B data) */
 #define KSPLIT_GROUP_ROWS 4
 
+// Vectorized (8-wide) dot
+#define Q4K_DOT(a, b, c) compute_row_dot_q4_K_vec(a, b, c)
+
+#ifdef ET_UBERKERNEL
+static inline size_t tensor_bytes(const struct ggml_tensor* t) {
+    return (size_t) t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3] * t->nb[0];
+}
+#endif
+
 int entry_point(struct ggml_et_binary_params* params, void* env) {
     uint64_t hart_id = get_hart_id();
+
+#ifdef ET_UBERKERNEL
+    // Uberkernel coherency: src1 (activations) may be stale in L1/L2 from a
+    // prior op's write; force re-read from L3/DRAM. src0 (weights) is read-only.
+    evict_region_past_l2(params->src1.data, tensor_bytes(&params->src1));
+#endif
 
     // Matrix dimensions
     const int64_t K    = params->src0.ne[0];
@@ -112,7 +127,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
                     for (int64_t m = minion_id; m < M; m += STRIDE_M_KSPLIT) {
                         const block_q4_K* q_row = (const block_q4_K*)(src0_ptr2 + m * nb01);
 
-                        float partial = compute_row_dot_q4_K(
+                        float partial = Q4K_DOT(
                             q_row + k_start, b_col_base + k_start * QK_K, k_len);
 
                         if (is_hart1) {
@@ -180,22 +195,22 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
                             const int64_t row_kb = k_start + kb;
 
                             if (m0 < M) {
-                                s0 += compute_row_dot_q4_K(
+                                s0 += Q4K_DOT(
                                     (const block_q4_K*)(src0_ptr2 + m0 * nb01) + row_kb,
                                     b_tile, tile_len);
                             }
                             if (m1 < M) {
-                                s1 += compute_row_dot_q4_K(
+                                s1 += Q4K_DOT(
                                     (const block_q4_K*)(src0_ptr2 + m1 * nb01) + row_kb,
                                     b_tile, tile_len);
                             }
                             if (m2 < M) {
-                                s2 += compute_row_dot_q4_K(
+                                s2 += Q4K_DOT(
                                     (const block_q4_K*)(src0_ptr2 + m2 * nb01) + row_kb,
                                     b_tile, tile_len);
                             }
                             if (m3 < M) {
-                                s3 += compute_row_dot_q4_K(
+                                s3 += Q4K_DOT(
                                     (const block_q4_K*)(src0_ptr2 + m3 * nb01) + row_kb,
                                     b_tile, tile_len);
                             }
@@ -261,21 +276,21 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
                             if (tile_len > TILE_KB) tile_len = TILE_KB;
                             const float* b_tile = b_col_base + kb * QK_K;
 
-                            s0 += compute_row_dot_q4_K(
+                            s0 += Q4K_DOT(
                                 (const block_q4_K*)(src0_ptr2 + m0 * nb01) + kb,
                                 b_tile, tile_len);
                             if (m1 < M) {
-                                s1 += compute_row_dot_q4_K(
+                                s1 += Q4K_DOT(
                                     (const block_q4_K*)(src0_ptr2 + m1 * nb01) + kb,
                                     b_tile, tile_len);
                             }
                             if (m2 < M) {
-                                s2 += compute_row_dot_q4_K(
+                                s2 += Q4K_DOT(
                                     (const block_q4_K*)(src0_ptr2 + m2 * nb01) + kb,
                                     b_tile, tile_len);
                             }
                             if (m3 < M) {
-                                s3 += compute_row_dot_q4_K(
+                                s3 += Q4K_DOT(
                                     (const block_q4_K*)(src0_ptr2 + m3 * nb01) + kb,
                                     b_tile, tile_len);
                             }
@@ -312,7 +327,7 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
                     for (int64_t m = hart_id; m < M; m += STRIDE_M) {
                         const block_q4_K* q_row = (const block_q4_K*)(src0_ptr2 + m * nb01);
 
-                        float sum = compute_row_dot_q4_K(q_row, b_col_base, K_blocks);
+                        float sum = Q4K_DOT(q_row, b_col_base, K_blocks);
 
                         float* dst_entry = (float*)(dst_ptr2 + n * nbd1 + m * sizeof(float));
                         atomic_store_f32((volatile float*)dst_entry, sum);
@@ -322,5 +337,12 @@ int entry_point(struct ggml_et_binary_params* params, void* env) {
         }
     }
 
+#ifdef ET_UBERKERNEL
+    // Publish dst to L3/DRAM so the next uberkernel op reads fresh data.
+    FENCE;
+    evict_region_past_l2(params->dst.data, tensor_bytes(&params->dst));
+    WAIT_CACHEOPS;
+    FENCE;
+#endif
     return 0;
 }

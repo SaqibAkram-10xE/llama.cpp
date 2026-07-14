@@ -114,6 +114,10 @@ set(UBERKERNEL_SUPPORTED_KERNELS
     mul_mat_id_f32
     mul_mat_Q4_0
     mul_mat_Q4_K
+    mul_mat_Q2_K
+    mul_mat_Q3_K
+    mul_mat_Q5_K
+    mul_mat_Q6_K
     mul_mat_Q8_0
     norm_f32
     pad_f32
