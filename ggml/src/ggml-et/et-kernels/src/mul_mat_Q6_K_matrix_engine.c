@@ -72,24 +72,7 @@
 #define SCP_CONSUMED_OFF (SCP_READY_OFF + 64)
 #define SCP_PER_MINION   (SCP_CONSUMED_OFF + 64)
 
-// Signal a counter value to the other hart via L2 SCP.
-static inline void __attribute__((always_inline))
-scp_signal(volatile uint32_t *flag, uint32_t value) {
-    *flag = value;
-    FENCE;
-    evict_to_l2((const void *)flag, 1, 64);
-    WAIT_CACHEOPS;
-}
 
-// Wait for a counter in L2 SCP to reach the expected value.
-static inline void __attribute__((always_inline))
-scp_wait(volatile uint32_t *flag, uint32_t expected) {
-    while (1) {
-        evict_to_l2((const void *)flag, 1, 64);
-        WAIT_CACHEOPS;
-        if (*flag >= expected) return;
-    }
-}
 
 // Software fp16->fp32 (pure integer). The hardware fcvt.ps.f16 returns wrong
 // values after the attention block (shared conversion-unit state), which would
